@@ -65,9 +65,11 @@ Source files reviewed:
 
 Current repository state:
 
-- `ssherpa` is a new standalone repo with only `LICENSE`.
-- Local `go version` is not available in this workspace. Phase 0 includes
-  installing or otherwise providing a Go toolchain before implementation.
+- `ssherpa` is a new standalone repo with license, planning,
+  development bootstrap docs, and the Phase 0 Go module/CLI foundation.
+- Local `go version` was not available when this plan was written. The
+  workspace is now bootstrapped with a user-local Go `1.26.3` install;
+  see `docs/development.md`.
 - Local OpenSSH is available and reports OpenSSH 9.6p1 on Ubuntu.
 
 ### Existing CLI Contract

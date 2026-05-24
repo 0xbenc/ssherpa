@@ -1,0 +1,5 @@
+dist/
+/ssherpa
+*.test
+*.prof
+coverage.out
