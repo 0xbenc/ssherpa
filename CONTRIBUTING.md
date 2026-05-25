@@ -1,6 +1,6 @@
 # Contributing
 
-`ssherpa` is currently in Phase 1 of the Go port. Keep changes small,
+`ssherpa` is currently in Phase 2 of the Go port. Keep changes small,
 tested, and aligned with the compatibility contract in `PORT_PLAN.md`.
 
 ## Compatibility Reference
@@ -26,6 +26,7 @@ go vet ./...
 go test ./...
 go run ./cmd/ssherpa version
 go run ./cmd/ssherpa list --json --config internal/sshconfig/testdata/matrix/config
+go run ./cmd/ssherpa --print --select prod --config internal/sshconfig/testdata/matrix/config
 ```
 
 For release config smoke tests, install GoReleaser and run:

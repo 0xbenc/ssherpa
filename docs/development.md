@@ -99,6 +99,7 @@ go vet ./...
 go test ./...
 go run ./cmd/ssherpa version
 go run ./cmd/ssherpa list --json --config internal/sshconfig/testdata/matrix/config
+go run ./cmd/ssherpa --print --select prod --config internal/sshconfig/testdata/matrix/config
 go build -trimpath -o ssherpa ./cmd/ssherpa
 ```
 

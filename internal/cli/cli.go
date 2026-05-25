@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,11 +10,14 @@ import (
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
+	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
 const usage = `Usage:
   ssherpa [command] [flags]
+  ssherpa [connect-flags] [-- ssh-args...]
 
 Available Commands:
   list       List SSH aliases from OpenSSH config
@@ -28,9 +32,18 @@ Inventory Flags:
   --user USER        Filter aliases by parsed user
   --config PATH      Read this SSH config root instead of ~/.ssh/config
 
-Phase 1:
-  SSH config inventory is read-only. Picker, SSH execution, config
-  mutation, and authorized_keys management are not implemented yet.
+Connect Flags:
+  --print            Print the SSH command instead of running it
+  --exec             Run the SSH command; this is the default
+  --select ALIAS     Select an alias non-interactively
+  --ssh-binary PATH  Use this SSH binary
+  --no-kitty         Disable Kitty SSH command detection
+  --no-color         Disable color styling
+
+Phase 2:
+  SSH config inventory, picker, print mode, and direct SSH execution are
+  available. Config mutation, jump/proxy flows, and authorized_keys
+  management are not implemented yet.
 `
 
 type BuildInfo struct {
@@ -52,8 +65,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 	stderr = writerOrDiscard(stderr)
 
 	if len(args) == 0 {
-		printUsage(stdout)
-		return 0
+		return runConnect(args, stdout, stderr)
 	}
 
 	switch args[0] {
@@ -75,11 +87,180 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		}
 		printUsage(stdout)
 		return 0
+	case "add", "edit", "authkeys", "jump", "proxy":
+		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", args[0])
+		return 1
 	default:
-		fmt.Fprintf(stderr, "ssherpa: unknown command or flag %q\n\n", args[0])
-		printUsage(stderr)
+		return runConnect(args, stdout, stderr)
+	}
+}
+
+type connectFlags struct {
+	inventoryFlags
+	Print     bool
+	SSHBinary string
+	NoKitty   bool
+	NoColor   bool
+	Select    string
+	SSHArgs   []string
+}
+
+func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		printUsage(stdout)
+		return 0
+	}
+
+	flags, ok := parseConnectFlags(args, stderr)
+	if !ok {
 		return 1
 	}
+	if flags.JSON && !flags.Print {
+		fmt.Fprintln(stderr, "ssherpa: --json is only supported with --print for connect mode")
+		return 1
+	}
+
+	_, inventory, err := loadInventory(flags.inventoryFlags)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 2
+	}
+
+	alias, ok, code := selectConnectAlias(flags, inventory, stderr)
+	if !ok {
+		return code
+	}
+
+	base := sshcmd.Resolve(sshcmd.ResolveOptions{
+		SSHBinary: flags.SSHBinary,
+		NoKitty:   flags.NoKitty,
+		Env:       sshcmd.Env(),
+	})
+	cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
+
+	if flags.Print {
+		if flags.JSON {
+			if err := sshcmd.WritePrintJSON(stdout, cmd, alias.Name); err != nil {
+				fmt.Fprintf(stderr, "ssherpa: write JSON: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
+		return 0
+	}
+
+	fmt.Fprintf(stderr, "[exec] %s\n", sshcmd.QuoteArgv(cmd.Argv))
+	return sshcmd.RunDirect(cmd, os.Stdin, stdout, stderr)
+}
+
+func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
+	var flags connectFlags
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			flags.SSHArgs = append(flags.SSHArgs, args[i+1:]...)
+			return flags, true
+		case arg == "--json":
+			flags.JSON = true
+		case arg == "--all":
+			flags.All = true
+		case arg == "--print":
+			flags.Print = true
+		case arg == "--exec":
+			flags.Print = false
+		case arg == "--filter":
+			value, ok := nextArg(args, &i, stderr, "--filter")
+			if !ok {
+				return flags, false
+			}
+			flags.Filter = value
+		case strings.HasPrefix(arg, "--filter="):
+			flags.Filter = strings.TrimPrefix(arg, "--filter=")
+		case arg == "--user":
+			value, ok := nextArg(args, &i, stderr, "--user")
+			if !ok {
+				return flags, false
+			}
+			flags.User = value
+		case strings.HasPrefix(arg, "--user="):
+			flags.User = strings.TrimPrefix(arg, "--user=")
+		case arg == "--config":
+			value, ok := nextArg(args, &i, stderr, "--config")
+			if !ok {
+				return flags, false
+			}
+			flags.Config = value
+		case strings.HasPrefix(arg, "--config="):
+			flags.Config = strings.TrimPrefix(arg, "--config=")
+		case arg == "--ssh-binary":
+			value, ok := nextArg(args, &i, stderr, "--ssh-binary")
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
+		case strings.HasPrefix(arg, "--ssh-binary="):
+			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+		case arg == "--select":
+			value, ok := nextArg(args, &i, stderr, "--select")
+			if !ok {
+				return flags, false
+			}
+			flags.Select = value
+		case strings.HasPrefix(arg, "--select="):
+			flags.Select = strings.TrimPrefix(arg, "--select=")
+		case arg == "--no-kitty":
+			flags.NoKitty = true
+		case arg == "--no-color":
+			flags.NoColor = true
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(stderr, "ssherpa: unknown flag %q\n", arg)
+			return flags, false
+		default:
+			flags.SSHArgs = append(flags.SSHArgs, arg)
+		}
+	}
+
+	return flags, true
+}
+
+func selectConnectAlias(flags connectFlags, inventory hostlist.Inventory, stderr io.Writer) (hostlist.Alias, bool, int) {
+	if flags.Select != "" {
+		alias := findAlias(inventory.Aliases, flags.Select)
+		if alias == nil {
+			fmt.Fprintf(stderr, "ssherpa: alias %q not found\n", flags.Select)
+			return hostlist.Alias{}, false, 2
+		}
+		return *alias, true, 0
+	}
+
+	item, ok, err := ui.Pick(context.Background(), ui.BuildItems(inventory.Aliases), ui.PickOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
+		return hostlist.Alias{}, false, 1
+	}
+	if !ok {
+		fmt.Fprintln(stderr, "[skipped] no selection made")
+		return hostlist.Alias{}, false, 0
+	}
+	if item.Kind != ui.ItemAlias {
+		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", item.Title)
+		return hostlist.Alias{}, false, 1
+	}
+
+	alias := findAlias(inventory.Aliases, item.Token)
+	if alias == nil {
+		fmt.Fprintf(stderr, "ssherpa: selected alias %q disappeared\n", item.Token)
+		return hostlist.Alias{}, false, 2
+	}
+	return *alias, true, 0
 }
 
 type inventoryFlags struct {
@@ -243,6 +424,9 @@ func parseInventoryFlags(args []string, stderr io.Writer) (inventoryFlags, []str
 
 func hasHelpFlag(args []string) bool {
 	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
 		if arg == "--help" || arg == "-h" {
 			return true
 		}
@@ -307,11 +491,24 @@ func rootAndHome(configPath string) (string, string, error) {
 }
 
 func ignoreGitUserFromEnv() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("SSHERPA_IGNORE_USER_GIT"))) {
-	case "0", "false", "no", "off":
+	return !envBoolDisabled("SSHERPA_IGNORE_USER_GIT")
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "", "0", "false", "no", "off":
 		return false
 	default:
 		return true
+	}
+}
+
+func envBoolDisabled(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "0", "false", "no", "off":
+		return true
+	default:
+		return false
 	}
 }
 

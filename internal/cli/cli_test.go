@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -47,18 +48,6 @@ func TestRunVersionDefaults(t *testing.T) {
 	}
 }
 
-func TestRunHelpForNoArgs(t *testing.T) {
-	var stdout bytes.Buffer
-
-	code := Run(nil, &stdout, nil, BuildInfo{})
-
-	if code != 0 {
-		t.Fatalf("Run returned %d, want 0", code)
-	}
-	assertContains(t, stdout.String(), "Usage:")
-	assertContains(t, stdout.String(), "Phase 1:")
-}
-
 func TestRunHelpCommand(t *testing.T) {
 	var stdout bytes.Buffer
 
@@ -67,7 +56,121 @@ func TestRunHelpCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0", code)
 	}
+	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
+	assertContains(t, stdout.String(), "Phase 2:")
+}
+
+func TestRunConnectPrint(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod web
+  HostName prod.example.com
+  User alice
+`)
+
+	code := Run([]string{"--print", "--select", "prod", "--config", config, "--", "-L", "8080:localhost:8080"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh prod -L 8080:localhost:8080")
+}
+
+func TestRunConnectPrintJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	code := Run([]string{"--print", "--json", "--select=prod", "--config=" + config}, &stdout, nil, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0", code)
+	}
+
+	var got struct {
+		Argv  []string `json:"argv"`
+		Alias string   `json:"alias"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if strings.Join(got.Argv, "\x00") != "ssh\x00prod" || got.Alias != "prod" {
+		t.Fatalf("print JSON = %#v", got)
+	}
+}
+
+func TestRunConnectAllowsHelpAsSSHPassthroughArg(t *testing.T) {
+	var stdout bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	code := Run([]string{"--print", "--select", "prod", "--config", config, "--", "--help"}, &stdout, nil, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0", code)
+	}
+	assertContains(t, stdout.String(), "[print] ssh prod --help")
+}
+
+func TestRunConnectExecutesFakeSSH(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	fakeSSH, logPath := writeFakeSSH(t, 0)
+
+	code := Run([]string{"--select", "prod", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "[exec]")
+	assertContains(t, stdout.String(), "fake ssh stdout")
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile returned error: %v", err)
+	}
+	if strings.TrimSpace(string(logBytes)) != "prod -v" {
+		t.Fatalf("fake ssh argv log = %q, want %q", string(logBytes), "prod -v")
+	}
+}
+
+func TestRunConnectPropagatesFakeSSHExitCode(t *testing.T) {
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	fakeSSH, _ := writeFakeSSH(t, 7)
+
+	code := Run([]string{"--select", "prod", "--config", config, "--ssh-binary", fakeSSH}, nil, &stderr, BuildInfo{})
+
+	if code != 7 {
+		t.Fatalf("Run returned %d, want 7; stderr = %q", code, stderr.String())
+	}
+}
+
+func TestRunConnectRejectsUnknownFlag(t *testing.T) {
+	var stderr bytes.Buffer
+
+	code := Run([]string{"--bogus"}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), `unknown flag "--bogus"`)
 }
 
 func TestRunListJSON(t *testing.T) {
@@ -222,11 +325,11 @@ func TestRunShowMissingJSONReturnsTwo(t *testing.T) {
 	assertContains(t, stdout.String(), `"alias": null`)
 }
 
-func TestRunUnknownCommand(t *testing.T) {
+func TestRunUnsupportedSubcommand(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := Run([]string{"bogus"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"add"}, &stdout, &stderr, BuildInfo{})
 
 	if code != 1 {
 		t.Fatalf("Run returned %d, want 1", code)
@@ -234,8 +337,7 @@ func TestRunUnknownCommand(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	assertContains(t, stderr.String(), `unknown command or flag "bogus"`)
-	assertContains(t, stderr.String(), "Usage:")
+	assertContains(t, stderr.String(), "add is not implemented yet")
 }
 
 func TestRunRejectsExtraVersionArgs(t *testing.T) {
@@ -257,6 +359,26 @@ func writeConfig(t *testing.T, contents string) string {
 		t.Fatalf("os.WriteFile returned error: %v", err)
 	}
 	return path
+}
+
+func writeFakeSSH(t *testing.T, exitCode int) (string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "argv.log")
+	path := filepath.Join(dir, "fake-ssh")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" > " + shellQuote(logPath) + "\n" +
+		"printf '%s\\n' 'fake ssh stdout'\n" +
+		"exit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+	return path, logPath
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func assertContains(t *testing.T, got string, want string) {

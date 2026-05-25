@@ -67,7 +67,9 @@ Current repository state:
 
 - `ssherpa` is a new standalone repo with license, planning,
   development bootstrap docs, the Phase 0 Go module/CLI foundation, and
-  Phase 1 read-only SSH config inventory commands.
+  Phase 1 read-only SSH config inventory commands. Phase 2 adds the
+  Bubble Tea picker, print mode, direct SSH runner, Kitty command
+  resolver, and fake SSH integration tests.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.

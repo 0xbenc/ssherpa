@@ -52,6 +52,9 @@ jobs:
       - name: Smoke test inventory JSON
         run: go run ./cmd/ssherpa list --json --config internal/sshconfig/testdata/matrix/config
 
+      - name: Smoke test print mode
+        run: go run ./cmd/ssherpa --print --select prod --config internal/sshconfig/testdata/matrix/config -- -L 8080:localhost:8080
+
       - name: Build native binary
         run: go build -trimpath -o ssherpa ./cmd/ssherpa
 

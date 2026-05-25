@@ -4,10 +4,11 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 1 inventory. The repository has a Go module,
-tested read-only SSH config inventory, `ssherpa list`, `ssherpa show`,
-CI, contributor notes, and a draft GoReleaser config with publishing
-disabled.
+Current status: Phase 2 picker and direct connect. The repository has a
+Go module, tested read-only SSH config inventory, `ssherpa list`,
+`ssherpa show`, a Bubble Tea alias picker, print mode, direct SSH
+execution, CI, contributor notes, and a draft GoReleaser config with
+publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -17,17 +18,18 @@ The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 go run ./cmd/ssherpa version
 go run ./cmd/ssherpa list --json
 go run ./cmd/ssherpa show ALIAS --json
+go run ./cmd/ssherpa --print --select ALIAS
 go test ./...
 go vet ./...
 ```
 
-`ssherpa` without a command currently prints help. SSH config inventory
-is read-only and supports `Include`, source positions, duplicate
-warnings, wildcard hiding, git-user hiding, and basic parsed effective
-values.
+`ssherpa` without a command opens the Bubble Tea alias picker and runs
+the selected alias with local OpenSSH. SSH config inventory is read-only
+and supports `Include`, source positions, duplicate warnings, wildcard
+hiding, git-user hiding, and basic parsed effective values.
 
-The picker, SSH execution, config mutation, jump/proxy flows, and
-`authorized_keys` management have not been ported yet.
+Config mutation, jump/proxy flows, and `authorized_keys` management have
+not been ported yet.
 
 ## Inventory Examples
 
@@ -36,6 +38,8 @@ ssherpa list --json
 ssherpa list --json --config ~/.ssh/config.work
 ssherpa list --all --filter prod --user alice
 ssherpa show prod --json
+ssherpa --print --select prod -- -L 8080:localhost:8080
+ssherpa --select prod --ssh-binary /tmp/fake-ssh
 ```
 
 Default inventory reads `~/.ssh/config`. Use `--config PATH` for a
