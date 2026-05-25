@@ -1,190 +1,245 @@
 # ssherpa
 
-`ssherpa` is a Go port of the Bash Zoo SSH helper. The port keeps
-OpenSSH config as the source of truth while growing toward a safer,
-testable SSH workflow tool.
+A terminal UI for the SSH config you already have — and a supervisor that keeps
+you from getting lost in it. `ssherpa` reads `~/.ssh/config`, lets you fuzzy-pick
+a host and connect, then runs that connection under supervision so you can always
+see where you are in a stack of hops and bail out of the whole thing at once.
 
-Current status: Phase 10 TUI design overhaul. The repository has a Go module,
-tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
-alias picker, print mode, direct SSH execution, safe add/edit/delete
-config mutations, jump routing, SOCKS proxy launching, safe
-`authorized_keys` management, supervised PTY sessions by default with
-local session records, a session route map, an upgraded first-screen
-picker, opt-in sidecar latency warnings, explicit latency disconnects,
-a local queued input composer, a responsive styled TUI, CI, contributor
-notes, terminal-palette-first theme support with a live TUI editor, and
-a draft GoReleaser config with publishing disabled.
+<!-- A recorded demo (docs/demo.gif, made with charmbracelet/vhs) could replace this still. -->
 
-The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
+![ssherpa picker running in a supervised session](docs/ssherpa.jpg)
 
-## What Works Now
+OpenSSH stays the source of truth. ssherpa never invents its own config format or
+connection layer — it reads and edits your real config and shells out to your
+real `ssh`, and every write is previewable and reversible. What it adds is the
+layer OpenSSH doesn't: visibility into, and control over, nested sessions.
 
-```sh
-go run ./cmd/ssherpa version
-go run ./cmd/ssherpa list --json
-go run ./cmd/ssherpa show ALIAS --json
-go run ./cmd/ssherpa --print --select ALIAS
-go run ./cmd/ssherpa add --alias ALIAS --host HOST --dry-run
-go run ./cmd/ssherpa edit set ALIAS --host HOST --dry-run
-go run ./cmd/ssherpa edit delete ALIAS --dry-run
-go run ./cmd/ssherpa jump --dest DEST --hop HOP --print
-go run ./cmd/ssherpa proxy --select ALIAS --port 1080 --print
-go run ./cmd/ssherpa authkeys list --json
-go run ./cmd/ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
-go run ./cmd/ssherpa --select ALIAS
-go run ./cmd/ssherpa theme
-go run ./cmd/ssherpa session list
-go run ./cmd/ssherpa session map
-go run ./cmd/ssherpa session map --all
-go run ./cmd/ssherpa session show SESSION_ID
-go test ./...
-go vet ./...
-```
+## Features
 
-`ssherpa` without a command opens the Bubble Tea alias picker and runs
-the selected alias with local OpenSSH. SSH config inventory supports
-`Include`, source positions, duplicate warnings, wildcard hiding,
-git-user hiding, and basic parsed effective values.
+- **Supervised sessions** — every connection runs under a PTY supervisor that
+  adds a live [session-map overlay](#supervised-sessions), a one-keystroke
+  [escape rope](docs/escape-rope.md) out of every nested hop, a queued-input
+  composer, an optional latency watchdog, and recorded session lineage.
+- **Fuzzy host picker** over your parsed `~/.ssh/config`, including `Include`
+  files, with source line numbers and duplicate-host warnings.
+- **Safe config edits** — `add`, `edit set`, `edit delete`. Every mutation shows
+  a dry-run diff, backs up the existing file, and writes atomically with
+  permissions preserved.
+- **`authorized_keys` management** — list, add, merge, replace, and delete keys
+  by fingerprint, preserving key options and cert types.
+- **Jump and proxy** — build a `ProxyJump` route through one or more hops, or
+  start a local SOCKS proxy through any alias.
+- **`--print` mode** — print the exact `ssh` command instead of running it, so
+  you can see, copy, or script what ssherpa would do.
+- **Themeable** — inherits your terminal palette by default; tune every UI role
+  in a live editor (`ssherpa theme`). Honors `NO_COLOR`.
 
-Config mutation uses dry-run diffs, backups for writes to existing
-files, temp-file atomic renames, permission preservation, and safeguards
-for multi-alias or wildcard `Host` stanzas. Jump/proxy flows are
-available. `authorized_keys` management supports list, add, merge,
-replace, delete, dry-run diffs, backups, option preservation, cert key
-types, and `SSHERPA_AUTHORIZED_KEYS_PATH`. Connection flows run under a
-supervised PTY by default, propagate basic `SSHERPA_SESSION_*` metadata
-into the child process, and write JSON records under the platform state
-directory. The default picker opens with a styled status surface,
-grouped actions, host rows, a responsive detail preview on wider
-terminals, and a Sessions route map entry. While inside a
-supervised session, press `Ctrl-]` to open the local active-session map
-overlay; press `Ctrl-]`, `q`, or `Esc` to return to the remote session.
-From the overlay, press `X` (then `X` again to confirm) to pull the
-**escape rope**, which tears down every nested supervised session at once
-and drops you back at the outermost shell (exit code 120); mash `Ctrl-]`
-three times for a no-confirm panic exit. See `docs/escape-rope.md`.
-`ssherpa session map` shows active sessions by default; use
-`ssherpa session map --all` only when you want historical exited records
-in the lineage view. Press `Ctrl-G` to open the local queued-input
-composer; Enter sends the buffer plus a newline, `Ctrl-G` sends without
-a newline, and `Esc` cancels. Use `--no-composer` to disable it or
-`--composer-key KEY` to choose a different control-key hotkey. Use
-`--latency-warn DURATION` to enable the opt-in sidecar SSH health probe
-and record local warning events. Use `--latency-disconnect DURATION`
-only when you explicitly want ssherpa to terminate a session after
-sustained unhealthy probes; it requires `--latency-warn`. Use
-`--direct` only when you need the old unsupervised runner. Use
-`--state-dir PATH` or `SSHERPA_STATE_DIR` for disposable testing.
+## Supervised sessions
 
-## UI Themes
+This is the part ssherpa was built to fix. You `ssh` to a bastion, then to a host
+behind it, then to another, and three hops deep you've lost track of where you
+are — and getting out means `exit`, `exit`, `exit`, hoping you counted right.
 
-The TUI defaults to the terminal palette, so `primary`, `secondary`,
-`accent`, and status colors inherit the user's terminal emulator theme.
-Use the `Theme and colors` row on the first screen, or run
-`ssherpa theme`, to build a schema with a live picker/overlay preview.
-Use `--theme vivid` or `SSHERPA_THEME=vivid` for the explicit truecolor
-palette from the Phase 10 design pass.
+By default every connection runs under a PTY supervisor. `ssh` behaves exactly as
+it normally would, but ssherpa stays in the loop and gives you a control layer on
+top of it, reachable without disturbing the remote shell.
 
-Custom role overrides can live at `~/.config/ssherpa/theme.conf`, or in
-a path set with `--theme-file PATH` or `SSHERPA_THEME_FILE=PATH`:
+### Session-map overlay — `Ctrl-]`
 
-```text
-theme = terminal
-primary = cyan
-secondary = blue
-accent = yellow
-muted = bright-black
-success = green
-warning = yellow
-danger = red
-pill = bold reverse
-```
+Press `Ctrl-]` at any time to overlay a live map of your active sessions and the
+route that got you to each one. Press `Ctrl-]`, `q`, or `Esc` to dismiss it and
+you're back exactly where you were.
 
-Values may be terminal color names, style tokens such as `bold` and
-`reverse`, or raw SGR codes such as `38;2;96;221;255`. `--no-color`,
-`SSHERPA_NO_COLOR=1`, and `NO_COLOR=1` disable styling.
+### Escape rope — disconnect every layer at once
 
-Theme editor keys:
+`Ctrl-]` then `X` (and `X` again to confirm) pulls the **escape rope**: it tears
+down every nested session in the stack and drops you back at your outermost shell
+in a single move — no counting `exit`s. When a layer is wedged, mash `Ctrl-]`
+three times for a no-confirm panic exit. It works no matter how many
+`ssherpa → ssh → ssherpa` layers deep you are;
+[`docs/escape-rope.md`](docs/escape-rope.md) explains how the teardown cascades.
 
-```text
-arrows / h l  change selection or value
-b             switch base theme
-e / enter     edit the selected role as raw text
-d             clear a role override so it inherits from the base theme
-r             reset to terminal defaults
-s             save
-q / Esc       cancel
-```
+### Queued-input composer — `Ctrl-G`
 
-## Examples
+Compose a line locally and send it on your terms: Enter sends it with a newline,
+`Ctrl-G` sends it raw, `Ctrl-U` clears, `Esc` cancels. Useful for staging a
+command before committing it to a fragile or high-latency link.
+
+| Key | Action |
+| --- | --- |
+| `Ctrl-]` | Open the session-map overlay (again / `q` / `Esc` to return) |
+| `Ctrl-]` then `X`, `X` | Escape rope — disconnect every layer, back to the outermost shell |
+| `Ctrl-]` ×3 (fast) | Panic escape rope, no confirm |
+| `Ctrl-G` | Queued-input composer |
+
+### Latency watchdog (opt-in)
+
+Have ssherpa probe the link with a sidecar `ssh` and warn you when it turns
+unhealthy — or, only if you ask for it, disconnect after a sustained outage:
 
 ```sh
-ssherpa list --json
-ssherpa list --json --config ~/.ssh/config.work
-ssherpa list --all --filter prod --user alice
-ssherpa show prod --json
-ssherpa --print --select prod -- -L 8080:localhost:8080
-ssherpa --select prod --ssh-binary /tmp/fake-ssh
-ssherpa add --alias prod --host prod.example.com --user alice --dry-run
-ssherpa add --alias prod --host prod.example.com --user alice --yes
-ssherpa edit set prod --port 2222 --identity ~/.ssh/prod --yes
-ssherpa edit delete prod --all-sources --dry-run
-ssherpa edit delete-all --filter scratch --dry-run
-ssherpa jump --dest prod --hop bastion --hop edge --print
-ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
-ssherpa authkeys list --json
-ssherpa authkeys add --key "ssh-ed25519 AAAA... user@host" --yes
-ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
-ssherpa authkeys merge --from-dir ./keys --dry-run
-ssherpa authkeys replace --from-dir ./keys --yes
-ssherpa authkeys delete --fingerprint SHA256:... --yes
-ssherpa --select prod
-ssherpa --select prod --composer-key ctrl-r
-ssherpa --select prod --no-composer
 ssherpa --select prod --latency-warn 2s
 ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
-ssherpa theme
-ssherpa --theme vivid
-ssherpa --theme-file ~/.config/ssherpa/theme.conf
-ssherpa --direct --select prod
-ssherpa jump --dest prod --hop bastion
-ssherpa session list
-ssherpa session map
-ssherpa session map --all
-ssherpa session map --json
-ssherpa session show 20260524T120000.000000000Z-abcd1234
+```
+
+### Session records and maps
+
+Every supervised session is recorded as `0600` JSON (under
+`~/.local/state/ssherpa` on Linux, `~/Library/Application Support/ssherpa` on
+macOS), including its parent and route, so you can reconstruct the lineage after
+the fact:
+
+```sh
+ssherpa session map            # active sessions as a tree, with their routes
+ssherpa session map --all      # include exited sessions
+ssherpa session list           # flat list
+ssherpa session show <id>      # one record in detail
 ssherpa session prune --older-than 168h --dry-run
 ```
 
-Default inventory reads `~/.ssh/config`. Use `--config PATH` for a
-different root. Authorized key operations read
-`~/.ssh/authorized_keys` by default. Use `SSHERPA_AUTHORIZED_KEYS_PATH`
-or `--path PATH` to operate on a disposable file.
+Prefer the old behavior? `--direct` runs `ssh` straight through with no overlay,
+watchdog, or state.
 
-Session records default to `~/.local/state/ssherpa` on Linux and
-`~/Library/Application Support/ssherpa` on macOS. They are local JSON
-files with mode `0600`.
+## Installation
 
-## Compatibility Reference
+Requires Go 1.26 or newer.
 
-Until the Go port reaches parity, the Bash Zoo implementation remains
-the behavior reference:
+```sh
+go install github.com/0xbenc/ssherpa/cmd/ssherpa@latest
+```
 
-- Local sibling checkout: `../bash-zoo/scripts/ssherpa.sh`
-- Upstream source:
-  https://github.com/0xbenc/bash-zoo/blob/main/scripts/ssherpa.sh
-- Bash Zoo user docs:
-  https://github.com/0xbenc/bash-zoo/blob/main/docs/ssherpa.md
+Or build from source:
+
+```sh
+git clone https://github.com/0xbenc/ssherpa
+cd ssherpa
+go build -o ssherpa ./cmd/ssherpa
+```
+
+Binaries are built for Linux and macOS (amd64 and arm64).
+
+## Usage
+
+Run `ssherpa` with no arguments to open the picker, filter to a host, and press
+Enter to connect:
+
+```sh
+ssherpa
+```
+
+Skip the picker with `--select`, and use `--print` to see the command without
+running it:
+
+```sh
+ssherpa --select prod                       # connect to alias "prod"
+ssherpa --print --select prod               # print: ssh prod
+ssherpa --print --select prod -- -L 8080:localhost:8080   # pass-through ssh args after --
+```
+
+### List and inspect hosts
+
+```sh
+ssherpa list                                # list of aliases
+ssherpa list --json --filter prod --user alice
+ssherpa show prod --json                    # one alias, parsed effective values
+```
+
+### Edit your config safely
+
+Every mutation defaults to asking for confirmation; add `--dry-run` to preview
+the diff, or `--yes` to skip the prompt.
+
+```sh
+ssherpa add --alias prod --host prod.example.com --user alice --dry-run
+ssherpa add --alias prod --host prod.example.com --user alice --yes
+ssherpa edit set prod --port 2222 --identity ~/.ssh/prod --yes
+ssherpa edit delete prod --dry-run
+ssherpa edit delete-all --filter scratch --dry-run
+```
+
+### Jump hosts and SOCKS proxy
+
+```sh
+ssherpa jump --dest prod --hop bastion --hop edge --print   # ssh -J bastion,edge prod
+ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
+```
+
+### Manage authorized_keys
+
+Operates on `~/.ssh/authorized_keys` by default. Point it elsewhere with `--path`
+or `SSHERPA_AUTHORIZED_KEYS_PATH` (handy for testing).
+
+```sh
+ssherpa authkeys list --json
+ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
+ssherpa authkeys merge --from-dir ./keys --dry-run
+ssherpa authkeys delete --fingerprint SHA256:... --yes
+```
+
+## Configuration
+
+Flags override environment variables, which override the defaults.
+
+| Flag | Env | Default |
+| --- | --- | --- |
+| `--config PATH` | — | `~/.ssh/config` |
+| `--ssh-binary PATH` | `SSHERPA_SSH_BINARY` | `ssh` (or `kitten ssh` under Kitty) |
+| `--state-dir PATH` | `SSHERPA_STATE_DIR` | platform state dir |
+| `--path PATH` (authkeys) | `SSHERPA_AUTHORIZED_KEYS_PATH` | `~/.ssh/authorized_keys` |
+| `--theme NAME` | `SSHERPA_THEME` | `terminal` (or `vivid`) |
+| `--theme-file PATH` | `SSHERPA_THEME_FILE` | `~/.config/ssherpa/theme.conf` |
+| `--no-color` | `SSHERPA_NO_COLOR`, `NO_COLOR` | color on |
+| `--no-kitty` | `SSHERPA_NO_KITTY` | Kitty detection on |
+
+See `ssherpa help` for the full flag list.
+
+## Themes
+
+The UI inherits your terminal's palette by default, so it matches whatever color
+scheme your emulator uses. Run `ssherpa theme` (or pick **Theme and colors** in
+the picker) for a live editor where each row previews its own color, a palette
+panel shows the exact token to type for every color, and `t` toggles a
+high-contrast mode so the text stays readable on any background.
+
+Overrides can also live in `~/.config/ssherpa/theme.conf`:
+
+```text
+theme   = terminal
+primary = cyan
+accent  = yellow
+success = green
+danger  = red
+pill    = bold reverse
+```
+
+Values are color names (`cyan`, `bright-blue`), style tokens (`bold`, `reverse`),
+or raw SGR codes (`38;2;96;221;255`). Use `--theme vivid` for an explicit
+truecolor palette.
+
+## What it does and doesn't do
+
+- It **does** read and edit your real OpenSSH config and `authorized_keys`, and
+  run your real `ssh`. Edits are parser-backed, previewable (`--dry-run`),
+  confirmed by default, backed up, and written atomically.
+- It **does not** store connections, credentials, or hosts in a separate
+  database, replace `ssh`, or modify anything without showing you first.
+- Destructive operations on multi-alias or wildcard `Host` stanzas are guarded,
+  and bulk deletes require an explicit confirmation phrase.
 
 ## Development
 
-This workspace uses an official user-local Go install rather than the
-Ubuntu package:
+Local checks expected before committing are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md); the Go toolchain setup is in
+[`docs/development.md`](docs/development.md).
 
-- Go version: `go1.26.3`
-- Install root: `~/.local/share/go/1.26.3`
-- PATH symlinks: `~/.local/bin/go`, `~/.local/bin/gofmt`
+```sh
+go test ./...
+go vet ./...
+gofmt -l ./cmd ./internal
+```
 
-See [`docs/development.md`](docs/development.md) for the bootstrap and
-upgrade process, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the local
-checks expected before commit.
+## License
+
+[MIT](LICENSE) © Ben Chapman
+
+<sub>My desktop wallpaper is visible behind the terminal | by [Robh](https://broadviewgraphics.blogspot.com/2012/11/tron-uprising-update.html).</sub>
