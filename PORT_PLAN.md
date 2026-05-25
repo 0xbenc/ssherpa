@@ -72,7 +72,9 @@ Current repository state:
   resolver, and fake SSH integration tests. Phase 3 adds safe SSH config
   add/edit/delete mutations, dry-run diffs, atomic writes, backups, and
   multi-alias deletion safeguards. Phase 4 adds jump route building and
-  SOCKS proxy command support.
+  SOCKS proxy command support. Phase 5 adds `authorized_keys` parsing,
+  validation, list/add/merge/replace/delete commands, dry-run diffs,
+  backups, and permission handling.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.

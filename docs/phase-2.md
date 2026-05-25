@@ -2,8 +2,8 @@
 
 Phase 2 added the interactive alias picker, print mode, direct SSH
 execution, and command resolution. Config mutation arrived in Phase 3;
-jump/proxy flows, `authorized_keys`, and supervised PTY sessions remain
-later phases.
+jump/proxy flows arrived in Phase 4, `authorized_keys` arrived in
+Phase 5, and supervised PTY sessions remain a later phase.
 
 ## Commands
 
@@ -43,7 +43,7 @@ rows:
 
 Those rows are visible so the default interaction matches the Bash
 script. Add/edit rows are wired in Phase 3, jump/proxy rows are wired in
-Phase 4, and authkeys remains a later phase.
+Phase 4, and authkeys is wired in Phase 5.
 
 Picker controls:
 
@@ -100,8 +100,8 @@ Fake SSH execution and exit-code propagation are covered by
 
 ## Known Limits
 
-- Authkeys remains a placeholder until its implementation phase. Proxy
-  and jump are implemented in Phase 4.
+- Authkeys is implemented in Phase 5. Proxy and jump are implemented in
+  Phase 4.
 - The default direct runner does not yet supervise sessions or record
   state.
 - Signal-forwarding behavior is the standard `exec.Command` inherited

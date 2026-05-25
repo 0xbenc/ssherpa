@@ -42,7 +42,7 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 	items := []Item{
 		{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "write a safe Host stanza"},
 		{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries"},
-		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys on this device", Description: "available in a later phase"},
+		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys on this device", Description: "add, merge, replace, or delete login keys"},
 		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port"},
 		{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "build a ProxyJump route"},
 	}

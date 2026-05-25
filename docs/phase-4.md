@@ -121,4 +121,4 @@ and `internal/sshcmd` tests.
   a richer route dashboard.
 - Supervised session metadata for jump/proxy routes waits for the session
   phase.
-- `authorized_keys` management remains a later phase.
+- `authorized_keys` management is implemented in Phase 5.

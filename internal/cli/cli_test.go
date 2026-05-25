@@ -8,6 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/0xbenc/ssherpa/internal/authkeys"
+)
+
+const (
+	testEd25519Key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDb7Ccg8MuAtwJl6bsEjuCHWDtiRtivD3c1vzgbG7N1q alice@example"
+	testECDSAKey   = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDxfAByeMchlvCAqslVGYuzLS4lr02wvFIn2rz4Jp40NrbYkbazkdAtflVPDCCewMSI2I0ujG0JJeZEjYarX8sI= ecdsa@example"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -58,7 +65,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 4:")
+	assertContains(t, stdout.String(), "Phase 5:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -761,19 +768,249 @@ func TestRunShowMissingJSONReturnsTwo(t *testing.T) {
 	assertContains(t, stdout.String(), `"alias": null`)
 }
 
-func TestRunUnsupportedSubcommand(t *testing.T) {
-	var stdout bytes.Buffer
+func TestRunAuthkeysUnknownSubcommand(t *testing.T) {
 	var stderr bytes.Buffer
 
-	code := Run([]string{"authkeys"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"authkeys", "bogus"}, nil, &stderr, BuildInfo{})
 
 	if code != 1 {
 		t.Fatalf("Run returned %d, want 1", code)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %q, want empty", stdout.String())
+	assertContains(t, stderr.String(), `unknown authkeys command "bogus"`)
+}
+
+func TestRunAuthkeysListJSONMissingFile(t *testing.T) {
+	var stdout bytes.Buffer
+	path := filepath.Join(t.TempDir(), ".ssh", "authorized_keys")
+
+	code := Run([]string{"authkeys", "list", "--json", "--path", path}, &stdout, nil, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0", code)
 	}
-	assertContains(t, stderr.String(), "authkeys is not implemented yet")
+
+	var got struct {
+		Path string `json:"path"`
+		Keys []any  `json:"keys"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if got.Path != path || len(got.Keys) != 0 {
+		t.Fatalf("output = %#v, want path and no keys", got)
+	}
+}
+
+func TestRunAuthkeysListUsesEnvironmentPath(t *testing.T) {
+	var stdout bytes.Buffer
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	t.Setenv("SSHERPA_AUTHORIZED_KEYS_PATH", path)
+
+	code := Run([]string{"authkeys", "list", "--json"}, &stdout, nil, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0", code)
+	}
+	assertContains(t, stdout.String(), path)
+}
+
+func TestRunAuthkeysAddCreatesAuthorizedKeysWithMode600(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".ssh", "authorized_keys")
+	fake := writeFakeSSHKeygen(t, dir, 0)
+
+	code := Run([]string{"authkeys", "add", "--key", testEd25519Key, "--path", path, "--yes", "--ssh-keygen", fake}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[added]")
+	assertContains(t, stdout.String(), "valid=1 added=1")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read authorized_keys: %v", err)
+	}
+	assertContains(t, string(data), "# Created by ssherpa authkeys")
+	assertContains(t, string(data), testEd25519Key)
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat authorized_keys: %v", err)
+	}
+	if got := stat.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
+func TestRunAuthkeysAddKeyFile(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	keyFile := filepath.Join(dir, "id_ed25519.pub")
+	if err := os.WriteFile(keyFile, []byte("# comment\n"+testEd25519Key+"\n"), 0o644); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	fake := writeFakeSSHKeygen(t, dir, 0)
+
+	code := Run([]string{"authkeys", "add", "--key-file", keyFile, "--path", path, "--yes", "--ssh-keygen", fake}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[added]")
+	assertContains(t, readFile(t, path), testEd25519Key)
+}
+
+func TestRunAuthkeysMergeDryRunPreservesOptions(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.Mkdir(keysDir, 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	line := `from="10.0.0.0/8",command="echo hello world" ` + testEd25519Key
+	if err := os.WriteFile(filepath.Join(keysDir, "alice.pub"), []byte(line+"\n"), 0o644); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	fake := writeFakeSSHKeygen(t, dir, 0)
+
+	code := Run([]string{"authkeys", "merge", "--from-dir", keysDir, "--path", path, "--dry-run", "--ssh-keygen", fake}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[would-merged]")
+	assertContains(t, stdout.String(), line)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after dry-run, err=%v", err)
+	}
+}
+
+func TestRunAuthkeysReplaceCreatesBackup(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	if err := os.WriteFile(path, []byte(testEd25519Key+"\n"), 0o644); err != nil {
+		t.Fatalf("write authorized_keys: %v", err)
+	}
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.Mkdir(keysDir, 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "ecdsa.pub"), []byte(testECDSAKey+"\n"), 0o644); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	fake := writeFakeSSHKeygen(t, dir, 0)
+
+	code := Run([]string{"authkeys", "replace", "--from-dir", keysDir, "--path", path, "--yes", "--ssh-keygen", fake}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[replaced]")
+	assertContains(t, stdout.String(), "[backup]")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read authorized_keys: %v", err)
+	}
+	if strings.Contains(string(data), "ssh-ed25519") || !strings.Contains(string(data), testECDSAKey) {
+		t.Fatalf("authorized_keys = %q", string(data))
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat authorized_keys: %v", err)
+	}
+	if got := stat.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
+	}
+	backup := firstBackupPath(t, dir, "authorized_keys.ssherpa-backup.")
+	backupData, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	assertContains(t, string(backupData), testEd25519Key)
+}
+
+func TestRunAuthkeysReplaceRejectsDirectoryWithNoValidKeys(t *testing.T) {
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.Mkdir(keysDir, 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "bad.pub"), []byte("ssh-ed25519 not@@base64 bad\n"), 0o644); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	code := Run([]string{"authkeys", "replace", "--from-dir", keysDir, "--path", path, "--yes"}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "not valid base64")
+	assertContains(t, stderr.String(), "no valid SSH public keys")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected replace, err=%v", err)
+	}
+}
+
+func TestRunAuthkeysDeleteByFingerprintPreservesComments(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	contents := "# first\n" + testEd25519Key + "\n" + testECDSAKey + "\n# last\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write authorized_keys: %v", err)
+	}
+	key, err := authkeys.ParsePublicKeyLine(testEd25519Key)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+	fingerprint, err := key.SHA256Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+
+	code := Run([]string{"authkeys", "delete", "--fingerprint", fingerprint, "--path", path, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[removed]")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read authorized_keys: %v", err)
+	}
+	got := string(data)
+	if strings.Contains(got, "ssh-ed25519") {
+		t.Fatalf("authorized_keys still has deleted key: %q", got)
+	}
+	assertContains(t, got, "# first\n")
+	assertContains(t, got, testECDSAKey)
+	assertContains(t, got, "# last\n")
+	_ = firstBackupPath(t, dir, "authorized_keys.ssherpa-backup.")
+}
+
+func TestRunAuthkeysAddRejectsInvalidKey(t *testing.T) {
+	var stderr bytes.Buffer
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+
+	code := Run([]string{"authkeys", "add", "--key", "ssh-ed25519 not@@base64 bad", "--path", path, "--yes"}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "not valid base64")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected add, err=%v", err)
+	}
 }
 
 func TestRunRejectsExtraVersionArgs(t *testing.T) {
@@ -842,6 +1079,31 @@ func assertContains(t *testing.T, got string, want string) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("got %q, want substring %q", got, want)
 	}
+}
+
+func writeFakeSSHKeygen(t *testing.T, dir string, exitCode int) string {
+	t.Helper()
+	path := filepath.Join(dir, "ssh-keygen")
+	script := "#!/bin/sh\ncat >/dev/null\nexit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ssh-keygen: %v", err)
+	}
+	return path
+}
+
+func firstBackupPath(t *testing.T, dir string, prefix string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			return filepath.Join(dir, entry.Name())
+		}
+	}
+	t.Fatalf("no backup with prefix %q in %s", prefix, dir)
+	return ""
 }
 
 func assertNotContains(t *testing.T, got string, unwanted string) {

@@ -4,11 +4,12 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 4 jump and proxy. The repository has a Go module,
+Current status: Phase 5 authorized_keys. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
-config mutations, jump routing, SOCKS proxy launching, CI, contributor
-notes, and a draft GoReleaser config with publishing disabled.
+config mutations, jump routing, SOCKS proxy launching, safe
+`authorized_keys` management, CI, contributor notes, and a draft
+GoReleaser config with publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -24,6 +25,8 @@ go run ./cmd/ssherpa edit set ALIAS --host HOST --dry-run
 go run ./cmd/ssherpa edit delete ALIAS --dry-run
 go run ./cmd/ssherpa jump --dest DEST --hop HOP --print
 go run ./cmd/ssherpa proxy --select ALIAS --port 1080 --print
+go run ./cmd/ssherpa authkeys list --json
+go run ./cmd/ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 go test ./...
 go vet ./...
 ```
@@ -36,7 +39,9 @@ git-user hiding, and basic parsed effective values.
 Config mutation uses dry-run diffs, backups for writes to existing
 files, temp-file atomic renames, permission preservation, and safeguards
 for multi-alias or wildcard `Host` stanzas. Jump/proxy flows are
-available. `authorized_keys` management has not been ported yet.
+available. `authorized_keys` management supports list, add, merge,
+replace, delete, dry-run diffs, backups, option preservation, cert key
+types, and `SSHERPA_AUTHORIZED_KEYS_PATH`.
 
 ## Examples
 
@@ -54,10 +59,18 @@ ssherpa edit delete prod --all-sources --dry-run
 ssherpa edit delete-all --filter scratch --dry-run
 ssherpa jump --dest prod --hop bastion --hop edge --print
 ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
+ssherpa authkeys list --json
+ssherpa authkeys add --key "ssh-ed25519 AAAA... user@host" --yes
+ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
+ssherpa authkeys merge --from-dir ./keys --dry-run
+ssherpa authkeys replace --from-dir ./keys --yes
+ssherpa authkeys delete --fingerprint SHA256:... --yes
 ```
 
 Default inventory reads `~/.ssh/config`. Use `--config PATH` for a
-different root.
+different root. Authorized key operations read
+`~/.ssh/authorized_keys` by default. Use `SSHERPA_AUTHORIZED_KEYS_PATH`
+or `--path PATH` to operate on a disposable file.
 
 ## Compatibility Reference
 

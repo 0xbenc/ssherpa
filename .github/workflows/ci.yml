@@ -72,6 +72,21 @@ jobs:
           go run ./cmd/ssherpa edit delete prod --config "$cfg" --dry-run
           go run ./cmd/ssherpa edit delete-all --config "$cfg" --dry-run
 
+      - name: Smoke test authorized_keys mutation
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          auth="$tmp/authorized_keys"
+          keys="$tmp/keys"
+          mkdir -p "$keys"
+          ed='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDb7Ccg8MuAtwJl6bsEjuCHWDtiRtivD3c1vzgbG7N1q alice@example'
+          ecdsa='ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDxfAByeMchlvCAqslVGYuzLS4lr02wvFIn2rz4Jp40NrbYkbazkdAtflVPDCCewMSI2I0ujG0JJeZEjYarX8sI= ecdsa@example'
+          printf '%s\n' "$ecdsa" > "$keys/ecdsa.pub"
+          go run ./cmd/ssherpa authkeys add --key "$ed" --path "$auth" --yes
+          go run ./cmd/ssherpa authkeys list --json --path "$auth"
+          go run ./cmd/ssherpa authkeys merge --from-dir "$keys" --path "$auth" --dry-run
+          go run ./cmd/ssherpa authkeys delete --fingerprint SHA256:HIw5mTiqXNXNO2h1Vh9R81VrAaKPj4DqNvb3oWElxwk --path "$auth" --yes
+
       - name: Build native binary
         run: go build -trimpath -o ssherpa ./cmd/ssherpa
 

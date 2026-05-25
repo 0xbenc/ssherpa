@@ -20,6 +20,7 @@ type WriteOptions struct {
 	DryRun       bool
 	Backup       bool
 	BackupPrefix string
+	Mode         os.FileMode
 	Now          func() time.Time
 }
 
@@ -67,6 +68,9 @@ func AtomicWriteFile(path string, data []byte, opts WriteOptions) (WriteResult, 
 			}
 			result.BackupPath = backup
 		}
+	}
+	if opts.Mode != 0 {
+		mode = opts.Mode.Perm()
 	}
 
 	if err := writeTempRename(result.Path, data, mode); err != nil {

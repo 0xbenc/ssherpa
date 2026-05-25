@@ -133,5 +133,5 @@ go run ./cmd/ssherpa edit delete-all --config "$cfg" --dry-run
   but replacing a `Host` line can normalize that line's spacing.
 - Effective OpenSSH values are still parsed locally rather than resolved
   with `ssh -G`.
-- `authorized_keys` management remains a later phase.
+- `authorized_keys` management is implemented in Phase 5.
 - Jump and proxy workflows are implemented in Phase 4.
