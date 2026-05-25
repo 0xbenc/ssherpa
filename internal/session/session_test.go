@@ -164,9 +164,9 @@ func TestRunSupervisedEscapeRopeTearsDownSession(t *testing.T) {
 	var stderr bytes.Buffer
 	stateDir := t.TempDir()
 	stdinPath := filepath.Join(t.TempDir(), "stdin")
-	// Open the overlay, then pull the escape rope. The child would otherwise
-	// block for 30s, so a prompt exit proves the rope tore it down.
-	input := []byte{OverlayHotkey, 'X'}
+	// Open the overlay, press X, then confirm with a second X. The child would
+	// otherwise block for 30s, so a prompt exit proves the rope tore it down.
+	input := []byte{OverlayHotkey, 'X', 'X'}
 	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
 		t.Fatalf("write stdin fixture: %v", err)
 	}
@@ -227,6 +227,93 @@ func TestRunSupervisedEscapeRopeTearsDownSession(t *testing.T) {
 	}
 	if !hasEvent {
 		t.Fatalf("events = %#v, want an %q event", records[0].Events, EscapeRopeReason)
+	}
+}
+
+func TestRunSupervisedEscapeRopePanicTapTearsDownSession(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	// Three rapid hotkey presses pull the rope immediately, no confirm. From a
+	// regular file these reads are instant, i.e. well within the panic window.
+	input := []byte{OverlayHotkey, OverlayHotkey, OverlayHotkey}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; sleep 30`}},
+			Metadata{TargetAlias: "prod"},
+			Options{StateDir: stateDir, Stdin: stdin, Stdout: &stdout, Stderr: &stderr, Env: []string{"PATH=" + os.Getenv("PATH")}, Now: fixedClock()},
+		)
+	}()
+
+	select {
+	case code := <-done:
+		if code != EscapeRopeExitCode {
+			t.Fatalf("RunSupervised returned %d, want escape rope code %d; stderr=%q", code, EscapeRopeExitCode, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("RunSupervised did not return after panic tap; stderr=%q", stderr.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].DisconnectReason != EscapeRopeReason {
+		t.Fatalf("records = %#v, want one with escape_rope reason", records)
+	}
+}
+
+func TestRunSupervisedEscapeRopeConfirmCancelKeepsSession(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	// Open overlay, X (arm), q (cancel the confirm), q (close overlay), then z
+	// is forwarded to the child, which reads one byte and exits normally. The
+	// rope must NOT fire.
+	input := []byte{OverlayHotkey, 'X', 'q', 'q', 'z'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; dd bs=1 count=1 of=/dev/null 2>/dev/null`}},
+			Metadata{TargetAlias: "prod"},
+			Options{StateDir: stateDir, Stdin: stdin, Stdout: &stdout, Stderr: &stderr, Env: []string{"PATH=" + os.Getenv("PATH")}, Now: fixedClock()},
+		)
+	}()
+
+	select {
+	case code := <-done:
+		if code == EscapeRopeExitCode {
+			t.Fatalf("RunSupervised returned escape rope code after cancel; want normal exit")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("RunSupervised did not return after confirm cancel; stderr=%q", stderr.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].DisconnectReason != "" {
+		t.Fatalf("records = %#v, want one with no disconnect reason", records)
 	}
 }
 

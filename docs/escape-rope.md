@@ -14,6 +14,12 @@ In any supervised session (`ssherpa --select`, `ssherpa jump`, …):
 
 1. Press **`Ctrl-]`** to open the session overlay.
 2. Press **`X`** — "escape rope (quit all layers)".
+3. Press **`X`** again to confirm (any other key cancels).
+
+Or, when a layer is wedged and you cannot read the overlay, **mash
+`Ctrl-]` three times quickly** (within ~400 ms) to pull the rope
+immediately with no confirm. A single, settled `Ctrl-]` press still just
+opens/closes the overlay.
 
 The outermost session tears down immediately. ssherpa prints
 
@@ -103,6 +109,15 @@ reachable.**
   `SendEnv`/`AcceptEnv SSHERPA_*` is configured, so the overlay's view may
   not see remote depth. The rope's teardown is physical and does **not**
   depend on this.
+
+## Terminal safety
+
+`forwardSignals` catches `SIGTERM`/`SIGHUP`/`SIGQUIT` aimed at the
+supervisor and tears down the child group, guaranteeing the normal exit
+path (and its deferred terminal restore) runs. `SIGQUIT` in particular
+would otherwise terminate ssherpa with the tty stuck in raw mode. `SIGKILL`
+remains uncatchable, so a hard kill of ssherpa can still leave a raw
+terminal — run `reset` if that happens.
 
 ## Optional hardening (not yet implemented)
 

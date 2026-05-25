@@ -361,7 +361,7 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 		if n > 0 {
 			switch {
 			case buf[0] == OverlayHotkey:
-				showSessionOverlay(stdin, output, stateDir, currentID, theme, pullRope)
+				showSessionOverlay(stdin, output, stateDir, currentID, theme, pullRope, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
 				showComposer(stdin, output, ptmx, composer, theme)
 			default:
@@ -379,12 +379,23 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 	}
 }
 
-func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme, pullRope func()) {
+func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme, pullRope func(), openedAt time.Time) {
 	output.mu.Lock()
 	defer output.mu.Unlock()
 
 	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
-	defer clearSessionOverlay(output.w, frame)
+	defer func() { clearSessionOverlay(output.w, frame) }()
+
+	pull := func() {
+		if pullRope != nil {
+			pullRope()
+		}
+	}
+
+	// Panic-tap state: rapid repeated hotkey presses pull the rope immediately.
+	taps := 1
+	lastTap := openedAt
+	confirming := false
 
 	var buf [1]byte
 	for {
@@ -395,16 +406,44 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 		if n == 0 {
 			continue
 		}
-		switch buf[0] {
-		case OverlayHotkey, 'q', 'Q', '\r', '\n', 0x1b, 0x03:
-			return
-		case 'x', 'X':
-			// Escape rope: tear down this session and let the SIGHUP cascade
-			// collapse every layer below it.
-			if pullRope != nil {
-				pullRope()
+		key := buf[0]
+
+		if confirming {
+			// Deliberate path: a second uppercase X confirms; anything else
+			// cancels back to the session map.
+			if key == 'X' {
+				pull()
+				return
 			}
+			confirming = false
+			clearSessionOverlay(output.w, frame)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
+			continue
+		}
+
+		if key == OverlayHotkey {
+			if time.Since(lastTap) <= escapeRopePanicWindow {
+				taps++
+				lastTap = time.Now()
+				if taps >= escapeRopePanicTaps {
+					pull()
+					return
+				}
+				continue
+			}
+			return // a single, settled hotkey press closes the overlay
+		}
+		// Any other key breaks a panic-tap streak.
+		lastTap = time.Time{}
+
+		switch key {
+		case 'q', 'Q', '\r', '\n', 0x1b, 0x03:
 			return
+		case 'X':
+			// Escape rope: confirm before tearing down every layer.
+			confirming = true
+			clearSessionOverlay(output.w, frame)
+			frame = drawEscapeConfirm(output.w, stdin, theme)
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
 			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
@@ -412,11 +451,42 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 	}
 }
 
+func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overlayFrame {
+	lines := []string{
+		overlayTitle("ssherpa escape rope", theme),
+		theme.Style(termstyle.RoleWarning, "Disconnect ALL nested sessions and return to the outermost shell?"),
+		overlayHelp("press X to confirm   any other key cancels", theme),
+	}
+	return drawBottomFrame(w, stdin, lines)
+}
+
+// drawBottomFrame renders lines pinned to the bottom of the terminal, saving
+// and hiding the cursor like the other overlays. When stdout is not a terminal
+// it falls back to plain inline printing.
+func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
+	width, height, terminalOutput := overlaySize(stdin)
+	if !terminalOutput {
+		fmt.Fprintln(w)
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+		return overlayFrame{}
+	}
+	visibleLines := min(len(lines), max(3, height-2))
+	startRow := max(1, height-visibleLines+1)
+	fmt.Fprint(w, "\x1b7\x1b[?25l")
+	for i := 0; i < visibleLines; i++ {
+		row := startRow + i
+		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K%s", row, truncateOverlayLine(lines[i], width))
+	}
+	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
+}
+
 func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
 	lines := sessionOverlayLines(stateDir, currentID)
 	lines = styleOverlayLines(lines, theme)
-	lines = append(lines, "", overlayHelp(fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope (quit all layers)   local only", OverlayHotkeyName), theme))
+	lines = append(lines, "", overlayHelp(fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope (quit all layers, confirm)   %sx3 panic   local only", OverlayHotkeyName, OverlayHotkeyName), theme))
 
 	if !terminalOutput {
 		fmt.Fprintln(w)
@@ -616,6 +686,12 @@ const (
 	// we escalate from SIGHUP to SIGKILL quickly to guarantee a prompt local
 	// return even if the ssh client ignores the hangup.
 	escapeRopeKillGrace = 750 * time.Millisecond
+	// Mashing the overlay hotkey escapeRopePanicTaps times within
+	// escapeRopePanicWindow of each press pulls the rope immediately, skipping
+	// the confirm step — a blind panic exit for when a layer is wedged and you
+	// cannot read the overlay. A single, settled press still just closes it.
+	escapeRopePanicWindow = 400 * time.Millisecond
+	escapeRopePanicTaps   = 3
 )
 
 // signalSessionGroup signals the child's whole process group when possible,
@@ -841,7 +917,7 @@ func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd) func() {
 	resizePTY(stdin, ptmx)
 
 	sigCh := make(chan os.Signal, 8)
-	signal.Notify(sigCh, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigCh, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -850,12 +926,30 @@ func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd) func() {
 				if sig == nil {
 					continue
 				}
-				if sig == syscall.SIGWINCH {
+				switch sig {
+				case syscall.SIGWINCH:
 					resizePTY(stdin, ptmx)
-					continue
-				}
-				if proc.Process != nil {
-					_ = proc.Process.Signal(sig)
+				case syscall.SIGINT:
+					if proc.Process != nil {
+						_ = proc.Process.Signal(sig)
+					}
+				case syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT:
+					// The supervisor was asked to terminate. Tear down the whole
+					// child process group and guarantee we exit so the deferred
+					// terminal restore actually runs — SIGQUIT in particular would
+					// otherwise terminate ssherpa with the tty stuck in raw mode.
+					if proc.Process != nil {
+						signalSessionGroup(proc.Process, syscall.SIGHUP)
+						go func() {
+							timer := time.NewTimer(escapeRopeKillGrace)
+							defer timer.Stop()
+							select {
+							case <-done:
+							case <-timer.C:
+								signalSessionGroup(proc.Process, syscall.SIGKILL)
+							}
+						}()
+					}
 				}
 			case <-done:
 				return
