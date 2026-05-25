@@ -21,6 +21,17 @@ const (
 	testECDSAKey   = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDxfAByeMchlvCAqslVGYuzLS4lr02wvFIn2rz4Jp40NrbYkbazkdAtflVPDCCewMSI2I0ujG0JJeZEjYarX8sI= ecdsa@example"
 )
 
+// TestMain keeps the CLI tests hermetic with respect to terminal detection.
+// resolveSSHCommand reads the ambient environment, so a developer running the
+// suite inside Kitty (KITTY_PID/KITTY_WINDOW_ID set) would otherwise resolve
+// "kitten ssh" instead of plain "ssh" and break the [print] assertions. Kitty
+// detection itself is covered hermetically in the sshcmd package; here we just
+// pin the base ssh command. SSHERPA_NO_KITTY is honored by sshcmd.Resolve.
+func TestMain(m *testing.M) {
+	os.Setenv("SSHERPA_NO_KITTY", "1")
+	os.Exit(m.Run())
+}
+
 func TestRunVersion(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
