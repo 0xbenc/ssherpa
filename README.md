@@ -4,9 +4,10 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 0 foundation. The repository has a Go module, a
-tested CLI skeleton, `ssherpa version`, CI, contributor notes, and a
-draft GoReleaser config with publishing disabled.
+Current status: Phase 1 inventory. The repository has a Go module,
+tested read-only SSH config inventory, `ssherpa list`, `ssherpa show`,
+CI, contributor notes, and a draft GoReleaser config with publishing
+disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -14,13 +15,31 @@ The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
 ```sh
 go run ./cmd/ssherpa version
+go run ./cmd/ssherpa list --json
+go run ./cmd/ssherpa show ALIAS --json
 go test ./...
 go vet ./...
 ```
 
-`ssherpa` without a command currently prints Phase 0 help. SSH alias
-inventory, the picker, connection execution, config mutation, jump/proxy
-flows, and `authorized_keys` management have not been ported yet.
+`ssherpa` without a command currently prints help. SSH config inventory
+is read-only and supports `Include`, source positions, duplicate
+warnings, wildcard hiding, git-user hiding, and basic parsed effective
+values.
+
+The picker, SSH execution, config mutation, jump/proxy flows, and
+`authorized_keys` management have not been ported yet.
+
+## Inventory Examples
+
+```sh
+ssherpa list --json
+ssherpa list --json --config ~/.ssh/config.work
+ssherpa list --all --filter prod --user alice
+ssherpa show prod --json
+```
+
+Default inventory reads `~/.ssh/config`. Use `--config PATH` for a
+different root.
 
 ## Compatibility Reference
 

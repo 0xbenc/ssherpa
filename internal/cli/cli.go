@@ -1,22 +1,36 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/sshconfig"
 )
 
 const usage = `Usage:
-  ssherpa [command]
+  ssherpa [command] [flags]
 
 Available Commands:
+  list       List SSH aliases from OpenSSH config
+  show       Show one SSH alias from OpenSSH config
   version    Print build version information
   help       Show this help
 
-Phase 0:
-  The Go port foundation is present, but SSH alias workflows are not
-  implemented yet. The Bash Zoo implementation remains the compatibility
-  reference for future phases.
+Inventory Flags:
+  --json             Emit JSON output
+  --all              Include wildcard and negated Host patterns
+  --filter SUBSTR    Filter aliases by substring
+  --user USER        Filter aliases by parsed user
+  --config PATH      Read this SSH config root instead of ~/.ssh/config
+
+Phase 1:
+  SSH config inventory is read-only. Picker, SSH execution, config
+  mutation, and authorized_keys management are not implemented yet.
 `
 
 type BuildInfo struct {
@@ -43,6 +57,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 	}
 
 	switch args[0] {
+	case "list":
+		return runList(args[1:], stdout, stderr)
+	case "show":
+		return runShow(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		if len(args) > 1 {
 			fmt.Fprintf(stderr, "ssherpa: version does not accept arguments: %s\n", strings.Join(args[1:], " "))
@@ -62,6 +80,305 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		printUsage(stderr)
 		return 1
 	}
+}
+
+type inventoryFlags struct {
+	All    bool
+	JSON   bool
+	Filter string
+	User   string
+	Config string
+}
+
+type graphSummary struct {
+	RootPath string                  `json:"root_path"`
+	Files    []sshconfig.File        `json:"files"`
+	Includes []sshconfig.IncludeEdge `json:"includes,omitempty"`
+}
+
+type listOutput struct {
+	Config      graphSummary           `json:"config"`
+	Aliases     []hostlist.Alias       `json:"aliases"`
+	Diagnostics []sshconfig.Diagnostic `json:"diagnostics,omitempty"`
+}
+
+type showOutput struct {
+	Config      graphSummary           `json:"config"`
+	Alias       *hostlist.Alias        `json:"alias"`
+	Diagnostics []sshconfig.Diagnostic `json:"diagnostics,omitempty"`
+}
+
+func runList(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		printUsage(stdout)
+		return 0
+	}
+
+	flags, rest, ok := parseInventoryFlags(args, stderr)
+	if !ok {
+		return 1
+	}
+	if len(rest) != 0 {
+		fmt.Fprintf(stderr, "ssherpa: list does not accept positional arguments: %s\n", strings.Join(rest, " "))
+		return 1
+	}
+
+	graph, inventory, err := loadInventory(flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 2
+	}
+
+	if flags.JSON {
+		writeJSON(stdout, listOutput{
+			Config:      summarizeGraph(graph),
+			Aliases:     inventory.Aliases,
+			Diagnostics: inventory.Diagnostics,
+		})
+		return 0
+	}
+
+	for _, alias := range inventory.Aliases {
+		fmt.Fprintf(stdout, "%s\t%s\n", alias.Name, displayAlias(alias))
+	}
+	return 0
+}
+
+func runShow(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		printUsage(stdout)
+		return 0
+	}
+
+	flags, rest, ok := parseInventoryFlags(args, stderr)
+	if !ok {
+		return 1
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(stderr, "ssherpa: show requires exactly one alias")
+		return 1
+	}
+
+	graph, err := loadGraph(flags.Config)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 2
+	}
+	inventory := hostlist.Build(graph, hostlist.Options{All: true, IgnoreGitUser: false})
+
+	aliasName := rest[0]
+	alias := findAlias(inventory.Aliases, aliasName)
+	if flags.JSON {
+		writeJSON(stdout, showOutput{
+			Config:      summarizeGraph(graph),
+			Alias:       alias,
+			Diagnostics: inventory.Diagnostics,
+		})
+		if alias == nil {
+			return 2
+		}
+		return 0
+	}
+
+	if alias == nil {
+		fmt.Fprintf(stderr, "ssherpa: alias %q not found\n", aliasName)
+		return 2
+	}
+
+	printAlias(stdout, *alias)
+	return 0
+}
+
+func parseInventoryFlags(args []string, stderr io.Writer) (inventoryFlags, []string, bool) {
+	var flags inventoryFlags
+	var rest []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			rest = append(rest, args[i+1:]...)
+			return flags, rest, true
+		case arg == "--json":
+			flags.JSON = true
+		case arg == "--all":
+			flags.All = true
+		case arg == "--filter":
+			value, ok := nextArg(args, &i, stderr, "--filter")
+			if !ok {
+				return flags, nil, false
+			}
+			flags.Filter = value
+		case strings.HasPrefix(arg, "--filter="):
+			flags.Filter = strings.TrimPrefix(arg, "--filter=")
+		case arg == "--user":
+			value, ok := nextArg(args, &i, stderr, "--user")
+			if !ok {
+				return flags, nil, false
+			}
+			flags.User = value
+		case strings.HasPrefix(arg, "--user="):
+			flags.User = strings.TrimPrefix(arg, "--user=")
+		case arg == "--config":
+			value, ok := nextArg(args, &i, stderr, "--config")
+			if !ok {
+				return flags, nil, false
+			}
+			flags.Config = value
+		case strings.HasPrefix(arg, "--config="):
+			flags.Config = strings.TrimPrefix(arg, "--config=")
+		case arg == "--help" || arg == "-h":
+			printUsage(stderr)
+			return flags, nil, false
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(stderr, "ssherpa: unknown flag %q\n", arg)
+			return flags, nil, false
+		default:
+			rest = append(rest, arg)
+		}
+	}
+
+	return flags, rest, true
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func nextArg(args []string, i *int, stderr io.Writer, flag string) (string, bool) {
+	if *i+1 >= len(args) {
+		fmt.Fprintf(stderr, "ssherpa: %s requires a value\n", flag)
+		return "", false
+	}
+	*i = *i + 1
+	return args[*i], true
+}
+
+func loadInventory(flags inventoryFlags) (*sshconfig.Graph, hostlist.Inventory, error) {
+	graph, err := loadGraph(flags.Config)
+	if err != nil {
+		return nil, hostlist.Inventory{}, err
+	}
+
+	inventory := hostlist.Build(graph, hostlist.Options{
+		All:           flags.All,
+		Filter:        flags.Filter,
+		User:          flags.User,
+		IgnoreGitUser: ignoreGitUserFromEnv(),
+	})
+	return graph, inventory, nil
+}
+
+func loadGraph(configPath string) (*sshconfig.Graph, error) {
+	rootPath, home, err := rootAndHome(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	graph, err := sshconfig.Load(sshconfig.LoadOptions{RootPath: rootPath, HomeDir: home})
+	if err != nil {
+		return nil, err
+	}
+	return graph, nil
+}
+
+func rootAndHome(configPath string) (string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve home directory: %w", err)
+	}
+
+	if configPath != "" {
+		if !filepath.IsAbs(configPath) {
+			configPath, err = filepath.Abs(configPath)
+			if err != nil {
+				return "", "", fmt.Errorf("resolve config path: %w", err)
+			}
+		}
+		return filepath.Clean(configPath), home, nil
+	}
+
+	return filepath.Join(home, ".ssh", "config"), home, nil
+}
+
+func ignoreGitUserFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SSHERPA_IGNORE_USER_GIT"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func summarizeGraph(graph *sshconfig.Graph) graphSummary {
+	return graphSummary{
+		RootPath: graph.RootPath,
+		Files:    append([]sshconfig.File(nil), graph.Files...),
+		Includes: append([]sshconfig.IncludeEdge(nil), graph.Includes...),
+	}
+}
+
+func findAlias(aliases []hostlist.Alias, name string) *hostlist.Alias {
+	for i := range aliases {
+		if aliases[i].Name == name {
+			return &aliases[i]
+		}
+	}
+	return nil
+}
+
+func displayAlias(alias hostlist.Alias) string {
+	var b strings.Builder
+	if alias.User != "" {
+		b.WriteString(alias.User)
+		b.WriteByte('@')
+	}
+	if alias.HostName != "" {
+		b.WriteString(alias.HostName)
+	}
+	if alias.Port != "" {
+		b.WriteByte(':')
+		b.WriteString(alias.Port)
+	}
+	if len(alias.IdentityFiles) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('[')
+		b.WriteString(strings.Join(alias.IdentityFiles, ", "))
+		b.WriteByte(']')
+	}
+	if b.Len() == 0 {
+		return "(no HostName in config)"
+	}
+	return b.String()
+}
+
+func printAlias(w io.Writer, alias hostlist.Alias) {
+	fmt.Fprintf(w, "Name: %s\n", alias.Name)
+	fmt.Fprintf(w, "Source: %s:%d\n", alias.SourcePath, alias.SourceLine)
+	fmt.Fprintf(w, "Patterns: %s\n", strings.Join(alias.RawPatterns, " "))
+	fmt.Fprintf(w, "Target: %s\n", displayAlias(alias))
+	if alias.IsPattern {
+		fmt.Fprintln(w, "Pattern: true")
+	}
+	if alias.IsConditional {
+		fmt.Fprintln(w, "Conditional: true")
+	}
+	for _, warning := range alias.Warnings {
+		fmt.Fprintf(w, "Warning: %s\n", warning)
+	}
+}
+
+func writeJSON(w io.Writer, value any) {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(value)
 }
 
 func printVersion(w io.Writer, build BuildInfo) {

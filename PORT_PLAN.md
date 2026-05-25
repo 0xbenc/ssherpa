@@ -66,7 +66,8 @@ Source files reviewed:
 Current repository state:
 
 - `ssherpa` is a new standalone repo with license, planning,
-  development bootstrap docs, and the Phase 0 Go module/CLI foundation.
+  development bootstrap docs, the Phase 0 Go module/CLI foundation, and
+  Phase 1 read-only SSH config inventory commands.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.

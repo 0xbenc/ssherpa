@@ -89,7 +89,7 @@ GOMODCACHE=/home/xbenc/go/pkg/mod
 If a shell already had a stale command cache, run `hash -r` for bash or
 `rehash` for zsh.
 
-## Phase 0 Checks
+## Local Checks
 
 Run the same baseline checks as CI:
 
@@ -98,6 +98,7 @@ gofmt -w ./cmd ./internal
 go vet ./...
 go test ./...
 go run ./cmd/ssherpa version
+go run ./cmd/ssherpa list --json --config internal/sshconfig/testdata/matrix/config
 go build -trimpath -o ssherpa ./cmd/ssherpa
 ```
 

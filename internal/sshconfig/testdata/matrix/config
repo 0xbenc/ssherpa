@@ -1,0 +1,23 @@
+# root config
+Include config.d/*.conf
+Include missing/*.conf
+
+Host prod
+  HostName prod.example.com
+  User alice
+  Port 2222
+  IdentityFile "~/.ssh/prod key" # quoted value and inline comment
+  IdentityFile ~/.ssh/prod_ed25519
+
+Host *.example.com !blocked.example.com
+  User wildcard
+
+Match exec "false"
+  Include conditional.conf
+
+Host *
+  Port 22
+
+Host prod
+  HostName duplicate.example.com
+  User duplicate
