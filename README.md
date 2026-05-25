@@ -59,6 +59,9 @@ grouped actions, host rows, a responsive detail preview on wider
 terminals, and a Sessions route map entry. While inside a
 supervised session, press `Ctrl-]` to open the local active-session map
 overlay; press `Ctrl-]`, `q`, or `Esc` to return to the remote session.
+From the overlay, press `X` to pull the **escape rope**, which tears down
+every nested supervised session at once and drops you back at the
+outermost shell (exit code 120); see `docs/escape-rope.md`.
 `ssherpa session map` shows active sessions by default; use
 `ssherpa session map --all` only when you want historical exited records
 in the lineage view. Press `Ctrl-G` to open the local queued-input

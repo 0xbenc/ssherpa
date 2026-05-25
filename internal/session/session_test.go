@@ -159,6 +159,68 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedEscapeRopeTearsDownSession(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	// Open the overlay, then pull the escape rope. The child would otherwise
+	// block for 30s, so a prompt exit proves the rope tore it down.
+	input := []byte{OverlayHotkey, 'X'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; sleep 30`}},
+			Metadata{TargetAlias: "prod"},
+			Options{
+				StateDir: stateDir,
+				Stdin:    stdin,
+				Stdout:   &stdout,
+				Stderr:   &stderr,
+				Env:      []string{"PATH=" + os.Getenv("PATH")},
+				Now:      fixedClock(),
+			},
+		)
+	}()
+
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("RunSupervised did not return after escape rope; stderr=%q", stderr.String())
+	}
+
+	if code != EscapeRopeExitCode {
+		t.Fatalf("RunSupervised returned %d, want escape rope code %d; stderr=%q", code, EscapeRopeExitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "escape rope pulled") {
+		t.Fatalf("stderr = %q, want escape rope notice", stderr.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	if records[0].DisconnectReason != EscapeRopeReason {
+		t.Fatalf("disconnect reason = %q, want %q", records[0].DisconnectReason, EscapeRopeReason)
+	}
+	if records[0].Status() != "exited" {
+		t.Fatalf("record status = %q, want exited", records[0].Status())
+	}
+}
+
 func TestRunSupervisedComposerSendsBufferedLine(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

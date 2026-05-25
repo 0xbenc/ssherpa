@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,16 @@ const (
 	ComposerHotkeyName     = "Ctrl-G"
 	ComposerSendHotkey     = byte(0x07)
 	ComposerSendHotkeyName = "Ctrl-G"
+
+	// EscapeRopeReason marks a session that was torn down by the escape rope
+	// (the "disconnect every layer" action in the session overlay). It is
+	// recorded as the session's DisconnectReason.
+	EscapeRopeReason = "escape_rope"
+	// EscapeRopeExitCode is the exit code RunSupervised returns when the escape
+	// rope is pulled, so a wrapper can distinguish a deliberate bail-out from a
+	// normal logout or an ssh error (255). The value is outside the usual
+	// shell/signal ranges and ssherpa's own 0/1/255 codes.
+	EscapeRopeExitCode = 120
 )
 
 type Metadata struct {
@@ -156,10 +167,29 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		return 1
 	}
 
+	// pullRope tears down this (outermost) supervised session and, by killing
+	// the ssh client, drops its connection so the remote sshd HUPs the next
+	// layer down — collapsing every nested session from the top. See
+	// docs/escape-rope.md.
+	var ropePulled atomic.Bool
+	pullRope := func() {
+		if !ropePulled.CompareAndSwap(false, true) {
+			return
+		}
+		recordMu.Lock()
+		record.DisconnectReason = EscapeRopeReason
+		_ = state.WriteRecord(stateDir, record)
+		recordMu.Unlock()
+		if proc.Process != nil {
+			_ = proc.Process.Signal(syscall.SIGHUP)
+			scheduleForceKill(context.Background(), proc.Process)
+		}
+	}
+
 	output := &lockedWriter{w: stdout}
 	done := make(chan struct{})
 	outputDone := make(chan struct{})
-	go copyInput(ptmx, stdin, output, stateDir, record.ID, opts.Composer, theme, done)
+	go copyInput(ptmx, stdin, output, stateDir, record.ID, opts.Composer, theme, pullRope, done)
 	go func() {
 		_, _ = io.Copy(output, ptmx)
 		close(outputDone)
@@ -183,6 +213,10 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	<-outputDone
 
 	exitCode := exitCodeFromError(waitErr)
+	if ropePulled.Load() {
+		exitCode = EscapeRopeExitCode
+		fmt.Fprint(stderr, "\r\nssherpa: escape rope pulled — disconnecting all downstream sessions\r\n")
+	}
 	endedAt := now().UTC()
 	recordMu.Lock()
 	record.EndedAt = &endedAt
@@ -296,7 +330,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, done <-chan struct{}) {
+func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, pullRope func(), done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -306,7 +340,7 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 		if n > 0 {
 			switch {
 			case buf[0] == OverlayHotkey:
-				showSessionOverlay(stdin, output, stateDir, currentID, theme)
+				showSessionOverlay(stdin, output, stateDir, currentID, theme, pullRope)
 			case composer.enabled() && buf[0] == composer.hotkey():
 				showComposer(stdin, output, ptmx, composer, theme)
 			default:
@@ -324,7 +358,7 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 	}
 }
 
-func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme) {
+func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme, pullRope func()) {
 	output.mu.Lock()
 	defer output.mu.Unlock()
 
@@ -343,6 +377,13 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 		switch buf[0] {
 		case OverlayHotkey, 'q', 'Q', '\r', '\n', 0x1b, 0x03:
 			return
+		case 'x', 'X':
+			// Escape rope: tear down this session and let the SIGHUP cascade
+			// collapse every layer below it.
+			if pullRope != nil {
+				pullRope()
+			}
+			return
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
 			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
@@ -354,7 +395,7 @@ func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID 
 	width, height, terminalOutput := overlaySize(stdin)
 	lines := sessionOverlayLines(stateDir, currentID)
 	lines = styleOverlayLines(lines, theme)
-	lines = append(lines, "", overlayHelp(fmt.Sprintf("%s/q/Esc close   r refresh   local only", OverlayHotkeyName), theme))
+	lines = append(lines, "", overlayHelp(fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope (quit all layers)   local only", OverlayHotkeyName), theme))
 
 	if !terminalOutput {
 		fmt.Fprintln(w)
