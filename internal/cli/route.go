@@ -43,7 +43,7 @@ type connectOptions struct {
 func (flags connectFlags) connectOptions() connectOptions {
 	return connectOptions{
 		Print:     flags.Print,
-		Supervise: flags.Supervise,
+		Supervise: !flags.Direct,
 		StateDir:  flags.StateDir,
 	}
 }
@@ -186,6 +186,10 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
 		case arg == "--supervise":
 			flags.Supervise = true
+			flags.Direct = false
+		case arg == "--direct" || arg == "--no-supervise":
+			flags.Direct = true
+			flags.Supervise = false
 		case arg == "--state-dir":
 			value, ok := nextArg(args, &i, stderr, "--state-dir")
 			if !ok {
@@ -291,6 +295,10 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
 		case arg == "--supervise":
 			flags.Supervise = true
+			flags.Direct = false
+		case arg == "--direct" || arg == "--no-supervise":
+			flags.Direct = true
+			flags.Supervise = false
 		case arg == "--state-dir":
 			value, ok := nextArg(args, &i, stderr, "--state-dir")
 			if !ok {
@@ -602,8 +610,11 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	if flags.SSHBinary != "" {
 		args = append(args, "--ssh-binary", flags.SSHBinary)
 	}
-	if flags.Supervise {
+	if flags.Supervise && !flags.Direct {
 		args = append(args, "--supervise")
+	}
+	if flags.Direct {
+		args = append(args, "--direct")
 	}
 	if flags.StateDir != "" {
 		args = append(args, "--state-dir", flags.StateDir)

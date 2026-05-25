@@ -6,14 +6,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0xbenc/ssherpa/internal/sessionview"
 	"github.com/0xbenc/ssherpa/internal/state"
 )
 
 const sessionUsage = `Usage:
   ssherpa session list [--json] [--state-dir PATH]
+  ssherpa session map [--json] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
   ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
 `
+
+type sessionMapOutput struct {
+	StateDir string              `json:"state_dir"`
+	Total    int                 `json:"total"`
+	Active   int                 `json:"active"`
+	Roots    []state.SessionNode `json:"roots"`
+}
 
 type sessionFlags struct {
 	JSON      bool
@@ -32,6 +41,8 @@ func runSession(args []string, stdout io.Writer, stderr io.Writer) int {
 	switch args[0] {
 	case "list":
 		return runSessionList(args[1:], stdout, stderr)
+	case "map":
+		return runSessionMap(args[1:], stdout, stderr)
 	case "show":
 		return runSessionShow(args[1:], stdout, stderr)
 	case "prune":
@@ -67,16 +78,43 @@ func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
 		writeJSON(stdout, records)
 		return 0
 	}
-	for _, record := range records {
-		fmt.Fprintf(stdout, "%s\t%s\tdepth=%d\ttarget=%s\troute=%s\tstarted=%s\n",
-			record.ID,
-			record.Status(),
-			record.Depth,
-			defaultString(record.TargetAlias, "-"),
-			formatRoute(record.Route),
-			record.StartedAt.Local().Format(time.RFC3339),
-		)
+	sessionview.WriteList(stdout, stateDir, records)
+	return 0
+}
+
+func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags, ok := parseSessionFlags(args, stderr, false)
+	if !ok {
+		return 1
 	}
+	if len(flags.Rest) != 0 {
+		fmt.Fprintf(stderr, "ssherpa: session map does not accept positional arguments: %s\n", strings.Join(flags.Rest, " "))
+		return 1
+	}
+
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: map sessions: %v\n", err)
+		return 1
+	}
+
+	roots := state.BuildSessionForest(records)
+	active, _ := sessionview.CountStatuses(records)
+	if flags.JSON {
+		writeJSON(stdout, sessionMapOutput{
+			StateDir: stateDir,
+			Total:    len(records),
+			Active:   active,
+			Roots:    roots,
+		})
+		return 0
+	}
+	sessionview.WriteMap(stdout, stateDir, records)
 	return 0
 }
 
@@ -212,8 +250,8 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 	fmt.Fprintf(stdout, "status:\t%s\n", record.Status())
 	fmt.Fprintf(stdout, "target:\t%s\n", defaultString(record.TargetAlias, "-"))
 	fmt.Fprintf(stdout, "depth:\t%d\n", record.Depth)
-	fmt.Fprintf(stdout, "route:\t%s\n", formatRoute(record.Route))
-	fmt.Fprintf(stdout, "hops:\t%s\n", formatRoute(record.Hops))
+	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatRoute(record.Route))
+	fmt.Fprintf(stdout, "hops:\t%s\n", sessionview.FormatRoute(record.Hops))
 	fmt.Fprintf(stdout, "started:\t%s\n", record.StartedAt.Local().Format(time.RFC3339))
 	fmt.Fprintf(stdout, "ended:\t%s\n", formatOptionalTime(record.EndedAt))
 	if record.ExitCode != nil {
@@ -223,13 +261,6 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 	fmt.Fprintf(stdout, "ssh_pid:\t%d\n", record.SSHPID)
 	fmt.Fprintf(stdout, "runner:\t%s\n", record.RunnerMode)
 	fmt.Fprintf(stdout, "argv:\t%s\n", strings.Join(record.SSHArgv, " "))
-}
-
-func formatRoute(route []string) string {
-	if len(route) == 0 {
-		return "-"
-	}
-	return strings.Join(route, " -> ")
 }
 
 func formatOptionalTime(value *time.Time) string {

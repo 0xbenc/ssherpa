@@ -112,12 +112,12 @@ func ListRecords(dir string) ([]SessionRecord, error) {
 	entries, err := os.ReadDir(SessionsDir(dir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return []SessionRecord{}, nil
 		}
 		return nil, fmt.Errorf("read sessions directory: %w", err)
 	}
 
-	var records []SessionRecord
+	records := []SessionRecord{}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -138,6 +138,11 @@ func ListRecords(dir string) ([]SessionRecord, error) {
 type PruneResult struct {
 	Records []SessionRecord `json:"records"`
 	DryRun  bool            `json:"dry_run"`
+}
+
+type SessionNode struct {
+	Record   SessionRecord `json:"record"`
+	Children []SessionNode `json:"children,omitempty"`
 }
 
 func PruneRecords(dir string, olderThan time.Duration, now time.Time, dryRun bool) (PruneResult, error) {
@@ -166,8 +171,85 @@ func PruneRecords(dir string, olderThan time.Duration, now time.Time, dryRun boo
 	return result, nil
 }
 
+func BuildSessionForest(records []SessionRecord) []SessionNode {
+	byID := map[string]SessionRecord{}
+	for _, record := range records {
+		if record.ID != "" {
+			byID[record.ID] = record
+		}
+	}
+
+	childrenByParent := map[string][]SessionRecord{}
+	var roots []SessionRecord
+	for _, record := range records {
+		if record.ParentID == "" || record.ParentID == record.ID {
+			roots = append(roots, record)
+			continue
+		}
+		if _, ok := byID[record.ParentID]; !ok {
+			roots = append(roots, record)
+			continue
+		}
+		childrenByParent[record.ParentID] = append(childrenByParent[record.ParentID], record)
+	}
+
+	sortSessionRecords(roots)
+	for parentID := range childrenByParent {
+		sortSessionRecords(childrenByParent[parentID])
+	}
+
+	visited := map[string]bool{}
+	forest := []SessionNode{}
+	for _, root := range roots {
+		if root.ID != "" && visited[root.ID] {
+			continue
+		}
+		forest = append(forest, buildSessionNode(root, childrenByParent, visited, map[string]bool{}))
+	}
+
+	sorted := append([]SessionRecord(nil), records...)
+	sortSessionRecords(sorted)
+	for _, record := range sorted {
+		if record.ID == "" || visited[record.ID] {
+			continue
+		}
+		forest = append(forest, buildSessionNode(record, childrenByParent, visited, map[string]bool{}))
+	}
+	return forest
+}
+
 func SessionsDir(dir string) string {
 	return filepath.Join(filepath.Clean(dir), "sessions")
+}
+
+func buildSessionNode(record SessionRecord, childrenByParent map[string][]SessionRecord, visited map[string]bool, ancestry map[string]bool) SessionNode {
+	node := SessionNode{Record: record}
+	if record.ID == "" || ancestry[record.ID] {
+		return node
+	}
+	visited[record.ID] = true
+	nextAncestry := map[string]bool{}
+	for id, ok := range ancestry {
+		nextAncestry[id] = ok
+	}
+	nextAncestry[record.ID] = true
+
+	for _, child := range childrenByParent[record.ID] {
+		if child.ID != "" && nextAncestry[child.ID] {
+			continue
+		}
+		node.Children = append(node.Children, buildSessionNode(child, childrenByParent, visited, nextAncestry))
+	}
+	return node
+}
+
+func sortSessionRecords(records []SessionRecord) {
+	sort.SliceStable(records, func(i int, j int) bool {
+		if records[i].StartedAt.Equal(records[j].StartedAt) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].StartedAt.Before(records[j].StartedAt)
+	})
 }
 
 func RecordPath(dir string, id string) string {

@@ -115,10 +115,16 @@ printf 'fake supervised ssh: %s\n' "$*"
 exit 0
 EOF
 chmod +x "$tmp/fake-ssh"
-go run ./cmd/ssherpa --supervise --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
+go run ./cmd/ssherpa --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
 go run ./cmd/ssherpa session list --json --state-dir "$tmp/state"
+go run ./cmd/ssherpa session map --state-dir "$tmp/state"
 go build -trimpath -o ssherpa ./cmd/ssherpa
 ```
+
+For manual supervised-session UX testing, connect normally and press
+`Ctrl-]` during the session. The local session map overlay should open;
+press `Ctrl-]`, `q`, or `Esc` to return to the remote PTY. Use
+`--direct` only when testing the unsupervised runner.
 
 The native build output `ssherpa` is ignored by git.
 

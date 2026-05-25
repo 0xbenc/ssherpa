@@ -67,7 +67,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 6:")
+	assertContains(t, stdout.String(), "Phase 7:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -130,7 +130,7 @@ Host prod
 	assertContains(t, stdout.String(), "[print] ssh prod --help")
 }
 
-func TestRunConnectExecutesFakeSSH(t *testing.T) {
+func TestRunConnectDirectExecutesFakeSSH(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	config := writeConfig(t, `
@@ -139,7 +139,7 @@ Host prod
 `)
 	fakeSSH, logPath := writeFakeSSH(t, 0)
 
-	code := Run([]string{"--select", "prod", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"--direct", "--select", "prod", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
 
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
@@ -164,14 +164,14 @@ Host prod
 `)
 	fakeSSH, _ := writeFakeSSH(t, 7)
 
-	code := Run([]string{"--select", "prod", "--config", config, "--ssh-binary", fakeSSH}, nil, &stderr, BuildInfo{})
+	code := Run([]string{"--direct", "--select", "prod", "--config", config, "--ssh-binary", fakeSSH}, nil, &stderr, BuildInfo{})
 
 	if code != 7 {
 		t.Fatalf("Run returned %d, want 7; stderr = %q", code, stderr.String())
 	}
 }
 
-func TestRunConnectSuperviseRecordsSession(t *testing.T) {
+func TestRunConnectDefaultSuperviseRecordsSession(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	config := writeConfig(t, `
@@ -181,7 +181,7 @@ Host prod
 	fakeSSH, _ := writeFakeSSH(t, 0)
 	stateDir := t.TempDir()
 
-	code := Run([]string{"--supervise", "--state-dir", stateDir, "--select", "prod", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"--state-dir", stateDir, "--select", "prod", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
 
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
@@ -237,7 +237,7 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 		},
 		Print:     true,
 		SSHBinary: "/tmp/fake-ssh",
-		Supervise: true,
+		Direct:    true,
 		StateDir:  "/tmp/state",
 		NoKitty:   true,
 		NoColor:   true,
@@ -245,7 +245,7 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 	}
 
 	args := connectFlagsAsJumpArgs(flags)
-	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--supervise\x00--state-dir\x00/tmp/state\x00--no-kitty\x00--no-color\x00--\x00-v"
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--no-kitty\x00--no-color\x00--\x00-v"
 	if got := strings.Join(args, "\x00"); got != want {
 		t.Fatalf("jump args = %#v, want %q", args, want)
 	}
@@ -293,7 +293,7 @@ Host bastion
 `)
 	fakeSSH, logPath := writeFakeSSH(t, 0)
 
-	code := Run([]string{"jump", "--dest", "prod", "--hop", "bastion", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"jump", "--direct", "--dest", "prod", "--hop", "bastion", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
 
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
@@ -382,7 +382,7 @@ Host prod
 `)
 	fakeSSH, logPath := writeFakeSSH(t, 0)
 
-	code := Run([]string{"proxy", "prod", "--port", "1081", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"proxy", "--direct", "prod", "--port", "1081", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
 
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
@@ -510,6 +510,67 @@ func TestRunSessionShowMissing(t *testing.T) {
 		t.Fatalf("session show returned %d, want 2", code)
 	}
 	assertContains(t, stderr.String(), "show session")
+}
+
+func TestRunSessionMapBuildsLineage(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Now().UTC()
+	exitCode := 0
+	root := state.SessionRecord{
+		ID:          "root",
+		TargetAlias: "bastion",
+		Route:       []string{"bastion"},
+		StartedAt:   now.Add(-2 * time.Minute),
+		EndedAt:     ptrTime(now.Add(-time.Minute)),
+		ExitCode:    &exitCode,
+		RunnerMode:  "supervised",
+	}
+	child := state.SessionRecord{
+		ID:          "child",
+		ParentID:    "root",
+		Depth:       1,
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		StartedAt:   now.Add(-time.Minute),
+		RunnerMode:  "supervised",
+	}
+	if err := state.WriteRecord(stateDir, root); err != nil {
+		t.Fatalf("WriteRecord root returned error: %v", err)
+	}
+	if err := state.WriteRecord(stateDir, child); err != nil {
+		t.Fatalf("WriteRecord child returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	code := Run([]string{"session", "map", "--state-dir", stateDir}, &stdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session map returned %d, want 0", code)
+	}
+	assertContains(t, stdout.String(), "Session route map")
+	assertContains(t, stdout.String(), "bastion [exit 0]")
+	assertContains(t, stdout.String(), "+- prod [active]")
+	assertContains(t, stdout.String(), "route: bastion -> prod")
+
+	stdout.Reset()
+	code = Run([]string{"session", "map", "--json", "--state-dir", stateDir}, &stdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session map --json returned %d, want 0", code)
+	}
+	var got struct {
+		Total int `json:"total"`
+		Roots []struct {
+			Record   state.SessionRecord `json:"record"`
+			Children []struct {
+				Record state.SessionRecord `json:"record"`
+			} `json:"children"`
+		} `json:"roots"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal map returned error: %v\n%s", err, stdout.String())
+	}
+	if got.Total != 2 || len(got.Roots) != 1 || got.Roots[0].Record.ID != "root" || len(got.Roots[0].Children) != 1 || got.Roots[0].Children[0].Record.ID != "child" {
+		t.Fatalf("map json = %#v", got)
+	}
 }
 
 func TestRunAddDryRunDoesNotWrite(t *testing.T) {
@@ -1187,6 +1248,10 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("os.ReadFile(%s) returned error: %v", path, err)
 	}
 	return string(data)
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
 }
 
 func globBackups(t *testing.T, path string) []string {

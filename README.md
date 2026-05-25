@@ -4,13 +4,14 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 6 supervised sessions. The repository has a Go module,
+Current status: Phase 7 session UX. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
 config mutations, jump routing, SOCKS proxy launching, safe
-`authorized_keys` management, opt-in supervised PTY sessions with local
-session records, CI, contributor notes, and a draft GoReleaser config
-with publishing disabled.
+`authorized_keys` management, supervised PTY sessions by default with
+local session records, a session route map, an upgraded first-screen
+picker, CI, contributor notes, and a draft GoReleaser config with
+publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -28,8 +29,9 @@ go run ./cmd/ssherpa jump --dest DEST --hop HOP --print
 go run ./cmd/ssherpa proxy --select ALIAS --port 1080 --print
 go run ./cmd/ssherpa authkeys list --json
 go run ./cmd/ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
-go run ./cmd/ssherpa --supervise --select ALIAS
+go run ./cmd/ssherpa --select ALIAS
 go run ./cmd/ssherpa session list
+go run ./cmd/ssherpa session map
 go run ./cmd/ssherpa session show SESSION_ID
 go test ./...
 go vet ./...
@@ -45,11 +47,15 @@ files, temp-file atomic renames, permission preservation, and safeguards
 for multi-alias or wildcard `Host` stanzas. Jump/proxy flows are
 available. `authorized_keys` management supports list, add, merge,
 replace, delete, dry-run diffs, backups, option preservation, cert key
-types, and `SSHERPA_AUTHORIZED_KEYS_PATH`. Supervised sessions are
-opt-in with `--supervise`; they run SSH under a PTY, propagate basic
-`SSHERPA_SESSION_*` metadata into the child process, and write JSON
-records under the platform state directory. Use `--state-dir PATH` or
-`SSHERPA_STATE_DIR` for disposable testing.
+types, and `SSHERPA_AUTHORIZED_KEYS_PATH`. Connection flows run under a
+supervised PTY by default, propagate basic `SSHERPA_SESSION_*` metadata
+into the child process, and write JSON records under the platform state
+directory. The default picker opens with a status summary, grouped
+actions, host rows, and a Sessions route map entry. While inside a
+supervised session, press `Ctrl-]` to open the local session map overlay;
+press `Ctrl-]`, `q`, or `Esc` to return to the remote session. Use
+`--direct` only when you need the old unsupervised runner. Use
+`--state-dir PATH` or `SSHERPA_STATE_DIR` for disposable testing.
 
 ## Examples
 
@@ -73,9 +79,12 @@ ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 ssherpa authkeys merge --from-dir ./keys --dry-run
 ssherpa authkeys replace --from-dir ./keys --yes
 ssherpa authkeys delete --fingerprint SHA256:... --yes
-ssherpa --supervise --select prod
-ssherpa jump --supervise --dest prod --hop bastion
+ssherpa --select prod
+ssherpa --direct --select prod
+ssherpa jump --dest prod --hop bastion
 ssherpa session list
+ssherpa session map
+ssherpa session map --json
 ssherpa session show 20260524T120000.000000000Z-abcd1234
 ssherpa session prune --older-than 168h --dry-run
 ```

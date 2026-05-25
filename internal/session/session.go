@@ -8,16 +8,22 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/0xbenc/ssherpa/internal/sessionview"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 )
 
-const RunnerModeSupervised = "supervised"
+const (
+	RunnerModeSupervised = "supervised"
+	OverlayHotkey        = byte(0x1d)
+	OverlayHotkeyName    = "Ctrl-]"
+)
 
 type Metadata struct {
 	TargetAlias string
@@ -88,11 +94,12 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		return 1
 	}
 
+	output := &lockedWriter{w: stdout}
 	done := make(chan struct{})
 	outputDone := make(chan struct{})
-	go copyInput(ptmx, stdin, done)
+	go copyInput(ptmx, stdin, output, stateDir, record.ID, done)
 	go func() {
-		_, _ = io.Copy(stdout, ptmx)
+		_, _ = io.Copy(output, ptmx)
 		close(outputDone)
 	}()
 
@@ -179,19 +186,149 @@ func makeRawIfTerminal(stdin *os.File) (func(), error) {
 	}, nil
 }
 
-func copyInput(ptmx *os.File, stdin *os.File, done <-chan struct{}) {
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *lockedWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(data)
+}
+
+type overlayFrame struct {
+	terminal bool
+	startRow int
+	lines    int
+}
+
+func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
-	copyDone := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(ptmx, stdin)
-		close(copyDone)
-	}()
-	select {
-	case <-done:
-	case <-copyDone:
+	var buf [1]byte
+	for {
+		n, err := stdin.Read(buf[:])
+		if n > 0 {
+			if buf[0] == OverlayHotkey {
+				showSessionOverlay(stdin, output, stateDir, currentID)
+			} else {
+				_, _ = ptmx.Write(buf[:n])
+			}
+		}
+		if err != nil {
+			return
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
 	}
+}
+
+func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+
+	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID)
+	defer clearSessionOverlay(output.w, frame)
+
+	var buf [1]byte
+	for {
+		n, err := stdin.Read(buf[:])
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			continue
+		}
+		switch buf[0] {
+		case OverlayHotkey, 'q', 'Q', '\r', '\n', 0x1b, 0x03:
+			return
+		case 'r', 'R':
+			clearSessionOverlay(output.w, frame)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID)
+		}
+	}
+}
+
+func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string) overlayFrame {
+	width, height, terminalOutput := overlaySize(stdin)
+	lines := sessionOverlayLines(stateDir, currentID)
+	lines = append(lines, "", fmt.Sprintf("%s/q/Esc close   r refresh   local only", OverlayHotkeyName))
+
+	if !terminalOutput {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "----- ssherpa session overlay -----")
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+		return overlayFrame{}
+	}
+
+	visibleLines := min(len(lines), max(6, height-2))
+	startRow := max(1, height-visibleLines+1)
+	fmt.Fprint(w, "\x1b7\x1b[?25l")
+	for i := 0; i < visibleLines; i++ {
+		row := startRow + i
+		line := truncateOverlayLine(lines[i], width)
+		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K%s", row, line)
+	}
+	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
+}
+
+func clearSessionOverlay(w io.Writer, frame overlayFrame) {
+	if !frame.terminal {
+		fmt.Fprintln(w, "----- ssherpa overlay closed -----")
+		return
+	}
+	for i := 0; i < frame.lines; i++ {
+		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K", frame.startRow+i)
+	}
+	fmt.Fprint(w, "\x1b8\x1b[?25h")
+}
+
+func sessionOverlayLines(stateDir string, currentID string) []string {
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		return []string{
+			"ssherpa session map (local overlay)",
+			"state: " + stateDir,
+			"error: " + err.Error(),
+		}
+	}
+	lines := sessionview.MapLines(stateDir, records, currentID)
+	if len(lines) > 0 {
+		lines[0] = "ssherpa session map (local overlay)"
+	}
+	return lines
+}
+
+func overlaySize(stdin *os.File) (width int, height int, ok bool) {
+	if stdin == nil || !term.IsTerminal(stdin.Fd()) {
+		return 88, 24, false
+	}
+	width, height, err := term.GetSize(stdin.Fd())
+	if err != nil || width <= 0 || height <= 0 {
+		return 88, 24, true
+	}
+	return width, height, true
+}
+
+func truncateOverlayLine(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width == 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:width-1]) + "~"
 }
 
 func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd) func() {

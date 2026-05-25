@@ -29,11 +29,11 @@ make the risky parts safer.
    supervisor, latency warning, auto-disconnect, and queued input modes
    should land after the compatibility layer is stable.
 
-3. Use a direct SSH runner by default, and a PTY runner only when needed.
-   For normal connects, direct process execution with inherited
-   stdin/stdout/stderr is simpler and closer to `ssh alias`. PTY wrapping
-   is valuable for supervision and queued input, but it changes terminal
-   behavior and should be opt-in until it is proven.
+3. Use the supervised PTY runner by default, with a direct escape hatch.
+   The in-session map and future queued-input features are core UX, so
+   normal connects should record local session state. Keep `--direct`
+   available for troubleshooting and for edge cases where PTY wrapping is
+   undesirable.
 
 4. Treat SSH config mutation as a data-safety feature.
    Writing `~/.ssh/config` and `~/.ssh/authorized_keys` is the highest
@@ -74,9 +74,12 @@ Current repository state:
   multi-alias deletion safeguards. Phase 4 adds jump route building and
   SOCKS proxy command support. Phase 5 adds `authorized_keys` parsing,
   validation, list/add/merge/replace/delete commands, dry-run diffs,
-  backups, and permission handling. Phase 6 adds opt-in supervised PTY
+  backups, and permission handling. Phase 6 adds supervised PTY
   sessions, local JSON session records, nested route metadata, and
-  `ssherpa session list/show/prune`.
+  `ssherpa session list/show/prune`. Phase 7 upgrades the first-screen
+  picker, adds a Sessions route-map entry point, polishes session list
+  output, adds `ssherpa session map`, makes supervised mode the default,
+  and adds a `Ctrl-]` in-session route-map overlay.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.
@@ -226,6 +229,7 @@ Session commands:
 
 ```text
 ssherpa session list [--json] [--state-dir PATH]
+ssherpa session map [--json] [--state-dir PATH]
 ssherpa session show SESSION_ID [--json] [--state-dir PATH]
 ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
 ```
@@ -238,7 +242,7 @@ Compatibility flags:
 | --- | --- | --- |
 | `--all` | picker, list, edit, jump, proxy | Include wildcard or pattern hosts |
 | `--print` | picker, jump, proxy | Print the resolved command instead of running |
-| `--exec` | picker, jump, proxy | Run the command; default for picker |
+| `--exec` | picker, jump, proxy | Run the command; supervised PTY is default |
 | `--filter SUBSTR` | picker, list, edit, jump, proxy | Pre-filter aliases |
 | `--user USER` | picker, list, edit, jump, proxy | Filter by parsed/effective user |
 | `--config PATH` | all config flows | Use this config root instead of `~/.ssh/config` |
@@ -255,7 +259,8 @@ New flags:
 | `--no-kitty` | connect flows | Disable Kitty `kitten ssh` detection |
 | `--bind ADDR` | proxy | SOCKS bind address; default `127.0.0.1` |
 | `--port PORT` | proxy, add | Local proxy port or SSH port depending on command |
-| `--supervise` | connect flows | Use PTY runner and record live session state |
+| `--supervise` | connect flows | Use PTY runner and record live session state; default as of Phase 7 |
+| `--direct`, `--no-supervise` | connect flows | Use the old unsupervised direct runner |
 | `--latency-warn DURATION` | supervised connect | Warning threshold |
 | `--latency-disconnect DURATION` | supervised connect | Opt-in disconnect threshold |
 | `--state-dir PATH` | supervised connect and session flows | Override state directory |
@@ -352,7 +357,7 @@ Use a small dependency set and isolate it behind internal packages:
 | `github.com/charmbracelet/bubbles/v2` | List, text input, viewport, help, file picker | The list component already provides fuzzy filtering |
 | `charm.land/lipgloss/v2` | Terminal styling | Use sparingly; honor `--no-color` |
 | `github.com/spf13/cobra` | CLI command tree and completions | Do not add Viper; keep config explicit |
-| `github.com/creack/pty` | Supervised PTY runner | Do not use for default direct connect until needed |
+| `github.com/creack/pty` | Supervised PTY runner | Default connect runner as of Phase 7 |
 
 Dependency to evaluate but not blindly adopt:
 
@@ -663,7 +668,7 @@ argv as `[]string`.
 
 ### Direct Runner
 
-Use direct execution for default connections:
+Direct execution remains available as `--direct`:
 
 - Attach `os.Stdin`, `os.Stdout`, and `os.Stderr`.
 - Preserve terminal behavior.
@@ -680,7 +685,7 @@ Implementation options:
 
 ### PTY Runner
 
-Use PTY mode for supervised sessions:
+Use PTY mode for default supervised sessions:
 
 - Start SSH with `creack/pty`.
 - Put local terminal in raw mode.
@@ -690,8 +695,8 @@ Use PTY mode for supervised sessions:
 - Restore terminal state on every exit path.
 - Record session state.
 
-PTY mode should be behind `--supervise` or a config setting until enough
-manual testing proves it is safe for daily interactive SSH.
+`--direct` should remain available for troubleshooting and unusual
+terminal compatibility issues.
 
 ## TUI Plan
 
@@ -1296,6 +1301,7 @@ Acceptance:
 Deliverables:
 
 - `--supervise`.
+- `--direct` escape hatch.
 - PTY runner.
 - Session state records.
 - `ssherpa session list/show/prune`.
@@ -1315,12 +1321,18 @@ Deliverables:
 - Route lineage view for current and recent supervised sessions.
 - Clear parent/child display for nested local `ssherpa` launches.
 - TUI affordance for entering session view from the picker.
+- In-session route-map overlay hotkey for supervised sessions.
+- Supervised mode is default for connect, jump, and proxy.
 - Text and JSON output for map data.
 - Session command polish for active/exited grouping.
 
 Acceptance:
 
 - A nested local route can be inspected as a readable map.
+- `Ctrl-]` opens a local overlay inside supervised sessions without
+  sending the hotkey byte to the remote PTY.
+- Default connect/jump/proxy runs record session state without requiring
+  `--supervise`.
 - Session UX does not require remote shell changes.
 - Existing `session list/show/prune` output remains script-friendly.
 
@@ -1377,7 +1389,7 @@ Acceptance:
 | --- | --- | --- |
 | OpenSSH config semantics are hard to clone | Incorrect display or unsafe edits | Use parser for inventory, `ssh -G` for effective values, and direct `ssh alias` for connection |
 | Config writer deletes user data | High trust damage | AST edits, backups, dry-run diff, golden tests, multi-alias safeguards |
-| PTY runner breaks terminal behavior | Bad interactive experience | Default to direct runner; PTY opt-in until stable |
+| PTY runner breaks terminal behavior | Bad interactive experience | Keep `--direct` escape hatch and focused terminal restore tests |
 | Authkeys parser drops restrictions | Security regression | Preserve options and test option-heavy fixtures |
 | Auto-disconnect kills important work | Severe user harm | Never default; require explicit threshold and sustained condition |
 | Remote env propagation fails | Nested metadata incomplete | Treat as best effort; keep local state correct |

@@ -1,22 +1,22 @@
 # Phase 6: Supervised PTY Sessions
 
-Phase 6 adds an opt-in session supervisor for SSH commands. The default
-runner remains direct process execution; supervised mode only activates
-when `--supervise` is passed to connect, jump, or proxy flows.
+Phase 6 added the session supervisor for SSH commands. Phase 7 promotes
+the supervised PTY runner to the default for connect, jump, and proxy
+flows. Use `--direct` for the old unsupervised runner.
 
 ## Commands
 
 Run a direct alias through the supervised PTY runner:
 
 ```sh
-ssherpa --supervise --select prod
+ssherpa --select prod
 ```
 
 Run a jump route or SOCKS proxy through the same runner:
 
 ```sh
-ssherpa jump --supervise --dest prod --hop bastion
-ssherpa proxy --supervise --select prod --port 1080
+ssherpa jump --dest prod --hop bastion
+ssherpa proxy --select prod --port 1080
 ```
 
 Inspect session state:
@@ -41,8 +41,8 @@ macOS:  ~/Library/Application Support/ssherpa/sessions/*.json
 Override the directory with:
 
 ```sh
-SSHERPA_STATE_DIR=/tmp/ssherpa-state ssherpa --supervise --select prod
-ssherpa --supervise --state-dir /tmp/ssherpa-state --select prod
+SSHERPA_STATE_DIR=/tmp/ssherpa-state ssherpa --select prod
+ssherpa --state-dir /tmp/ssherpa-state --select prod
 ssherpa session list --state-dir /tmp/ssherpa-state
 ```
 
@@ -86,6 +86,10 @@ mode only when stdin is a terminal, forwards resize and common interrupt
 signals, and restores the terminal on exit. Non-TTY stdin, such as CI or
 test input, skips raw mode.
 
+As of Phase 7, sessions also intercept `Ctrl-]` locally to open the
+session map overlay. That byte is not sent to the remote PTY when the
+overlay opens.
+
 ## Verification
 
 Run the unit and integration suite:
@@ -108,7 +112,6 @@ EOF
 chmod +x "$tmp/fake-ssh"
 
 go run ./cmd/ssherpa \
-  --supervise \
   --state-dir "$tmp/state" \
   --ssh-binary "$tmp/fake-ssh" \
   --select prod \

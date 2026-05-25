@@ -123,6 +123,29 @@ func TestPruneRecordsOnlyRemovesOldEndedSessions(t *testing.T) {
 	}
 }
 
+func TestBuildSessionForest(t *testing.T) {
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	records := []SessionRecord{
+		{ID: "child-b", ParentID: "root", TargetAlias: "db", StartedAt: now.Add(2 * time.Minute)},
+		{ID: "orphan", ParentID: "missing", TargetAlias: "orphan", StartedAt: now.Add(3 * time.Minute)},
+		{ID: "root", TargetAlias: "prod", StartedAt: now},
+		{ID: "child-a", ParentID: "root", TargetAlias: "web", StartedAt: now.Add(time.Minute)},
+	}
+
+	forest := BuildSessionForest(records)
+
+	if len(forest) != 2 {
+		t.Fatalf("forest = %#v, want two roots", forest)
+	}
+	if forest[0].Record.ID != "root" || forest[1].Record.ID != "orphan" {
+		t.Fatalf("root order = %#v", forest)
+	}
+	children := forest[0].Children
+	if len(children) != 2 || children[0].Record.ID != "child-a" || children[1].Record.ID != "child-b" {
+		t.Fatalf("children = %#v, want started-at order", children)
+	}
+}
+
 func TestResolveDirHonorsOverrideAndEnv(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "override")
 	got, err := ResolveDir(override)

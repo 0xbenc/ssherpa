@@ -114,6 +114,50 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{'a', OverlayHotkey, 'q', 'b'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=2 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "ab" {
+		t.Fatalf("remote input = %q, want only non-hotkey bytes", string(got))
+	}
+	if !strings.Contains(stdout.String(), "ssherpa session map") {
+		t.Fatalf("stdout = %q, want local overlay", stdout.String())
+	}
+}
+
 func TestRunSupervisedRejectsEmptyCommand(t *testing.T) {
 	var stderr bytes.Buffer
 

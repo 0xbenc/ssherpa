@@ -97,8 +97,9 @@ jobs:
             printf '%s\n' 'exit 0'
           } > "$tmp/fake-ssh"
           chmod +x "$tmp/fake-ssh"
-          go run ./cmd/ssherpa --supervise --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
+          go run ./cmd/ssherpa --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
           go run ./cmd/ssherpa session list --json --state-dir "$tmp/state"
+          go run ./cmd/ssherpa session map --state-dir "$tmp/state"
 
       - name: Build native binary
         run: go build -trimpath -o ssherpa ./cmd/ssherpa

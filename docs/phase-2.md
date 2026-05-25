@@ -3,7 +3,8 @@
 Phase 2 added the interactive alias picker, print mode, direct SSH
 execution, and command resolution. Config mutation arrived in Phase 3;
 jump/proxy flows arrived in Phase 4, `authorized_keys` arrived in
-Phase 5, and opt-in supervised PTY sessions arrived in Phase 6.
+Phase 5, supervised PTY sessions arrived in Phase 6, and the
+first-screen picker plus default supervised execution arrived in Phase 7.
 
 ## Commands
 
@@ -37,9 +38,10 @@ rows:
 
 - Add new alias
 - Edit aliases or delete
-- Manage authorized_keys on this device
-- Start SOCKS proxy
 - Jump via intermediate hops
+- Start SOCKS proxy
+- Manage authorized_keys
+- Sessions and route map
 
 Those rows are visible so the default interaction matches the Bash
 script. Add/edit rows are wired in Phase 3, jump/proxy rows are wired in
@@ -102,7 +104,7 @@ Fake SSH execution and exit-code propagation are covered by
 
 - Authkeys is implemented in Phase 5. Proxy and jump are implemented in
   Phase 4.
-- The default direct runner intentionally does not supervise sessions or
-  record state. Use `--supervise` for the Phase 6 PTY runner.
-- Signal-forwarding behavior is the standard `exec.Command` inherited
-  terminal behavior unless `--supervise` is enabled.
+- As of Phase 7, the default runner is supervised. Use `--direct` for
+  the old unsupervised runner.
+- Signal-forwarding behavior is explicit in supervised mode and standard
+  `exec.Command` inherited terminal behavior with `--direct`.

@@ -13,6 +13,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
+	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -44,7 +45,8 @@ Connect Flags:
   --exec             Run the SSH command; this is the default
   --select ALIAS     Select an alias non-interactively
   --ssh-binary PATH  Use this SSH binary
-  --supervise        Run SSH under a supervised PTY and record session state
+  --supervise        Run under supervised PTY; this is the default
+  --direct           Use the old direct runner without session overlay/state
   --state-dir PATH   Override ssherpa session state directory
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
@@ -58,8 +60,8 @@ Mutation Commands:
   ssherpa edit delete-all --confirm "delete N aliases"
 
 Route Commands:
-  ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--supervise]
-  ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--supervise]
+  ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
+  ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--direct]
 
 Authorized Keys Commands:
   ssherpa authkeys list [--json]
@@ -71,14 +73,16 @@ Authorized Keys Commands:
 
 Session Commands:
   ssherpa session list [--json] [--state-dir PATH]
+  ssherpa session map [--json] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
   ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
 
-Phase 6:
-  SSH config inventory, picker, direct SSH execution, and safe SSH config
+Phase 7:
+  SSH config inventory, picker, supervised SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
-  management are available. Supervised PTY sessions are available with
-  --supervise.
+  management are available. Supervised PTY sessions, session maps, and
+  upgraded picker UX are available. In supervised sessions, Ctrl-] opens
+  the local session map overlay.
 `
 
 type BuildInfo struct {
@@ -144,6 +148,7 @@ type connectFlags struct {
 	Print     bool
 	SSHBinary string
 	Supervise bool
+	Direct    bool
 	StateDir  string
 	NoKitty   bool
 	NoColor   bool
@@ -166,13 +171,13 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	_, inventory, err := loadInventory(flags.inventoryFlags)
+	graph, inventory, err := loadInventory(flags.inventoryFlags)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 2
 	}
 
-	item, alias, ok, code := selectConnectItem(flags, inventory, stderr)
+	item, alias, ok, code := selectConnectItem(flags, graph, inventory, stderr)
 	if !ok {
 		return code
 	}
@@ -187,6 +192,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
 	case ui.ItemAuthkeys:
 		return runAuthkeys(nil, stdout, stderr)
+	case ui.ItemSessions:
+		return runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
 	}
 
 	base := resolveSSHCommand(flags)
@@ -261,6 +268,10 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
 		case arg == "--supervise":
 			flags.Supervise = true
+			flags.Direct = false
+		case arg == "--direct" || arg == "--no-supervise":
+			flags.Direct = true
+			flags.Supervise = false
 		case arg == "--state-dir":
 			value, ok := nextArg(args, &i, stderr, "--state-dir")
 			if !ok {
@@ -292,7 +303,7 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 	return flags, true
 }
 
-func selectConnectItem(flags connectFlags, inventory hostlist.Inventory, stderr io.Writer) (ui.Item, hostlist.Alias, bool, int) {
+func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, stderr io.Writer) (ui.Item, hostlist.Alias, bool, int) {
 	if flags.Select != "" {
 		alias := findAlias(inventory.Aliases, flags.Select)
 		if alias == nil {
@@ -302,11 +313,18 @@ func selectConnectItem(flags connectFlags, inventory hostlist.Inventory, stderr 
 		return ui.Item{Kind: ui.ItemAlias, Token: alias.Name, Title: alias.Name}, *alias, true, 0
 	}
 
-	item, ok, err := ui.Pick(context.Background(), ui.BuildItems(inventory.Aliases), ui.PickOptions{
+	sessionCount, activeSessions := pickerSessionCounts(flags.StateDir)
+	item, ok, err := ui.Pick(context.Background(), ui.BuildItemsWithOptions(inventory.Aliases, ui.BuildItemsOptions{
+		SessionCount:       sessionCount,
+		ActiveSessionCount: activeSessions,
+	}), ui.PickOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		NoColor:     flags.NoColor,
+		Title:       "ssherpa",
+		Subtitle:    pickerMode(flags),
+		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -326,6 +344,63 @@ func selectConnectItem(flags connectFlags, inventory hostlist.Inventory, stderr 
 		return ui.Item{}, hostlist.Alias{}, false, 2
 	}
 	return item, *alias, true, 0
+}
+
+func pickerMode(flags connectFlags) string {
+	switch {
+	case flags.Print:
+		return "print mode"
+	case flags.Direct:
+		return "exec mode"
+	default:
+		return "supervised mode"
+	}
+}
+
+func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, sessionCount int, activeSessions int) []string {
+	var summary []string
+	warnings := len(inventory.Diagnostics)
+	for _, alias := range inventory.Aliases {
+		warnings += len(alias.Warnings)
+	}
+	summary = append(summary, fmt.Sprintf("%d hosts  %d warning(s)  %d active session(s)", len(inventory.Aliases), warnings, activeSessions))
+	if graph != nil && graph.RootPath != "" {
+		summary = append(summary, "config  "+graph.RootPath)
+	}
+	var scope []string
+	if flags.All {
+		scope = append(scope, "including patterns")
+	}
+	if flags.Filter != "" {
+		scope = append(scope, "filter="+flags.Filter)
+	}
+	if flags.User != "" {
+		scope = append(scope, "user="+flags.User)
+	}
+	if sessionCount > 0 {
+		scope = append(scope, fmt.Sprintf("sessions=%d", sessionCount))
+	}
+	if len(scope) > 0 {
+		summary = append(summary, strings.Join(scope, "  "))
+	}
+	return summary
+}
+
+func pickerSessionCounts(stateDir string) (total int, active int) {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return 0, 0
+	}
+	records, err := state.ListRecords(dir)
+	if err != nil {
+		return 0, 0
+	}
+	for _, record := range records {
+		if record.Status() == "active" {
+			active++
+		}
+	}
+	return len(records), active
 }
 
 type inventoryFlags struct {
