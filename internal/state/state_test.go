@@ -16,13 +16,21 @@ func TestWriteReadAndListRecords(t *testing.T) {
 	startedB := time.Date(2026, 5, 24, 11, 0, 0, 0, time.UTC)
 
 	first := SessionRecord{
-		ID:          "first",
-		TargetAlias: "prod",
-		Route:       []string{"prod"},
-		StartedAt:   startedA,
-		LocalPID:    100,
-		SSHPID:      101,
-		RunnerMode:  "supervised",
+		ID:               "first",
+		TargetAlias:      "prod",
+		Route:            []string{"prod"},
+		StartedAt:        startedA,
+		LocalPID:         100,
+		SSHPID:           101,
+		RunnerMode:       "supervised",
+		DisconnectReason: "latency unhealthy for 30s",
+		Events: []SessionEvent{{
+			Time:            startedA.Add(time.Minute),
+			Type:            "latency_disconnect",
+			Message:         "latency unhealthy for 30s",
+			LatencyMillis:   5000,
+			ThresholdMillis: 2000,
+		}},
 	}
 	second := SessionRecord{
 		ID:          "second",
@@ -55,6 +63,9 @@ func TestWriteReadAndListRecords(t *testing.T) {
 	}
 	if got.StateVersion != StateVersion || got.TargetAlias != first.TargetAlias || !reflect.DeepEqual(got.Route, first.Route) {
 		t.Fatalf("record = %#v, want first record with state version", got)
+	}
+	if got.DisconnectReason != first.DisconnectReason || len(got.Events) != 1 || got.Events[0].Type != "latency_disconnect" {
+		t.Fatalf("record health fields = %#v, want disconnect event", got)
 	}
 
 	records, err := ListRecords(dir)

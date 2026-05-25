@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/session"
@@ -48,6 +49,10 @@ Connect Flags:
   --supervise        Run under supervised PTY; this is the default
   --direct           Use the old direct runner without session overlay/state
   --state-dir PATH   Override ssherpa session state directory
+  --latency-warn DURATION
+                     Enable sidecar probe and warn above threshold
+  --latency-disconnect DURATION
+                     Disconnect after sustained unhealthy probes; requires --latency-warn
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
 
@@ -73,16 +78,17 @@ Authorized Keys Commands:
 
 Session Commands:
   ssherpa session list [--json] [--state-dir PATH]
-  ssherpa session map [--json] [--state-dir PATH]
+  ssherpa session map [--json] [--all] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
   ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
 
-Phase 7:
+Phase 8:
   SSH config inventory, picker, supervised SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
   management are available. Supervised PTY sessions, session maps, and
   upgraded picker UX are available. In supervised sessions, Ctrl-] opens
-  the local session map overlay.
+  the local active-session map overlay. Opt-in sidecar latency warnings
+  and explicit latency disconnects are available with supervised sessions.
 `
 
 type BuildInfo struct {
@@ -145,15 +151,17 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 
 type connectFlags struct {
 	inventoryFlags
-	Print     bool
-	SSHBinary string
-	Supervise bool
-	Direct    bool
-	StateDir  string
-	NoKitty   bool
-	NoColor   bool
-	Select    string
-	SSHArgs   []string
+	Print             bool
+	SSHBinary         string
+	Supervise         bool
+	Direct            bool
+	StateDir          string
+	LatencyWarn       time.Duration
+	LatencyDisconnect time.Duration
+	NoKitty           bool
+	NoColor           bool
+	Select            string
+	SSHArgs           []string
 }
 
 func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -164,6 +172,9 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	flags, ok := parseConnectFlags(args, stderr)
 	if !ok {
+		return 1
+	}
+	if !validateLatencyFlags(flags, stderr) {
 		return 1
 	}
 	if flags.JSON && !flags.Print {
@@ -197,6 +208,10 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	base := resolveSSHCommand(flags)
+	metadata := session.Metadata{
+		TargetAlias: alias.Name,
+		Route:       []string{alias.Name},
+	}
 	cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
 
 	if flags.Print {
@@ -211,10 +226,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	return printOrRunSSH(cmd, flags.connectOptions(), session.Metadata{
-		TargetAlias: alias.Name,
-		Route:       []string{alias.Name},
-	}, stdout, stderr)
+	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
 }
 
 func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
@@ -280,6 +292,38 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.StateDir = value
 		case strings.HasPrefix(arg, "--state-dir="):
 			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case arg == "--latency-warn":
+			value, ok := nextArg(args, &i, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case strings.HasPrefix(arg, "--latency-warn="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-warn="), stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case arg == "--latency-disconnect":
+			value, ok := nextArg(args, &i, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
+		case strings.HasPrefix(arg, "--latency-disconnect="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-disconnect="), stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -301,6 +345,21 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 	}
 
 	return flags, true
+}
+
+func validateLatencyFlags(flags connectFlags, stderr io.Writer) bool {
+	if flags.LatencyWarn == 0 && flags.LatencyDisconnect == 0 {
+		return true
+	}
+	if flags.Direct {
+		fmt.Fprintln(stderr, "ssherpa: latency watchdog requires supervised mode; remove --direct")
+		return false
+	}
+	if flags.LatencyDisconnect > 0 && flags.LatencyWarn == 0 {
+		fmt.Fprintln(stderr, "ssherpa: --latency-disconnect requires --latency-warn")
+		return false
+	}
+	return true
 }
 
 func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, stderr io.Writer) (ui.Item, hostlist.Alias, bool, int) {
@@ -377,8 +436,14 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 	if flags.User != "" {
 		scope = append(scope, "user="+flags.User)
 	}
-	if sessionCount > 0 {
-		scope = append(scope, fmt.Sprintf("sessions=%d", sessionCount))
+	if flags.LatencyWarn > 0 {
+		scope = append(scope, "latency-warn="+flags.LatencyWarn.String())
+	}
+	if flags.LatencyDisconnect > 0 {
+		scope = append(scope, "latency-disconnect="+flags.LatencyDisconnect.String())
+	}
+	if activeSessions > 0 {
+		scope = append(scope, fmt.Sprintf("active-sessions=%d", activeSessions))
 	}
 	if len(scope) > 0 {
 		summary = append(summary, strings.Join(scope, "  "))

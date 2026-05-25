@@ -67,7 +67,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 7:")
+	assertContains(t, stdout.String(), "Phase 8:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -219,6 +219,41 @@ func TestRunConnectRejectsUnknownFlag(t *testing.T) {
 	assertContains(t, stderr.String(), `unknown flag "--bogus"`)
 }
 
+func TestRunConnectRejectsUnsafeLatencyFlagCombinations(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "disconnect requires warning threshold",
+			args: []string{"--select", "prod", "--config", config, "--latency-disconnect", "30s"},
+			want: "--latency-disconnect requires --latency-warn",
+		},
+		{
+			name: "direct mode cannot watchdog",
+			args: []string{"--direct", "--select", "prod", "--config", config, "--latency-warn", "2s"},
+			want: "latency watchdog requires supervised mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(tt.args, nil, &stderr, BuildInfo{})
+			if code != 1 {
+				t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+			}
+			assertContains(t, stderr.String(), tt.want)
+		})
+	}
+}
+
 func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
 	args := connectFlagsAsAddArgs(connectFlags{inventoryFlags: inventoryFlags{Config: "/tmp/config"}})
 
@@ -235,17 +270,19 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 			User:   "alice",
 			Config: "/tmp/config",
 		},
-		Print:     true,
-		SSHBinary: "/tmp/fake-ssh",
-		Direct:    true,
-		StateDir:  "/tmp/state",
-		NoKitty:   true,
-		NoColor:   true,
-		SSHArgs:   []string{"-v"},
+		Print:             true,
+		SSHBinary:         "/tmp/fake-ssh",
+		Direct:            true,
+		StateDir:          "/tmp/state",
+		LatencyWarn:       2 * time.Second,
+		LatencyDisconnect: 30 * time.Second,
+		NoKitty:           true,
+		NoColor:           true,
+		SSHArgs:           []string{"-v"},
 	}
 
 	args := connectFlagsAsJumpArgs(flags)
-	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--no-kitty\x00--no-color\x00--\x00-v"
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--no-kitty\x00--no-color\x00--\x00-v"
 	if got := strings.Join(args, "\x00"); got != want {
 		t.Fatalf("jump args = %#v, want %q", args, want)
 	}
@@ -432,16 +469,24 @@ func TestRunSessionListShowAndPrune(t *testing.T) {
 	exitCode := 0
 
 	oldRecord := state.SessionRecord{
-		ID:          "old",
-		TargetAlias: "prod",
-		Route:       []string{"bastion", "prod"},
-		Hops:        []string{"bastion"},
-		StartedAt:   oldEnd.Add(-time.Hour),
-		EndedAt:     &oldEnd,
-		ExitCode:    &exitCode,
-		LocalPID:    100,
-		SSHPID:      101,
-		RunnerMode:  "supervised",
+		ID:               "old",
+		TargetAlias:      "prod",
+		Route:            []string{"bastion", "prod"},
+		Hops:             []string{"bastion"},
+		StartedAt:        oldEnd.Add(-time.Hour),
+		EndedAt:          &oldEnd,
+		ExitCode:         &exitCode,
+		LocalPID:         100,
+		SSHPID:           101,
+		RunnerMode:       "supervised",
+		DisconnectReason: "latency unhealthy for 30s",
+		Events: []state.SessionEvent{{
+			Time:            oldEnd.Add(-30 * time.Second),
+			Type:            "latency_disconnect",
+			Message:         "latency unhealthy for 30s",
+			LatencyMillis:   5000,
+			ThresholdMillis: 2000,
+		}},
 	}
 	recentRecord := state.SessionRecord{
 		ID:          "recent",
@@ -481,6 +526,9 @@ func TestRunSessionListShowAndPrune(t *testing.T) {
 	}
 	assertContains(t, showStdout.String(), "route:\tbastion -> prod")
 	assertContains(t, showStdout.String(), "exit_code:\t0")
+	assertContains(t, showStdout.String(), "disconnect_reason:\tlatency unhealthy")
+	assertContains(t, showStdout.String(), "events:")
+	assertContains(t, showStdout.String(), "latency_disconnect")
 
 	var pruneStdout bytes.Buffer
 	code = Run([]string{"session", "prune", "--older-than", "168h", "--dry-run", "--state-dir", stateDir}, &pruneStdout, nil, BuildInfo{})
@@ -547,9 +595,9 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 		t.Fatalf("session map returned %d, want 0", code)
 	}
 	assertContains(t, stdout.String(), "Session route map")
-	assertContains(t, stdout.String(), "bastion [exit 0]")
 	assertContains(t, stdout.String(), "+- prod [active]")
 	assertContains(t, stdout.String(), "route: bastion -> prod")
+	assertNotContains(t, stdout.String(), "bastion [exit 0]")
 
 	stdout.Reset()
 	code = Run([]string{"session", "map", "--json", "--state-dir", stateDir}, &stdout, nil, BuildInfo{})
@@ -557,8 +605,11 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 		t.Fatalf("session map --json returned %d, want 0", code)
 	}
 	var got struct {
-		Total int `json:"total"`
-		Roots []struct {
+		Scope    string `json:"scope"`
+		Total    int    `json:"total"`
+		Active   int    `json:"active"`
+		Recorded int    `json:"recorded"`
+		Roots    []struct {
 			Record   state.SessionRecord `json:"record"`
 			Children []struct {
 				Record state.SessionRecord `json:"record"`
@@ -568,7 +619,31 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal map returned error: %v\n%s", err, stdout.String())
 	}
-	if got.Total != 2 || len(got.Roots) != 1 || got.Roots[0].Record.ID != "root" || len(got.Roots[0].Children) != 1 || got.Roots[0].Children[0].Record.ID != "child" {
+	if got.Scope != "active" || got.Total != 1 || got.Active != 1 || got.Recorded != 2 || len(got.Roots) != 1 || got.Roots[0].Record.ID != "child" || len(got.Roots[0].Children) != 0 {
+		t.Fatalf("active map json = %#v", got)
+	}
+
+	stdout.Reset()
+	code = Run([]string{"session", "map", "--all", "--json", "--state-dir", stateDir}, &stdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session map --all --json returned %d, want 0", code)
+	}
+	got = struct {
+		Scope    string `json:"scope"`
+		Total    int    `json:"total"`
+		Active   int    `json:"active"`
+		Recorded int    `json:"recorded"`
+		Roots    []struct {
+			Record   state.SessionRecord `json:"record"`
+			Children []struct {
+				Record state.SessionRecord `json:"record"`
+			} `json:"children"`
+		} `json:"roots"`
+	}{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal map --all returned error: %v\n%s", err, stdout.String())
+	}
+	if got.Scope != "all" || got.Total != 2 || got.Recorded != 2 || len(got.Roots) != 1 || got.Roots[0].Record.ID != "root" || len(got.Roots[0].Children) != 1 || got.Roots[0].Children[0].Record.ID != "child" {
 		t.Fatalf("map json = %#v", got)
 	}
 }

@@ -22,20 +22,22 @@ const (
 )
 
 type SessionRecord struct {
-	ID           string     `json:"id"`
-	ParentID     string     `json:"parent_id,omitempty"`
-	Depth        int        `json:"depth"`
-	Route        []string   `json:"route,omitempty"`
-	TargetAlias  string     `json:"target_alias,omitempty"`
-	Hops         []string   `json:"hops,omitempty"`
-	SSHArgv      []string   `json:"ssh_argv,omitempty"`
-	StartedAt    time.Time  `json:"started_at"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
-	LocalPID     int        `json:"local_pid"`
-	SSHPID       int        `json:"ssh_pid,omitempty"`
-	ExitCode     *int       `json:"exit_code,omitempty"`
-	RunnerMode   string     `json:"runner_mode"`
-	StateVersion int        `json:"state_version"`
+	ID               string         `json:"id"`
+	ParentID         string         `json:"parent_id,omitempty"`
+	Depth            int            `json:"depth"`
+	Route            []string       `json:"route,omitempty"`
+	TargetAlias      string         `json:"target_alias,omitempty"`
+	Hops             []string       `json:"hops,omitempty"`
+	SSHArgv          []string       `json:"ssh_argv,omitempty"`
+	StartedAt        time.Time      `json:"started_at"`
+	EndedAt          *time.Time     `json:"ended_at,omitempty"`
+	LocalPID         int            `json:"local_pid"`
+	SSHPID           int            `json:"ssh_pid,omitempty"`
+	ExitCode         *int           `json:"exit_code,omitempty"`
+	RunnerMode       string         `json:"runner_mode"`
+	Events           []SessionEvent `json:"events,omitempty"`
+	DisconnectReason string         `json:"disconnect_reason,omitempty"`
+	StateVersion     int            `json:"state_version"`
 }
 
 func (r SessionRecord) Status() string {
@@ -43,6 +45,14 @@ func (r SessionRecord) Status() string {
 		return "active"
 	}
 	return "exited"
+}
+
+type SessionEvent struct {
+	Time            time.Time `json:"time"`
+	Type            string    `json:"type"`
+	Message         string    `json:"message,omitempty"`
+	LatencyMillis   int64     `json:"latency_ms,omitempty"`
+	ThresholdMillis int64     `json:"threshold_ms,omitempty"`
 }
 
 func NewSessionID(now time.Time) string {

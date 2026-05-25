@@ -4,14 +4,15 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 7 session UX. The repository has a Go module,
+Current status: Phase 8 latency watchdog. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
 config mutations, jump routing, SOCKS proxy launching, safe
 `authorized_keys` management, supervised PTY sessions by default with
 local session records, a session route map, an upgraded first-screen
-picker, CI, contributor notes, and a draft GoReleaser config with
-publishing disabled.
+picker, opt-in sidecar latency warnings, explicit latency disconnects,
+CI, contributor notes, and a draft GoReleaser config with publishing
+disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -32,6 +33,7 @@ go run ./cmd/ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 go run ./cmd/ssherpa --select ALIAS
 go run ./cmd/ssherpa session list
 go run ./cmd/ssherpa session map
+go run ./cmd/ssherpa session map --all
 go run ./cmd/ssherpa session show SESSION_ID
 go test ./...
 go vet ./...
@@ -52,8 +54,15 @@ supervised PTY by default, propagate basic `SSHERPA_SESSION_*` metadata
 into the child process, and write JSON records under the platform state
 directory. The default picker opens with a status summary, grouped
 actions, host rows, and a Sessions route map entry. While inside a
-supervised session, press `Ctrl-]` to open the local session map overlay;
-press `Ctrl-]`, `q`, or `Esc` to return to the remote session. Use
+supervised session, press `Ctrl-]` to open the local active-session map
+overlay; press `Ctrl-]`, `q`, or `Esc` to return to the remote session.
+`ssherpa session map` shows active sessions by default; use
+`ssherpa session map --all` only when you want historical exited records
+in the lineage view. Use
+`--latency-warn DURATION` to enable the opt-in sidecar SSH health probe
+and record local warning events. Use `--latency-disconnect DURATION`
+only when you explicitly want ssherpa to terminate a session after
+sustained unhealthy probes; it requires `--latency-warn`. Use
 `--direct` only when you need the old unsupervised runner. Use
 `--state-dir PATH` or `SSHERPA_STATE_DIR` for disposable testing.
 
@@ -80,10 +89,13 @@ ssherpa authkeys merge --from-dir ./keys --dry-run
 ssherpa authkeys replace --from-dir ./keys --yes
 ssherpa authkeys delete --fingerprint SHA256:... --yes
 ssherpa --select prod
+ssherpa --select prod --latency-warn 2s
+ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
 ssherpa --direct --select prod
 ssherpa jump --dest prod --hop bastion
 ssherpa session list
 ssherpa session map
+ssherpa session map --all
 ssherpa session map --json
 ssherpa session show 20260524T120000.000000000Z-abcd1234
 ssherpa session prune --older-than 168h --dry-run

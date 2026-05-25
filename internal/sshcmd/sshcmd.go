@@ -79,6 +79,24 @@ func BuildProxy(base Command, alias string, bind string, port int, extraArgs []s
 	return Command{Argv: argv}
 }
 
+func BuildProbe(base Command, alias string, hops []string) Command {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || len(base.Argv) == 0 {
+		return Command{}
+	}
+
+	argv := append([]string(nil), base.Argv...)
+	argv = append(argv,
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=5",
+	)
+	if len(hops) > 0 {
+		argv = append(argv, "-J", strings.Join(hops, ","))
+	}
+	argv = append(argv, alias, "true")
+	return Command{Argv: argv}
+}
+
 func ValidateJumpRoute(destination string, hops []string) error {
 	destination = strings.TrimSpace(destination)
 	if destination == "" {

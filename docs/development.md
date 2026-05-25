@@ -118,13 +118,20 @@ chmod +x "$tmp/fake-ssh"
 go run ./cmd/ssherpa --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
 go run ./cmd/ssherpa session list --json --state-dir "$tmp/state"
 go run ./cmd/ssherpa session map --state-dir "$tmp/state"
+go run ./cmd/ssherpa session map --all --state-dir "$tmp/state"
+go run ./cmd/ssherpa --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --latency-warn 1ms --config internal/sshconfig/testdata/matrix/config
+go run ./cmd/ssherpa session list --json --state-dir "$tmp/state"
 go build -trimpath -o ssherpa ./cmd/ssherpa
 ```
 
 For manual supervised-session UX testing, connect normally and press
-`Ctrl-]` during the session. The local session map overlay should open;
-press `Ctrl-]`, `q`, or `Esc` to return to the remote PTY. Use
-`--direct` only when testing the unsupervised runner.
+`Ctrl-]` during the session. The local active-session map overlay should
+open; press `Ctrl-]`, `q`, or `Esc` to return to the remote PTY. Use
+`--latency-warn 2s` to enable the local sidecar probe. The warning is
+printed locally, recorded in session state, and never sent to the remote
+PTY. Add `--latency-disconnect 30s` only when testing explicit
+auto-disconnect behavior; it requires `--latency-warn`. Use `--direct`
+only when testing the unsupervised runner.
 
 The native build output `ssherpa` is ignored by git.
 

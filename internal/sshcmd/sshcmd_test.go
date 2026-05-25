@@ -81,6 +81,15 @@ func TestBuildProxy(t *testing.T) {
 	}
 }
 
+func TestBuildProbe(t *testing.T) {
+	cmd := BuildProbe(Command{Argv: []string{"ssh"}}, "prod", []string{"bastion", "edge"})
+
+	want := "ssh\x00-o\x00BatchMode=yes\x00-o\x00ConnectTimeout=5\x00-J\x00bastion,edge\x00prod\x00true"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
 func TestValidateJumpRoute(t *testing.T) {
 	tests := []struct {
 		name        string

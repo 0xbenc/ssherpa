@@ -12,15 +12,17 @@ import (
 
 const sessionUsage = `Usage:
   ssherpa session list [--json] [--state-dir PATH]
-  ssherpa session map [--json] [--state-dir PATH]
+  ssherpa session map [--json] [--all] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
   ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
 `
 
 type sessionMapOutput struct {
 	StateDir string              `json:"state_dir"`
+	Scope    string              `json:"scope"`
 	Total    int                 `json:"total"`
 	Active   int                 `json:"active"`
+	Recorded int                 `json:"recorded"`
 	Roots    []state.SessionNode `json:"roots"`
 }
 
@@ -29,6 +31,7 @@ type sessionFlags struct {
 	StateDir  string
 	OlderThan time.Duration
 	DryRun    bool
+	All       bool
 	Rest      []string
 }
 
@@ -54,7 +57,7 @@ func runSession(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
-	flags, ok := parseSessionFlags(args, stderr, false)
+	flags, ok := parseSessionFlags(args, stderr, false, false)
 	if !ok {
 		return 1
 	}
@@ -83,7 +86,7 @@ func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
-	flags, ok := parseSessionFlags(args, stderr, false)
+	flags, ok := parseSessionFlags(args, stderr, false, true)
 	if !ok {
 		return 1
 	}
@@ -103,23 +106,32 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	roots := state.BuildSessionForest(records)
+	visible := records
+	scope := "active"
+	if !flags.All {
+		visible = sessionview.ActiveRecords(records)
+	} else {
+		scope = "all"
+	}
+	roots := state.BuildSessionForest(visible)
 	active, _ := sessionview.CountStatuses(records)
 	if flags.JSON {
 		writeJSON(stdout, sessionMapOutput{
 			StateDir: stateDir,
-			Total:    len(records),
+			Scope:    scope,
+			Total:    len(visible),
 			Active:   active,
+			Recorded: len(records),
 			Roots:    roots,
 		})
 		return 0
 	}
-	sessionview.WriteMap(stdout, stateDir, records)
+	sessionview.WriteMapWithOptions(stdout, stateDir, records, sessionview.MapOptions{IncludeExited: flags.All})
 	return 0
 }
 
 func runSessionShow(args []string, stdout io.Writer, stderr io.Writer) int {
-	flags, ok := parseSessionFlags(args, stderr, false)
+	flags, ok := parseSessionFlags(args, stderr, false, false)
 	if !ok {
 		return 1
 	}
@@ -148,7 +160,7 @@ func runSessionShow(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runSessionPrune(args []string, stdout io.Writer, stderr io.Writer) int {
-	flags, ok := parseSessionFlags(args, stderr, true)
+	flags, ok := parseSessionFlags(args, stderr, true, false)
 	if !ok {
 		return 1
 	}
@@ -190,7 +202,7 @@ func runSessionPrune(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func parseSessionFlags(args []string, stderr io.Writer, allowPruneFlags bool) (sessionFlags, bool) {
+func parseSessionFlags(args []string, stderr io.Writer, allowPruneFlags bool, allowAllFlag bool) (sessionFlags, bool) {
 	flags := sessionFlags{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -226,6 +238,8 @@ func parseSessionFlags(args []string, stderr io.Writer, allowPruneFlags bool) (s
 			flags.OlderThan = olderThan
 		case arg == "--dry-run" && allowPruneFlags:
 			flags.DryRun = true
+		case arg == "--all" && allowAllFlag:
+			flags.All = true
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(stderr, "ssherpa: unknown session flag %q\n", arg)
 			return flags, false
@@ -257,10 +271,29 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 	if record.ExitCode != nil {
 		fmt.Fprintf(stdout, "exit_code:\t%d\n", *record.ExitCode)
 	}
+	if record.DisconnectReason != "" {
+		fmt.Fprintf(stdout, "disconnect_reason:\t%s\n", record.DisconnectReason)
+	}
 	fmt.Fprintf(stdout, "local_pid:\t%d\n", record.LocalPID)
 	fmt.Fprintf(stdout, "ssh_pid:\t%d\n", record.SSHPID)
 	fmt.Fprintf(stdout, "runner:\t%s\n", record.RunnerMode)
 	fmt.Fprintf(stdout, "argv:\t%s\n", strings.Join(record.SSHArgv, " "))
+	if len(record.Events) > 0 {
+		fmt.Fprintln(stdout, "events:")
+		for _, event := range record.Events {
+			fmt.Fprintf(stdout, "- %s\t%s", event.Time.Local().Format(time.RFC3339), event.Type)
+			if event.LatencyMillis > 0 {
+				fmt.Fprintf(stdout, "\tlatency=%dms", event.LatencyMillis)
+			}
+			if event.ThresholdMillis > 0 {
+				fmt.Fprintf(stdout, "\tthreshold=%dms", event.ThresholdMillis)
+			}
+			if event.Message != "" {
+				fmt.Fprintf(stdout, "\t%s", event.Message)
+			}
+			fmt.Fprintln(stdout)
+		}
+	}
 }
 
 func formatOptionalTime(value *time.Time) string {

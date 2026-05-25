@@ -23,27 +23,50 @@ func WriteList(w io.Writer, stateDir string, records []state.SessionRecord) {
 	writeListGroup(w, "Exited", records, false)
 }
 
+type MapOptions struct {
+	CurrentID     string
+	IncludeExited bool
+}
+
 func MapLines(stateDir string, records []state.SessionRecord, currentID string) []string {
+	return MapLinesWithOptions(stateDir, records, MapOptions{CurrentID: currentID})
+}
+
+func MapLinesWithOptions(stateDir string, records []state.SessionRecord, opts MapOptions) []string {
 	active, exited := CountStatuses(records)
-	lines := []string{
-		"Session route map",
-		fmt.Sprintf("state: %s", stateDir),
-		fmt.Sprintf("active: %d  exited: %d  total: %d", active, exited, len(records)),
-		"",
-	}
-	if len(records) == 0 {
-		return append(lines, "No supervised sessions recorded.")
+	visible := records
+	if !opts.IncludeExited {
+		visible = ActiveRecords(records)
 	}
 
-	roots := state.BuildSessionForest(records)
+	lines := []string{"Session route map", fmt.Sprintf("state: %s", stateDir)}
+	if opts.IncludeExited {
+		lines = append(lines, fmt.Sprintf("active: %d  exited: %d  total: %d", active, exited, len(records)))
+	} else {
+		lines = append(lines, fmt.Sprintf("active: %d", active))
+	}
+	lines = append(lines, "")
+
+	if len(visible) == 0 {
+		if opts.IncludeExited {
+			return append(lines, "No supervised sessions recorded.")
+		}
+		return append(lines, "No active supervised sessions.")
+	}
+
+	roots := state.BuildSessionForest(visible)
 	for i, root := range roots {
-		lines = appendNodeLines(lines, root, "", i == len(roots)-1, currentID)
+		lines = appendNodeLines(lines, root, "", i == len(roots)-1, opts.CurrentID)
 	}
 	return lines
 }
 
 func WriteMap(w io.Writer, stateDir string, records []state.SessionRecord) {
-	for _, line := range MapLines(stateDir, records, "") {
+	WriteMapWithOptions(w, stateDir, records, MapOptions{})
+}
+
+func WriteMapWithOptions(w io.Writer, stateDir string, records []state.SessionRecord, opts MapOptions) {
+	for _, line := range MapLinesWithOptions(stateDir, records, opts) {
 		fmt.Fprintln(w, line)
 	}
 }
@@ -57,6 +80,16 @@ func CountStatuses(records []state.SessionRecord) (active int, exited int) {
 		}
 	}
 	return active, exited
+}
+
+func ActiveRecords(records []state.SessionRecord) []state.SessionRecord {
+	active := make([]state.SessionRecord, 0, len(records))
+	for _, record := range records {
+		if record.Status() == "active" {
+			active = append(active, record)
+		}
+	}
+	return active
 }
 
 func StatusLabel(record state.SessionRecord) string {
@@ -104,6 +137,9 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 			FormatRoute(record.Route),
 			record.StartedAt.Local().Format(time.RFC3339),
 		)
+		if health := HealthSummary(record); health != "" {
+			fmt.Fprintf(w, "\thealth=%s\n", health)
+		}
 	}
 }
 
@@ -133,8 +169,28 @@ func appendNodeLines(lines []string, node state.SessionNode, prefix string, last
 	if len(record.Hops) > 0 {
 		lines = append(lines, fmt.Sprintf("%s   hops: %s", prefix, FormatRoute(record.Hops)))
 	}
+	if health := HealthSummary(record); health != "" {
+		lines = append(lines, fmt.Sprintf("%s   health: %s", prefix, health))
+	}
 	for i, child := range node.Children {
 		lines = appendNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID)
 	}
 	return lines
+}
+
+func HealthSummary(record state.SessionRecord) string {
+	if record.DisconnectReason != "" {
+		return "disconnected: " + record.DisconnectReason
+	}
+	if len(record.Events) == 0 {
+		return ""
+	}
+	last := record.Events[len(record.Events)-1]
+	switch last.Type {
+	case "latency_warning":
+		return last.Message
+	case "latency_disconnect":
+		return "disconnected: " + last.Message
+	}
+	return ""
 }

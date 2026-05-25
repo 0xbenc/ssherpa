@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -158,6 +159,157 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedLatencyWarningRecordsEventOutsideRemoteStream(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", "sleep 0.05; printf 'remote stream'"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Watchdog: WatchdogOptions{
+				WarnThreshold: time.Millisecond,
+				Interval:      time.Hour,
+				ProbeCommand:  sshcmd.Command{Argv: []string{"ssh", "prod", "true"}},
+				RunProbe: func(context.Context, sshcmd.Command) ProbeResult {
+					return ProbeResult{Duration: 50 * time.Millisecond}
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "remote stream") {
+		t.Fatalf("stdout = %q, want remote output", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "latency warning") {
+		t.Fatalf("stdout = %q, latency warning leaked into remote stream", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "latency warning") {
+		t.Fatalf("stderr = %q, want local latency warning", stderr.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	if got := sessionEventTypes(records[0]); strings.Join(got, ",") != "latency_warning" {
+		t.Fatalf("event types = %#v, want latency_warning", got)
+	}
+	if records[0].DisconnectReason != "" {
+		t.Fatalf("disconnect reason = %q, want empty", records[0].DisconnectReason)
+	}
+}
+
+func TestRunSupervisedLatencyWarningDoesNotDisconnectByDefault(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", "sleep 0.04; exit 0"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Watchdog: WatchdogOptions{
+				WarnThreshold: time.Millisecond,
+				Interval:      time.Hour,
+				ProbeCommand:  sshcmd.Command{Argv: []string{"ssh", "prod", "true"}},
+				RunProbe: func(context.Context, sshcmd.Command) ProbeResult {
+					return ProbeResult{Duration: 50 * time.Millisecond}
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].ExitCode == nil || *records[0].ExitCode != 0 {
+		t.Fatalf("record lifecycle = %#v, want normal exit 0", records)
+	}
+	if records[0].DisconnectReason != "" {
+		t.Fatalf("disconnect reason = %q, want empty", records[0].DisconnectReason)
+	}
+}
+
+func TestRunSupervisedLatencyDisconnectRecordsReason(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sleep", "5"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Watchdog: WatchdogOptions{
+				WarnThreshold:   time.Millisecond,
+				DisconnectAfter: 10 * time.Millisecond,
+				Interval:        5 * time.Millisecond,
+				ProbeCommand:    sshcmd.Command{Argv: []string{"ssh", "prod", "true"}},
+				RunProbe: func(context.Context, sshcmd.Command) ProbeResult {
+					return ProbeResult{Duration: 50 * time.Millisecond}
+				},
+			},
+		},
+	)
+
+	if code == 0 {
+		t.Fatalf("RunSupervised returned %d, want non-zero disconnect; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "latency disconnect") {
+		t.Fatalf("stderr = %q, want latency disconnect notice", stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	if !strings.Contains(records[0].DisconnectReason, "latency unhealthy") {
+		t.Fatalf("disconnect reason = %q, want latency unhealthy", records[0].DisconnectReason)
+	}
+	if got := strings.Join(sessionEventTypes(records[0]), ","); got != "latency_warning,latency_disconnect" {
+		t.Fatalf("event types = %q, want warning and disconnect", got)
+	}
+}
+
 func TestRunSupervisedRejectsEmptyCommand(t *testing.T) {
 	var stderr bytes.Buffer
 
@@ -203,4 +355,12 @@ func fixedClock() func() time.Time {
 		current = current.Add(time.Second)
 		return current
 	}
+}
+
+func sessionEventTypes(record state.SessionRecord) []string {
+	types := make([]string, 0, len(record.Events))
+	for _, event := range record.Events {
+		types = append(types, event.Type)
+	}
+	return types
 }

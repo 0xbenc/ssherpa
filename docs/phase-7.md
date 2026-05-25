@@ -33,6 +33,7 @@ state:
 
 ```sh
 ssherpa session map
+ssherpa session map --all
 ssherpa session map --json
 ssherpa session map --state-dir /tmp/ssherpa-state
 ```
@@ -42,21 +43,23 @@ Text output is intended for quick inspection:
 ```text
 Session route map
 state: /tmp/ssherpa-state
-active: 1  exited: 1  total: 2
+active: 1
 
-+- bastion [exit 0] depth=0 id=root
-   route: bastion
-   +- prod [active] depth=1 id=child
-      route: bastion -> prod
++- prod [active] depth=1 id=child
+   route: bastion -> prod
 ```
 
-JSON output keeps the full records and nested children:
+The default map is a live route view and only shows active sessions. Use
+`--all` when you need historical exited records. JSON output keeps the
+visible records and nested children:
 
 ```json
 {
   "state_dir": "/tmp/ssherpa-state",
-  "total": 2,
+  "scope": "active",
+  "total": 1,
   "active": 1,
+  "recorded": 2,
   "roots": []
 }
 ```
@@ -94,7 +97,7 @@ Esc     close
 r       refresh
 ```
 
-The overlay renders from local session state. It marks the current
+The overlay renders active local session state. It marks the current
 session and blocks remote output from drawing over the overlay until the
 overlay closes.
 
@@ -124,13 +127,14 @@ go run ./cmd/ssherpa \
   --config internal/sshconfig/testdata/matrix/config
 
 go run ./cmd/ssherpa session map --state-dir "$tmp/state"
+go run ./cmd/ssherpa session map --all --state-dir "$tmp/state"
 go run ./cmd/ssherpa session map --json --state-dir "$tmp/state"
 ```
 
 ## Known Limits
 
-- The map is built from local session records. It does not inspect
-  remote process trees.
+- The default map is built from active local session records. It does
+  not inspect remote process trees. Use `--all` for historical lineage.
 - The in-session overlay is local terminal output. Full-screen remote
   programs may repaint after the overlay closes.
 - Latency monitoring and queued input remain later phases.

@@ -32,7 +32,7 @@ func TestBuildItemsIncludesSessionCounts(t *testing.T) {
 	if session.Kind != ItemSessions {
 		t.Fatalf("items[5].Kind = %q, want sessions", session.Kind)
 	}
-	if session.Description != "2 active / 4 recorded sessions" {
+	if session.Description != "2 active sessions (4 recorded)" {
 		t.Fatalf("session description = %q", session.Description)
 	}
 }

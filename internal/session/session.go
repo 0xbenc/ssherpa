@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,27 @@ type Options struct {
 	Stderr   io.Writer
 	Env      []string
 	Now      func() time.Time
+	Watchdog WatchdogOptions
+}
+
+type WatchdogOptions struct {
+	WarnThreshold   time.Duration
+	DisconnectAfter time.Duration
+	Interval        time.Duration
+	ProbeTimeout    time.Duration
+	ProbeCommand    sshcmd.Command
+	RunProbe        ProbeRunner
+}
+
+type ProbeResult struct {
+	Duration time.Duration
+	Err      error
+}
+
+type ProbeRunner func(context.Context, sshcmd.Command) ProbeResult
+
+func (w WatchdogOptions) Enabled() bool {
+	return w.WarnThreshold > 0
 }
 
 func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int {
@@ -68,6 +90,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		env = os.Environ()
 	}
 	record := buildRecord(command, metadata, now(), env)
+	var recordMu sync.Mutex
 
 	proc := exec.Command(command.Argv[0], command.Argv[1:]...)
 	proc.Env = sessionEnv(env, record)
@@ -87,7 +110,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	defer ptmx.Close()
 
 	record.SSHPID = proc.Process.Pid
-	if err := state.WriteRecord(stateDir, record); err != nil {
+	if err := writeRecordLocked(stateDir, &record, &recordMu); err != nil {
 		_ = proc.Process.Kill()
 		_ = proc.Wait()
 		fmt.Fprintf(stderr, "ssherpa: write session record: %v\n", err)
@@ -102,19 +125,32 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		_, _ = io.Copy(output, ptmx)
 		close(outputDone)
 	}()
+	stopWatchdog := startLatencyWatchdog(latencyWatchdogConfig{
+		Options:  opts.Watchdog,
+		StateDir: stateDir,
+		Record:   &record,
+		RecordMu: &recordMu,
+		Stderr:   stderr,
+		Process:  proc.Process,
+		Now:      now,
+	})
 
 	stopSignals := forwardSignals(stdin, ptmx, proc)
 	waitErr := proc.Wait()
 	close(done)
+	stopWatchdog()
 	stopSignals()
 	_ = ptmx.Close()
 	<-outputDone
 
 	exitCode := exitCodeFromError(waitErr)
 	endedAt := now().UTC()
+	recordMu.Lock()
 	record.EndedAt = &endedAt
 	record.ExitCode = &exitCode
-	if err := state.WriteRecord(stateDir, record); err != nil {
+	err = state.WriteRecord(stateDir, record)
+	recordMu.Unlock()
+	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: update session record: %v\n", err)
 		if exitCode == 0 {
 			return 1
@@ -145,6 +181,12 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		RunnerMode:   RunnerModeSupervised,
 		StateVersion: state.StateVersion,
 	}
+}
+
+func writeRecordLocked(stateDir string, record *state.SessionRecord, mu *sync.Mutex) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return state.WriteRecord(stateDir, *record)
 }
 
 func sessionEnv(env []string, record state.SessionRecord) []string {
@@ -299,11 +341,194 @@ func sessionOverlayLines(stateDir string, currentID string) []string {
 			"error: " + err.Error(),
 		}
 	}
-	lines := sessionview.MapLines(stateDir, records, currentID)
+	lines := sessionview.MapLinesWithOptions(stateDir, records, sessionview.MapOptions{CurrentID: currentID})
 	if len(lines) > 0 {
 		lines[0] = "ssherpa session map (local overlay)"
 	}
 	return lines
+}
+
+const (
+	defaultLatencyProbeInterval = 10 * time.Second
+	defaultLatencyProbeTimeout  = 10 * time.Second
+	latencyKillGrace            = 2 * time.Second
+)
+
+type latencyWatchdogConfig struct {
+	Options  WatchdogOptions
+	StateDir string
+	Record   *state.SessionRecord
+	RecordMu *sync.Mutex
+	Stderr   io.Writer
+	Process  *os.Process
+	Now      func() time.Time
+}
+
+func startLatencyWatchdog(cfg latencyWatchdogConfig) func() {
+	if !cfg.Options.Enabled() {
+		return func() {}
+	}
+	if len(cfg.Options.ProbeCommand.Argv) == 0 {
+		fmt.Fprintln(cfg.Stderr, "ssherpa: latency watchdog disabled: no sidecar probe command")
+		return func() {}
+	}
+	if cfg.Process == nil {
+		fmt.Fprintln(cfg.Stderr, "ssherpa: latency watchdog disabled: no supervised process")
+		return func() {}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLatencyWatchdog(ctx, cfg)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func runLatencyWatchdog(ctx context.Context, cfg latencyWatchdogConfig) {
+	runner := cfg.Options.RunProbe
+	if runner == nil {
+		runner = runSidecarProbe
+	}
+	interval := cfg.Options.Interval
+	if interval <= 0 {
+		interval = defaultLatencyProbeInterval
+	}
+	timeout := cfg.Options.ProbeTimeout
+	if timeout <= 0 {
+		timeout = defaultLatencyProbeTimeout
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+
+	var unhealthySince time.Time
+	warningActive := false
+	disconnected := false
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		started := time.Now()
+		result := runner(probeCtx, cfg.Options.ProbeCommand)
+		probeErr := probeCtx.Err()
+		cancel()
+		if result.Duration <= 0 {
+			result.Duration = time.Since(started)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if probeErr != nil && result.Err == nil {
+			result.Err = probeErr
+		}
+
+		sampleTime := now().UTC()
+		unhealthy, message := latencyProbeUnhealthy(result, cfg.Options.WarnThreshold)
+		if unhealthy {
+			if unhealthySince.IsZero() {
+				unhealthySince = sampleTime
+			}
+			if !warningActive {
+				writeLatencyEvent(cfg, state.SessionEvent{
+					Time:            sampleTime,
+					Type:            "latency_warning",
+					Message:         message,
+					LatencyMillis:   durationMillis(result.Duration),
+					ThresholdMillis: durationMillis(cfg.Options.WarnThreshold),
+				}, "")
+				fmt.Fprintf(cfg.Stderr, "\nssherpa: latency warning: %s\n", message)
+				warningActive = true
+			}
+			if cfg.Options.DisconnectAfter > 0 && !disconnected && sampleTime.Sub(unhealthySince) >= cfg.Options.DisconnectAfter {
+				reason := fmt.Sprintf("latency unhealthy for %s; disconnect threshold %s", sampleTime.Sub(unhealthySince).Round(time.Millisecond), cfg.Options.DisconnectAfter)
+				writeLatencyEvent(cfg, state.SessionEvent{
+					Time:            sampleTime,
+					Type:            "latency_disconnect",
+					Message:         reason,
+					LatencyMillis:   durationMillis(result.Duration),
+					ThresholdMillis: durationMillis(cfg.Options.WarnThreshold),
+				}, reason)
+				fmt.Fprintf(cfg.Stderr, "\nssherpa: latency disconnect: %s\n", reason)
+				_ = cfg.Process.Signal(syscall.SIGTERM)
+				scheduleForceKill(ctx, cfg.Process)
+				disconnected = true
+				return
+			}
+		} else if warningActive {
+			writeLatencyEvent(cfg, state.SessionEvent{
+				Time:            sampleTime,
+				Type:            "latency_recovered",
+				Message:         fmt.Sprintf("sidecar probe recovered in %s", result.Duration.Round(time.Millisecond)),
+				LatencyMillis:   durationMillis(result.Duration),
+				ThresholdMillis: durationMillis(cfg.Options.WarnThreshold),
+			}, "")
+			fmt.Fprintf(cfg.Stderr, "\nssherpa: latency recovered: sidecar probe completed in %s\n", result.Duration.Round(time.Millisecond))
+			unhealthySince = time.Time{}
+			warningActive = false
+		}
+
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func runSidecarProbe(ctx context.Context, command sshcmd.Command) ProbeResult {
+	started := time.Now()
+	proc := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...)
+	proc.Stdin = nil
+	proc.Stdout = io.Discard
+	proc.Stderr = io.Discard
+	err := proc.Run()
+	return ProbeResult{Duration: time.Since(started), Err: err}
+}
+
+func latencyProbeUnhealthy(result ProbeResult, threshold time.Duration) (bool, string) {
+	if result.Err != nil {
+		return true, fmt.Sprintf("sidecar probe failed after %s: %v", result.Duration.Round(time.Millisecond), result.Err)
+	}
+	if result.Duration > threshold {
+		return true, fmt.Sprintf("sidecar probe took %s; threshold %s", result.Duration.Round(time.Millisecond), threshold)
+	}
+	return false, ""
+}
+
+func writeLatencyEvent(cfg latencyWatchdogConfig, event state.SessionEvent, disconnectReason string) {
+	cfg.RecordMu.Lock()
+	cfg.Record.Events = append(cfg.Record.Events, event)
+	if disconnectReason != "" {
+		cfg.Record.DisconnectReason = disconnectReason
+	}
+	err := state.WriteRecord(cfg.StateDir, *cfg.Record)
+	cfg.RecordMu.Unlock()
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "\nssherpa: update latency event: %v\n", err)
+	}
+}
+
+func scheduleForceKill(ctx context.Context, process *os.Process) {
+	go func() {
+		timer := time.NewTimer(latencyKillGrace)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			_ = process.Kill()
+		}
+	}()
+}
+
+func durationMillis(value time.Duration) int64 {
+	return value.Round(time.Millisecond).Milliseconds()
 }
 
 func overlaySize(stdin *os.File) (width int, height int, ok bool) {

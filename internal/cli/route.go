@@ -38,13 +38,19 @@ type connectOptions struct {
 	Print     bool
 	Supervise bool
 	StateDir  string
+	Watchdog  session.WatchdogOptions
 }
 
-func (flags connectFlags) connectOptions() connectOptions {
+func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 	return connectOptions{
 		Print:     flags.Print,
 		Supervise: !flags.Direct,
 		StateDir:  flags.StateDir,
+		Watchdog: session.WatchdogOptions{
+			WarnThreshold:   flags.LatencyWarn,
+			DisconnectAfter: flags.LatencyDisconnect,
+			ProbeCommand:    probe,
+		},
 	}
 }
 
@@ -56,6 +62,9 @@ func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	flags, ok := parseJumpFlags(args, stderr)
 	if !ok {
+		return 1
+	}
+	if !validateLatencyFlags(flags.connectFlags, stderr) {
 		return 1
 	}
 	if flags.JSON {
@@ -81,11 +90,12 @@ func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildJump(base, destination, hops, flags.SSHArgs)
-	return printOrRunSSH(cmd, flags.connectOptions(), session.Metadata{
+	metadata := session.Metadata{
 		TargetAlias: destination,
 		Hops:        hops,
 		Route:       append(append([]string(nil), hops...), destination),
-	}, stdout, stderr)
+	}
+	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
 }
 
 func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -96,6 +106,9 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	flags, ok := parseProxyFlags(args, stderr)
 	if !ok {
+		return 1
+	}
+	if !validateLatencyFlags(flags.connectFlags, stderr) {
 		return 1
 	}
 	if flags.JSON {
@@ -129,10 +142,11 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildProxy(base, alias.Name, flags.Bind, flags.Port, flags.SSHArgs)
-	return printOrRunSSH(cmd, flags.connectOptions(), session.Metadata{
+	metadata := session.Metadata{
 		TargetAlias: alias.Name,
 		Route:       []string{alias.Name},
-	}, stdout, stderr)
+	}
+	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
 }
 
 func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
@@ -198,6 +212,38 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.StateDir = value
 		case strings.HasPrefix(arg, "--state-dir="):
 			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case arg == "--latency-warn":
+			value, ok := nextArg(args, &i, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case strings.HasPrefix(arg, "--latency-warn="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-warn="), stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case arg == "--latency-disconnect":
+			value, ok := nextArg(args, &i, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
+		case strings.HasPrefix(arg, "--latency-disconnect="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-disconnect="), stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
 		case arg == "--dest" || arg == "--destination":
 			value, ok := nextArg(args, &i, stderr, arg)
 			if !ok {
@@ -307,6 +353,38 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.StateDir = value
 		case strings.HasPrefix(arg, "--state-dir="):
 			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case arg == "--latency-warn":
+			value, ok := nextArg(args, &i, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case strings.HasPrefix(arg, "--latency-warn="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-warn="), stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case arg == "--latency-disconnect":
+			value, ok := nextArg(args, &i, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
+		case strings.HasPrefix(arg, "--latency-disconnect="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-disconnect="), stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -570,11 +648,19 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 
 	if options.Supervise {
 		fmt.Fprintf(stderr, "[supervise] %s\n", sshcmd.QuoteArgv(cmd.Argv))
+		if options.Watchdog.Enabled() {
+			fmt.Fprintf(stderr, "[latency] sidecar %s warn=%s", sshcmd.QuoteArgv(options.Watchdog.ProbeCommand.Argv), options.Watchdog.WarnThreshold)
+			if options.Watchdog.DisconnectAfter > 0 {
+				fmt.Fprintf(stderr, " disconnect-after=%s", options.Watchdog.DisconnectAfter)
+			}
+			fmt.Fprintln(stderr)
+		}
 		return session.RunSupervised(cmd, metadata, session.Options{
 			StateDir: options.StateDir,
 			Stdin:    os.Stdin,
 			Stdout:   stdout,
 			Stderr:   stderr,
+			Watchdog: options.Watchdog,
 		})
 	}
 
@@ -618,6 +704,12 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.StateDir != "" {
 		args = append(args, "--state-dir", flags.StateDir)
+	}
+	if flags.LatencyWarn > 0 {
+		args = append(args, "--latency-warn", flags.LatencyWarn.String())
+	}
+	if flags.LatencyDisconnect > 0 {
+		args = append(args, "--latency-disconnect", flags.LatencyDisconnect.String())
 	}
 	if flags.NoKitty {
 		args = append(args, "--no-kitty")

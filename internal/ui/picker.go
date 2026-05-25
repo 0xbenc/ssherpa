@@ -325,13 +325,16 @@ func isControlKey(key string) bool {
 }
 
 func sessionDescription(opts BuildItemsOptions) string {
-	if opts.SessionCount == 0 {
-		return "inspect supervised session history"
-	}
 	if opts.ActiveSessionCount == 0 {
-		return fmt.Sprintf("%d recorded sessions", opts.SessionCount)
+		if opts.SessionCount == 0 {
+			return "no active sessions"
+		}
+		return fmt.Sprintf("no active sessions (%d recorded)", opts.SessionCount)
 	}
-	return fmt.Sprintf("%d active / %d recorded sessions", opts.ActiveSessionCount, opts.SessionCount)
+	if opts.SessionCount == opts.ActiveSessionCount {
+		return fmt.Sprintf("%d active sessions", opts.ActiveSessionCount)
+	}
+	return fmt.Sprintf("%d active sessions (%d recorded)", opts.ActiveSessionCount, opts.SessionCount)
 }
 
 func aliasBadge(alias hostlist.Alias) string {

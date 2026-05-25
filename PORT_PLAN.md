@@ -78,8 +78,11 @@ Current repository state:
   sessions, local JSON session records, nested route metadata, and
   `ssherpa session list/show/prune`. Phase 7 upgrades the first-screen
   picker, adds a Sessions route-map entry point, polishes session list
-  output, adds `ssherpa session map`, makes supervised mode the default,
-  and adds a `Ctrl-]` in-session route-map overlay.
+  output, adds an active-only `ssherpa session map`, makes supervised
+  mode the default, and adds a `Ctrl-]` in-session active route-map
+  overlay. Phase 8 adds an opt-in sidecar latency watchdog, local
+  warning events, and explicitly configured disconnects for sustained
+  unhealthy probes.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.
@@ -229,7 +232,7 @@ Session commands:
 
 ```text
 ssherpa session list [--json] [--state-dir PATH]
-ssherpa session map [--json] [--state-dir PATH]
+ssherpa session map [--json] [--all] [--state-dir PATH]
 ssherpa session show SESSION_ID [--json] [--state-dir PATH]
 ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
 ```
@@ -1318,7 +1321,7 @@ Acceptance:
 
 Deliverables:
 
-- Route lineage view for current and recent supervised sessions.
+- Route lineage view for current supervised sessions.
 - Clear parent/child display for nested local `ssherpa` launches.
 - TUI affordance for entering session view from the picker.
 - In-session route-map overlay hotkey for supervised sessions.
@@ -1328,28 +1331,29 @@ Deliverables:
 
 Acceptance:
 
-- A nested local route can be inspected as a readable map.
+- A nested active local route can be inspected as a readable map.
 - `Ctrl-]` opens a local overlay inside supervised sessions without
   sending the hotkey byte to the remote PTY.
 - Default connect/jump/proxy runs record session state without requiring
   `--supervise`.
 - Session UX does not require remote shell changes.
 - Existing `session list/show/prune` output remains script-friendly.
+- Historical route lineage remains available with `session map --all`.
 
 ### Phase 8: Latency Watchdog
 
 Deliverables:
 
-- Opt-in sidecar latency probe.
-- Warning threshold.
-- Session log events.
-- Optional disconnect threshold.
+- Opt-in sidecar latency probe. Done.
+- Warning threshold. Done.
+- Session log events. Done.
+- Optional disconnect threshold. Done.
 
 Acceptance:
 
-- Latency warnings do not write into the remote shell stream.
-- Auto-disconnect is impossible unless explicitly configured.
-- State records warning and disconnect reason.
+- Latency warnings do not write into the remote shell stream. Done.
+- Auto-disconnect is impossible unless explicitly configured. Done.
+- State records warning and disconnect reason. Done.
 
 ### Phase 9: Queued Input Composer
 
