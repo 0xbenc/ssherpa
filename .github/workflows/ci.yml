@@ -87,6 +87,19 @@ jobs:
           go run ./cmd/ssherpa authkeys merge --from-dir "$keys" --path "$auth" --dry-run
           go run ./cmd/ssherpa authkeys delete --fingerprint SHA256:HIw5mTiqXNXNO2h1Vh9R81VrAaKPj4DqNvb3oWElxwk --path "$auth" --yes
 
+      - name: Smoke test supervised sessions
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          {
+            printf '%s\n' '#!/bin/sh'
+            printf '%s\n' 'printf "fake supervised ssh: %s\n" "$*"'
+            printf '%s\n' 'exit 0'
+          } > "$tmp/fake-ssh"
+          chmod +x "$tmp/fake-ssh"
+          go run ./cmd/ssherpa --supervise --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
+          go run ./cmd/ssherpa session list --json --state-dir "$tmp/state"
+
       - name: Build native binary
         run: go build -trimpath -o ssherpa ./cmd/ssherpa
 

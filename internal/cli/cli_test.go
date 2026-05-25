@@ -8,8 +8,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
+	"github.com/0xbenc/ssherpa/internal/state"
 )
 
 const (
@@ -65,7 +67,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 5:")
+	assertContains(t, stdout.String(), "Phase 6:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -169,6 +171,43 @@ Host prod
 	}
 }
 
+func TestRunConnectSuperviseRecordsSession(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	fakeSSH, _ := writeFakeSSH(t, 0)
+	stateDir := t.TempDir()
+
+	code := Run([]string{"--supervise", "--state-dir", stateDir, "--select", "prod", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "[supervise]")
+	assertContains(t, stdout.String(), "fake ssh stdout")
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.TargetAlias != "prod" || strings.Join(record.Route, " -> ") != "prod" {
+		t.Fatalf("record route = %#v", record)
+	}
+	if record.Status() != "exited" || record.ExitCode == nil || *record.ExitCode != 0 {
+		t.Fatalf("record lifecycle = %#v", record)
+	}
+	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "prod\x00-v") {
+		t.Fatalf("record argv = %#v", record.SSHArgv)
+	}
+}
+
 func TestRunConnectRejectsUnknownFlag(t *testing.T) {
 	var stderr bytes.Buffer
 
@@ -198,13 +237,15 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 		},
 		Print:     true,
 		SSHBinary: "/tmp/fake-ssh",
+		Supervise: true,
+		StateDir:  "/tmp/state",
 		NoKitty:   true,
 		NoColor:   true,
 		SSHArgs:   []string{"-v"},
 	}
 
 	args := connectFlagsAsJumpArgs(flags)
-	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--no-kitty\x00--no-color\x00--\x00-v"
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--supervise\x00--state-dir\x00/tmp/state\x00--no-kitty\x00--no-color\x00--\x00-v"
 	if got := strings.Join(args, "\x00"); got != want {
 		t.Fatalf("jump args = %#v, want %q", args, want)
 	}
@@ -381,6 +422,94 @@ Host prod
 			assertContains(t, stderr.String(), tt.want)
 		})
 	}
+}
+
+func TestRunSessionListShowAndPrune(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Now().UTC()
+	oldEnd := now.Add(-8 * 24 * time.Hour)
+	recentEnd := now.Add(-time.Hour)
+	exitCode := 0
+
+	oldRecord := state.SessionRecord{
+		ID:          "old",
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		Hops:        []string{"bastion"},
+		StartedAt:   oldEnd.Add(-time.Hour),
+		EndedAt:     &oldEnd,
+		ExitCode:    &exitCode,
+		LocalPID:    100,
+		SSHPID:      101,
+		RunnerMode:  "supervised",
+	}
+	recentRecord := state.SessionRecord{
+		ID:          "recent",
+		TargetAlias: "db",
+		Route:       []string{"db"},
+		StartedAt:   recentEnd.Add(-time.Hour),
+		EndedAt:     &recentEnd,
+		ExitCode:    &exitCode,
+		LocalPID:    200,
+		SSHPID:      201,
+		RunnerMode:  "supervised",
+	}
+	if err := state.WriteRecord(stateDir, oldRecord); err != nil {
+		t.Fatalf("WriteRecord old returned error: %v", err)
+	}
+	if err := state.WriteRecord(stateDir, recentRecord); err != nil {
+		t.Fatalf("WriteRecord recent returned error: %v", err)
+	}
+
+	var listStdout bytes.Buffer
+	code := Run([]string{"session", "list", "--json", "--state-dir", stateDir}, &listStdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session list returned %d, want 0", code)
+	}
+	var listed []state.SessionRecord
+	if err := json.Unmarshal(listStdout.Bytes(), &listed); err != nil {
+		t.Fatalf("json.Unmarshal list returned error: %v\n%s", err, listStdout.String())
+	}
+	if len(listed) != 2 || listed[0].ID != "recent" || listed[1].ID != "old" {
+		t.Fatalf("listed = %#v, want newest-first records", listed)
+	}
+
+	var showStdout bytes.Buffer
+	code = Run([]string{"session", "show", "old", "--state-dir", stateDir}, &showStdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session show returned %d, want 0", code)
+	}
+	assertContains(t, showStdout.String(), "route:\tbastion -> prod")
+	assertContains(t, showStdout.String(), "exit_code:\t0")
+
+	var pruneStdout bytes.Buffer
+	code = Run([]string{"session", "prune", "--older-than", "168h", "--dry-run", "--state-dir", stateDir}, &pruneStdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session prune dry-run returned %d, want 0", code)
+	}
+	assertContains(t, pruneStdout.String(), "would remove 1 session record")
+	if _, err := os.Stat(state.RecordPath(stateDir, "old")); err != nil {
+		t.Fatalf("old record removed during dry-run: %v", err)
+	}
+
+	code = Run([]string{"session", "prune", "--older-than", "168h", "--state-dir", stateDir}, nil, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session prune apply returned %d, want 0", code)
+	}
+	if _, err := os.Stat(state.RecordPath(stateDir, "old")); !os.IsNotExist(err) {
+		t.Fatalf("old record still exists, err=%v", err)
+	}
+}
+
+func TestRunSessionShowMissing(t *testing.T) {
+	var stderr bytes.Buffer
+
+	code := Run([]string{"session", "show", "missing", "--state-dir", t.TempDir()}, nil, &stderr, BuildInfo{})
+
+	if code != 2 {
+		t.Fatalf("session show returned %d, want 2", code)
+	}
+	assertContains(t, stderr.String(), "show session")
 }
 
 func TestRunAddDryRunDoesNotWrite(t *testing.T) {

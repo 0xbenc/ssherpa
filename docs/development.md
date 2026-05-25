@@ -109,6 +109,14 @@ go run ./cmd/ssherpa authkeys add \
   --key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDb7Ccg8MuAtwJl6bsEjuCHWDtiRtivD3c1vzgbG7N1q alice@example" \
   --path "$auth" --yes
 go run ./cmd/ssherpa authkeys list --json --path "$auth"
+cat > "$tmp/fake-ssh" <<'EOF'
+#!/bin/sh
+printf 'fake supervised ssh: %s\n' "$*"
+exit 0
+EOF
+chmod +x "$tmp/fake-ssh"
+go run ./cmd/ssherpa --supervise --state-dir "$tmp/state" --ssh-binary "$tmp/fake-ssh" --select prod --config internal/sshconfig/testdata/matrix/config
+go run ./cmd/ssherpa session list --json --state-dir "$tmp/state"
 go build -trimpath -o ssherpa ./cmd/ssherpa
 ```
 

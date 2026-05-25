@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
 	"github.com/0xbenc/ssherpa/internal/ui"
@@ -25,6 +26,7 @@ Available Commands:
   jump       Connect through one or more ProxyJump hops
   proxy      Start a local SOCKS proxy through an SSH alias
   authkeys   Manage authorized_keys on this device
+  session    Inspect supervised session records
   list       List SSH aliases from OpenSSH config
   show       Show one SSH alias from OpenSSH config
   version    Print build version information
@@ -42,6 +44,8 @@ Connect Flags:
   --exec             Run the SSH command; this is the default
   --select ALIAS     Select an alias non-interactively
   --ssh-binary PATH  Use this SSH binary
+  --supervise        Run SSH under a supervised PTY and record session state
+  --state-dir PATH   Override ssherpa session state directory
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
 
@@ -54,8 +58,8 @@ Mutation Commands:
   ssherpa edit delete-all --confirm "delete N aliases"
 
 Route Commands:
-  ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print]
-  ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print]
+  ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--supervise]
+  ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--supervise]
 
 Authorized Keys Commands:
   ssherpa authkeys list [--json]
@@ -65,10 +69,16 @@ Authorized Keys Commands:
   ssherpa authkeys replace --from-dir ./keys [--yes]
   ssherpa authkeys delete --fingerprint SHA256:... [--yes]
 
-Phase 5:
+Session Commands:
+  ssherpa session list [--json] [--state-dir PATH]
+  ssherpa session show SESSION_ID [--json] [--state-dir PATH]
+  ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
+
+Phase 6:
   SSH config inventory, picker, direct SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
-  management are available.
+  management are available. Supervised PTY sessions are available with
+  --supervise.
 `
 
 type BuildInfo struct {
@@ -108,6 +118,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runShow(args[1:], stdout, stderr)
 	case "authkeys":
 		return runAuthkeys(args[1:], stdout, stderr)
+	case "session":
+		return runSession(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		if len(args) > 1 {
 			fmt.Fprintf(stderr, "ssherpa: version does not accept arguments: %s\n", strings.Join(args[1:], " "))
@@ -131,6 +143,8 @@ type connectFlags struct {
 	inventoryFlags
 	Print     bool
 	SSHBinary string
+	Supervise bool
+	StateDir  string
 	NoKitty   bool
 	NoColor   bool
 	Select    string
@@ -190,7 +204,10 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	return printOrRunSSH(cmd, false, stdout, stderr)
+	return printOrRunSSH(cmd, flags.connectOptions(), session.Metadata{
+		TargetAlias: alias.Name,
+		Route:       []string{alias.Name},
+	}, stdout, stderr)
 }
 
 func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
@@ -242,6 +259,16 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
 			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+		case arg == "--supervise":
+			flags.Supervise = true
+		case arg == "--state-dir":
+			value, ok := nextArg(args, &i, stderr, "--state-dir")
+			if !ok {
+				return flags, false
+			}
+			flags.StateDir = value
+		case strings.HasPrefix(arg, "--state-dir="):
+			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
@@ -31,6 +32,20 @@ type proxyFlags struct {
 	Bind    string
 	Port    int
 	PortSet bool
+}
+
+type connectOptions struct {
+	Print     bool
+	Supervise bool
+	StateDir  string
+}
+
+func (flags connectFlags) connectOptions() connectOptions {
+	return connectOptions{
+		Print:     flags.Print,
+		Supervise: flags.Supervise,
+		StateDir:  flags.StateDir,
+	}
 }
 
 func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -66,7 +81,11 @@ func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildJump(base, destination, hops, flags.SSHArgs)
-	return printOrRunSSH(cmd, flags.Print, stdout, stderr)
+	return printOrRunSSH(cmd, flags.connectOptions(), session.Metadata{
+		TargetAlias: destination,
+		Hops:        hops,
+		Route:       append(append([]string(nil), hops...), destination),
+	}, stdout, stderr)
 }
 
 func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -110,7 +129,10 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildProxy(base, alias.Name, flags.Bind, flags.Port, flags.SSHArgs)
-	return printOrRunSSH(cmd, flags.Print, stdout, stderr)
+	return printOrRunSSH(cmd, flags.connectOptions(), session.Metadata{
+		TargetAlias: alias.Name,
+		Route:       []string{alias.Name},
+	}, stdout, stderr)
 }
 
 func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
@@ -162,6 +184,16 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
 			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+		case arg == "--supervise":
+			flags.Supervise = true
+		case arg == "--state-dir":
+			value, ok := nextArg(args, &i, stderr, "--state-dir")
+			if !ok {
+				return flags, false
+			}
+			flags.StateDir = value
+		case strings.HasPrefix(arg, "--state-dir="):
+			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
 		case arg == "--dest" || arg == "--destination":
 			value, ok := nextArg(args, &i, stderr, arg)
 			if !ok {
@@ -257,6 +289,16 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
 			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+		case arg == "--supervise":
+			flags.Supervise = true
+		case arg == "--state-dir":
+			value, ok := nextArg(args, &i, stderr, "--state-dir")
+			if !ok {
+				return flags, false
+			}
+			flags.StateDir = value
+		case strings.HasPrefix(arg, "--state-dir="):
+			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -512,10 +554,20 @@ func resolveSSHCommand(flags connectFlags) sshcmd.Command {
 	})
 }
 
-func printOrRunSSH(cmd sshcmd.Command, print bool, stdout io.Writer, stderr io.Writer) int {
-	if print {
+func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) int {
+	if options.Print {
 		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 		return 0
+	}
+
+	if options.Supervise {
+		fmt.Fprintf(stderr, "[supervise] %s\n", sshcmd.QuoteArgv(cmd.Argv))
+		return session.RunSupervised(cmd, metadata, session.Options{
+			StateDir: options.StateDir,
+			Stdin:    os.Stdin,
+			Stdout:   stdout,
+			Stderr:   stderr,
+		})
 	}
 
 	fmt.Fprintf(stderr, "[exec] %s\n", sshcmd.QuoteArgv(cmd.Argv))
@@ -549,6 +601,12 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.SSHBinary != "" {
 		args = append(args, "--ssh-binary", flags.SSHBinary)
+	}
+	if flags.Supervise {
+		args = append(args, "--supervise")
+	}
+	if flags.StateDir != "" {
+		args = append(args, "--state-dir", flags.StateDir)
 	}
 	if flags.NoKitty {
 		args = append(args, "--no-kitty")

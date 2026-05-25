@@ -74,7 +74,9 @@ Current repository state:
   multi-alias deletion safeguards. Phase 4 adds jump route building and
   SOCKS proxy command support. Phase 5 adds `authorized_keys` parsing,
   validation, list/add/merge/replace/delete commands, dry-run diffs,
-  backups, and permission handling.
+  backups, and permission handling. Phase 6 adds opt-in supervised PTY
+  sessions, local JSON session records, nested route metadata, and
+  `ssherpa session list/show/prune`.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.
@@ -220,12 +222,12 @@ ssherpa doctor
 ssherpa version
 ```
 
-Add session commands after the supervised runner exists:
+Session commands:
 
 ```text
-ssherpa session list
-ssherpa session show SESSION_ID
-ssherpa session prune
+ssherpa session list [--json] [--state-dir PATH]
+ssherpa session show SESSION_ID [--json] [--state-dir PATH]
+ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
 ```
 
 ### Flag Contract
@@ -256,7 +258,7 @@ New flags:
 | `--supervise` | connect flows | Use PTY runner and record live session state |
 | `--latency-warn DURATION` | supervised connect | Warning threshold |
 | `--latency-disconnect DURATION` | supervised connect | Opt-in disconnect threshold |
-| `--state-dir PATH` | session flows | Override state directory |
+| `--state-dir PATH` | supervised connect and session flows | Override state directory |
 
 ### Environment Contract
 
@@ -407,6 +409,7 @@ type SessionRecord struct {
     Depth           int
     Route           []string
     TargetAlias     string
+    Hops            []string
     SSHArgv         []string
     StartedAt       time.Time
     EndedAt         *time.Time
@@ -702,7 +705,7 @@ Use Bubble Tea for all interactive screens:
 - Authkeys menu.
 - Directory/file picker for key import.
 - Doctor results.
-- Session list after supervisor is implemented.
+- Session list and route map views.
 
 ### Picker Behavior
 
@@ -1288,23 +1291,7 @@ Acceptance:
 - Options are preserved exactly.
 - Invalid keys are reported without corrupting output.
 
-### Phase 6: Packaging and Bash Zoo Integration Prep
-
-Deliverables:
-
-- GoReleaser config.
-- nFPM `.deb` config.
-- Release archive smoke test.
-- Install docs.
-- Bash Zoo migration note.
-
-Acceptance:
-
-- Local snapshot release builds artifacts.
-- `.deb` installs and uninstalls cleanly in a test container or VM.
-- README documents Bash fallback.
-
-### Phase 7: Supervised PTY Sessions
+### Phase 6: Supervised PTY Sessions
 
 Deliverables:
 
@@ -1320,6 +1307,22 @@ Acceptance:
 - Supervised fake shell exits cleanly and restores terminal.
 - Session state records start/end/exit code.
 - Nested local sessions record parent/depth.
+
+### Phase 7: Inception Jump Map and Session UX
+
+Deliverables:
+
+- Route lineage view for current and recent supervised sessions.
+- Clear parent/child display for nested local `ssherpa` launches.
+- TUI affordance for entering session view from the picker.
+- Text and JSON output for map data.
+- Session command polish for active/exited grouping.
+
+Acceptance:
+
+- A nested local route can be inspected as a readable map.
+- Session UX does not require remote shell changes.
+- Existing `session list/show/prune` output remains script-friendly.
 
 ### Phase 8: Latency Watchdog
 
@@ -1351,6 +1354,22 @@ Acceptance:
 - Composer can be toggled without corrupting normal input.
 - Full-screen remote app smoke tests pass.
 - Feature can be disabled completely.
+
+### Phase X: Packaging and Bash Zoo Integration Prep
+
+Deliverables:
+
+- GoReleaser config.
+- nFPM `.deb` config.
+- Release archive smoke test.
+- Install docs.
+- Bash Zoo migration note.
+
+Acceptance:
+
+- Local snapshot release builds artifacts.
+- `.deb` installs and uninstalls cleanly in a test container or VM.
+- README documents Bash fallback.
 
 ## Risk Register
 

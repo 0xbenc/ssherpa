@@ -4,12 +4,13 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 5 authorized_keys. The repository has a Go module,
+Current status: Phase 6 supervised sessions. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
 config mutations, jump routing, SOCKS proxy launching, safe
-`authorized_keys` management, CI, contributor notes, and a draft
-GoReleaser config with publishing disabled.
+`authorized_keys` management, opt-in supervised PTY sessions with local
+session records, CI, contributor notes, and a draft GoReleaser config
+with publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -27,6 +28,9 @@ go run ./cmd/ssherpa jump --dest DEST --hop HOP --print
 go run ./cmd/ssherpa proxy --select ALIAS --port 1080 --print
 go run ./cmd/ssherpa authkeys list --json
 go run ./cmd/ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
+go run ./cmd/ssherpa --supervise --select ALIAS
+go run ./cmd/ssherpa session list
+go run ./cmd/ssherpa session show SESSION_ID
 go test ./...
 go vet ./...
 ```
@@ -41,7 +45,11 @@ files, temp-file atomic renames, permission preservation, and safeguards
 for multi-alias or wildcard `Host` stanzas. Jump/proxy flows are
 available. `authorized_keys` management supports list, add, merge,
 replace, delete, dry-run diffs, backups, option preservation, cert key
-types, and `SSHERPA_AUTHORIZED_KEYS_PATH`.
+types, and `SSHERPA_AUTHORIZED_KEYS_PATH`. Supervised sessions are
+opt-in with `--supervise`; they run SSH under a PTY, propagate basic
+`SSHERPA_SESSION_*` metadata into the child process, and write JSON
+records under the platform state directory. Use `--state-dir PATH` or
+`SSHERPA_STATE_DIR` for disposable testing.
 
 ## Examples
 
@@ -65,12 +73,21 @@ ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 ssherpa authkeys merge --from-dir ./keys --dry-run
 ssherpa authkeys replace --from-dir ./keys --yes
 ssherpa authkeys delete --fingerprint SHA256:... --yes
+ssherpa --supervise --select prod
+ssherpa jump --supervise --dest prod --hop bastion
+ssherpa session list
+ssherpa session show 20260524T120000.000000000Z-abcd1234
+ssherpa session prune --older-than 168h --dry-run
 ```
 
 Default inventory reads `~/.ssh/config`. Use `--config PATH` for a
 different root. Authorized key operations read
 `~/.ssh/authorized_keys` by default. Use `SSHERPA_AUTHORIZED_KEYS_PATH`
 or `--path PATH` to operate on a disposable file.
+
+Session records default to `~/.local/state/ssherpa` on Linux and
+`~/Library/Application Support/ssherpa` on macOS. They are local JSON
+files with mode `0600`.
 
 ## Compatibility Reference
 

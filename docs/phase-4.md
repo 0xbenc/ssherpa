@@ -119,6 +119,6 @@ and `internal/sshcmd` tests.
 
 - Interactive route building reuses the simple Phase 2 picker rather than
   a richer route dashboard.
-- Supervised session metadata for jump/proxy routes waits for the session
-  phase.
+- Supervised session metadata for jump/proxy routes is available with
+  `--supervise` as of Phase 6.
 - `authorized_keys` management is implemented in Phase 5.

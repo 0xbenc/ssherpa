@@ -3,7 +3,7 @@
 Phase 2 added the interactive alias picker, print mode, direct SSH
 execution, and command resolution. Config mutation arrived in Phase 3;
 jump/proxy flows arrived in Phase 4, `authorized_keys` arrived in
-Phase 5, and supervised PTY sessions remain a later phase.
+Phase 5, and opt-in supervised PTY sessions arrived in Phase 6.
 
 ## Commands
 
@@ -102,8 +102,7 @@ Fake SSH execution and exit-code propagation are covered by
 
 - Authkeys is implemented in Phase 5. Proxy and jump are implemented in
   Phase 4.
-- The default direct runner does not yet supervise sessions or record
-  state.
+- The default direct runner intentionally does not supervise sessions or
+  record state. Use `--supervise` for the Phase 6 PTY runner.
 - Signal-forwarding behavior is the standard `exec.Command` inherited
-  terminal behavior for now; explicit supervisor behavior starts in the
-  PTY/session phase.
+  terminal behavior unless `--supervise` is enabled.
