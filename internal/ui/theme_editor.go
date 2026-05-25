@@ -68,9 +68,22 @@ type themeEditorModel struct {
 	editBuffer  string
 	saved       bool
 	canceled    bool
+	tone        textTone
 	width       int
 	height      int
 }
+
+// textTone controls how the editor's basic chrome text (schema descriptions,
+// palette hints, footer) is drawn. It is a viewing aid only and is never saved
+// into the theme; it lets the user force high-contrast text regardless of the
+// terminal background.
+type textTone int
+
+const (
+	toneTheme textTone = iota
+	toneBlack
+	toneWhite
+)
 
 type themeRoleMeta struct {
 	Role        termstyle.Role
@@ -154,6 +167,8 @@ func (m themeEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearCurrent()
 		case "r":
 			m.resetAll()
+		case "t":
+			m.cycleTone()
 		}
 	}
 	return m, nil
@@ -225,13 +240,20 @@ func (m themeEditorModel) View() tea.View {
 		b.WriteByte('\n')
 	}
 
-	footer := "s save  /  arrows change  /  e edit raw  /  d inherit  /  r reset  /  q cancel"
+	footer := "s save  /  arrows change  /  e edit raw  /  d inherit  /  r reset  /  t contrast  /  q cancel"
 	if m.editMode {
 		footer = "Enter accept  /  Esc cancel  /  Backspace edit  /  Ctrl-U clear"
 	}
+	chips := m.contrastChips()
+	keysWidth := width - termstyle.VisibleWidth(chips) - 2
+	if keysWidth < 0 {
+		keysWidth = 0
+	}
 	b.WriteString(theme.rule(width))
 	b.WriteByte('\n')
-	b.WriteString(theme.footer(termstyle.Truncate(footer, width)))
+	b.WriteString(m.plain(theme, termstyle.Truncate(footer, keysWidth)))
+	b.WriteString("  ")
+	b.WriteString(chips)
 	b.WriteByte('\n')
 
 	view := tea.NewView(b.String())
@@ -306,22 +328,21 @@ func (m themeEditorModel) renderRoleRow(index int, meta themeRoleMeta, width int
 	if selected {
 		cursor = ">>"
 	}
-	label := meta.Label
-	spec := m.values[meta.Role]
+	// Render the label and value in the role's own live color (base theme plus
+	// any unsaved/hot override) so each schema row doubles as a swatch. The
+	// selected row keeps the role color too — otherwise you could not see the
+	// change you are making on the very row you are editing; selection is shown
+	// by the >> cursor instead.
+	live := m.currentTheme()
 	value := "(inherit)"
-	valueText := theme.muted(value)
-	if strings.TrimSpace(spec) != "" {
+	if spec := strings.TrimSpace(m.values[meta.Role]); spec != "" {
 		value = spec
-		valueText = m.currentTheme().Style(meta.Role, termstyle.Truncate(value, 18))
-	}
-	if selected {
-		valueText = theme.rowTitle(termstyle.Truncate(value, 18), true)
 	}
 	line := theme.cursor(cursor, selected) + " " +
-		termstyle.PadRight(theme.rowTitle(label, selected), 13) + " " +
-		termstyle.PadRight(termstyle.Truncate(valueText, 18), 18)
+		termstyle.PadRight(live.Style(meta.Role, meta.Label), 13) + " " +
+		termstyle.PadRight(live.Style(meta.Role, termstyle.Truncate(value, 18)), 18)
 	if width >= 54 {
-		line += " " + theme.muted(termstyle.Truncate(meta.Description, width-termstyle.VisibleWidth(line)-1))
+		line += " " + m.plain(theme, termstyle.Truncate(meta.Description, width-termstyle.VisibleWidth(line)-1))
 	}
 	return termstyle.PadRight(line, width)
 }
@@ -346,8 +367,107 @@ func (m themeEditorModel) renderPreviewLines(width int, theme pickerTheme) []str
 		theme.logo("ssherpa session map"),
 		m.currentTheme().Style(termstyle.RoleSuccess, "+- prod [active] current"),
 		theme.muted("Ctrl-]/q/Esc close   r refresh"),
+		"",
 	}
+	lines = append(lines, m.renderPaletteLines(width, theme)...)
 	return lines
+}
+
+// renderPaletteLines shows a swatch next to the exact token you would type to
+// select that color, plus the style attributes and combining syntax the spec
+// parser accepts. Swatches go through termstyle.Apply with the model's NoColor
+// flag, so they degrade to plain text when color is disabled.
+func (m themeEditorModel) renderPaletteLines(width int, theme pickerTheme) []string {
+	swatch := func(token string) string {
+		if token == "" {
+			return ""
+		}
+		code, err := termstyle.ParseStyleSpec(token)
+		if err != nil {
+			return theme.muted(token)
+		}
+		return termstyle.Apply(m.noColor, code, "███") + " " + theme.rowDesc(token, false)
+	}
+	colWidth := width / 2
+	pair := func(left, right string) string {
+		// swatch() output already carries ANSI; PadRight is width-aware, but
+		// Truncate is rune-based and would slice mid-escape, so it is avoided
+		// here. The cells are short enough to fit the column by construction.
+		line := termstyle.PadRight(swatch(left), colWidth) + swatch(right)
+		return termstyle.PadRight(line, width)
+	}
+
+	lines := []string{
+		theme.groupHeader("Palette", width),
+		m.plain(theme, termstyle.Truncate("type a name below; swatch shows the result", width)),
+		pair("default", ""),
+		pair("black", "bright-black"),
+		pair("red", "bright-red"),
+		pair("green", "bright-green"),
+		pair("yellow", "bright-yellow"),
+		pair("blue", "bright-blue"),
+		pair("magenta", "bright-magenta"),
+		pair("cyan", "bright-cyan"),
+		pair("white", "bright-white"),
+	}
+
+	styleTokens := []string{"bold", "dim", "italic", "underline", "reverse"}
+	parts := make([]string, 0, len(styleTokens))
+	for _, token := range styleTokens {
+		code, err := termstyle.ParseStyleSpec(token)
+		if err != nil {
+			parts = append(parts, token)
+			continue
+		}
+		parts = append(parts, termstyle.Apply(m.noColor, code, token))
+	}
+	lines = append(lines,
+		m.plain(theme, "styles ")+strings.Join(parts, " "),
+		m.plain(theme, termstyle.Truncate(`mix: "bold red" · bg-/fg-blue · raw 1;31`, width)),
+	)
+	return lines
+}
+
+// plain renders basic chrome text. With the default tone it uses the theme's
+// muted style; when the user toggles contrast it forces dark black or bright
+// white so the text stays legible on any terminal background.
+func (m themeEditorModel) plain(theme pickerTheme, value string) string {
+	switch m.tone {
+	case toneBlack:
+		return termstyle.Apply(m.noColor, "30", value)
+	case toneWhite:
+		return termstyle.Apply(m.noColor, "97", value)
+	default:
+		return theme.muted(value)
+	}
+}
+
+// contrastChips renders the black/white toggle indicator. Each chip is drawn on
+// the opposite background (black-on-white, white-on-black) so both remain
+// visible regardless of the terminal background; the active tone is underlined.
+func (m themeEditorModel) contrastChips() string {
+	blackCode := "47;30"
+	whiteCode := "40;97"
+	switch m.tone {
+	case toneBlack:
+		blackCode += ";1;4"
+	case toneWhite:
+		whiteCode += ";1;4"
+	}
+	return termstyle.Apply(m.noColor, blackCode, " black ") +
+		termstyle.Apply(m.noColor, whiteCode, " white ")
+}
+
+func (m *themeEditorModel) cycleTone() {
+	m.tone = (m.tone + 1) % 3
+	switch m.tone {
+	case toneBlack:
+		m.message = "basic text -> dark black"
+	case toneWhite:
+		m.message = "basic text -> bright white"
+	default:
+		m.message = "basic text -> theme default"
+	}
 }
 
 func (m themeEditorModel) config() termstyle.ThemeConfig {
