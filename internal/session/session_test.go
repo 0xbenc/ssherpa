@@ -219,6 +219,15 @@ func TestRunSupervisedEscapeRopeTearsDownSession(t *testing.T) {
 	if records[0].Status() != "exited" {
 		t.Fatalf("record status = %q, want exited", records[0].Status())
 	}
+	hasEvent := false
+	for _, ev := range records[0].Events {
+		if ev.Type == EscapeRopeReason {
+			hasEvent = true
+		}
+	}
+	if !hasEvent {
+		t.Fatalf("events = %#v, want an %q event", records[0].Events, EscapeRopeReason)
+	}
 }
 
 func TestRunSupervisedComposerSendsBufferedLine(t *testing.T) {

@@ -63,10 +63,14 @@ So the whole feature is: **catch the chord at the top, kill the top ssh
 child, let SIGHUP roll downhill.** No upward signalling, no cross-host
 protocol, no dependence on the session-lineage metadata.
 
-The teardown reuses existing machinery: mark the record
-(`DisconnectReason = "escape_rope"`), `SIGHUP` the child, and
-`scheduleForceKill` after a short grace, then the normal exit path
-restores the terminal and writes the final record.
+The teardown marks the record (`DisconnectReason = "escape_rope"` plus an
+`escape_rope` session event for audit), then `SIGHUP`s the child's whole
+**process group** — under a PTY the child is a session leader, so the
+group also covers a wrapper like `kitten ssh` and the ssh it forks, which
+a single-PID signal would orphan. If the group has not exited after a
+short grace (`escapeRopeKillGrace`, 750 ms) it is `SIGKILL`ed, guaranteeing
+a prompt local return even if ssh ignores the hangup. The normal exit path
+then restores the terminal and writes the final record.
 
 ## The boundary: from the outermost ssherpa, downward only
 

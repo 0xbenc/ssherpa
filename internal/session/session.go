@@ -171,6 +171,8 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	// the ssh client, drops its connection so the remote sshd HUPs the next
 	// layer down — collapsing every nested session from the top. See
 	// docs/escape-rope.md.
+	ropeCtx, ropeCancel := context.WithCancel(context.Background())
+	defer ropeCancel()
 	var ropePulled atomic.Bool
 	pullRope := func() {
 		if !ropePulled.CompareAndSwap(false, true) {
@@ -178,12 +180,31 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 		recordMu.Lock()
 		record.DisconnectReason = EscapeRopeReason
+		record.Events = append(record.Events, state.SessionEvent{
+			Time:    now().UTC(),
+			Type:    EscapeRopeReason,
+			Message: "escape rope pulled; disconnecting all downstream sessions",
+		})
 		_ = state.WriteRecord(stateDir, record)
 		recordMu.Unlock()
-		if proc.Process != nil {
-			_ = proc.Process.Signal(syscall.SIGHUP)
-			scheduleForceKill(context.Background(), proc.Process)
+		if proc.Process == nil {
+			return
 		}
+		// SIGHUP the whole process group, not just the ssh client PID: under a
+		// PTY the child is a session leader (pgid == pid), so a wrapper such as
+		// `kitten ssh` and the ssh it forks share the group and both must die or
+		// we leak an orphaned connection. Force-kill the group after a short
+		// grace; cancel that timer once the child has actually exited.
+		signalSessionGroup(proc.Process, syscall.SIGHUP)
+		go func() {
+			timer := time.NewTimer(escapeRopeKillGrace)
+			defer timer.Stop()
+			select {
+			case <-ropeCtx.Done():
+			case <-timer.C:
+				signalSessionGroup(proc.Process, syscall.SIGKILL)
+			}
+		}()
 	}
 
 	output := &lockedWriter{w: stdout}
@@ -591,7 +612,24 @@ const (
 	defaultLatencyProbeInterval = 10 * time.Second
 	defaultLatencyProbeTimeout  = 10 * time.Second
 	latencyKillGrace            = 2 * time.Second
+	// escapeRopeKillGrace is short: pulling the rope means "get me out now", so
+	// we escalate from SIGHUP to SIGKILL quickly to guarantee a prompt local
+	// return even if the ssh client ignores the hangup.
+	escapeRopeKillGrace = 750 * time.Millisecond
 )
+
+// signalSessionGroup signals the child's whole process group when possible,
+// falling back to the single process. Under a PTY the supervised child is a
+// session leader (its pgid equals its pid), so a negative pid reaches the child
+// and anything it forked (e.g. the ssh under a `kitten ssh` wrapper).
+func signalSessionGroup(proc *os.Process, sig syscall.Signal) {
+	if proc == nil {
+		return
+	}
+	if err := syscall.Kill(-proc.Pid, sig); err != nil {
+		_ = proc.Signal(sig)
+	}
+}
 
 type latencyWatchdogConfig struct {
 	Options  WatchdogOptions
