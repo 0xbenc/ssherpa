@@ -1,8 +1,9 @@
 # Phase 2 Picker And Direct Connect
 
-Phase 2 adds the interactive alias picker, print mode, direct SSH
-execution, and command resolution. It does not add config mutation,
-jump/proxy flows, `authorized_keys`, or supervised PTY sessions.
+Phase 2 added the interactive alias picker, print mode, direct SSH
+execution, and command resolution. Config mutation arrived in Phase 3;
+jump/proxy flows, `authorized_keys`, and supervised PTY sessions remain
+later phases.
 
 ## Commands
 
@@ -41,8 +42,8 @@ rows:
 - Jump via intermediate hops
 
 Those rows are visible so the default interaction matches the Bash
-script, but selecting them returns a clear not-yet-implemented error
-until later phases add the underlying flows.
+script. Add/edit rows are wired in Phase 3; the remaining rows still
+return clear not-yet-implemented errors.
 
 Picker controls:
 
@@ -99,8 +100,8 @@ Fake SSH execution and exit-code propagation are covered by
 
 ## Known Limits
 
-- Synthetic picker rows are placeholders until their implementation
-  phases.
+- Authkeys, proxy, and jump picker rows are placeholders until their
+  implementation phases.
 - The default direct runner does not yet supervise sessions or record
   state.
 - Signal-forwarding behavior is the standard `exec.Command` inherited

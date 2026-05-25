@@ -55,6 +55,18 @@ jobs:
       - name: Smoke test print mode
         run: go run ./cmd/ssherpa --print --select prod --config internal/sshconfig/testdata/matrix/config -- -L 8080:localhost:8080
 
+      - name: Smoke test config mutation
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          cfg="$tmp/config"
+          printf 'Host old\n  HostName old.example.com\n' > "$cfg"
+          go run ./cmd/ssherpa add --alias prod --host prod.example.com --config "$cfg" --dry-run
+          go run ./cmd/ssherpa add --alias prod --host prod.example.com --config "$cfg" --yes
+          go run ./cmd/ssherpa edit set prod --user alice --config "$cfg" --yes
+          go run ./cmd/ssherpa edit delete prod --config "$cfg" --dry-run
+          go run ./cmd/ssherpa edit delete-all --config "$cfg" --dry-run
+
       - name: Build native binary
         run: go build -trimpath -o ssherpa ./cmd/ssherpa
 

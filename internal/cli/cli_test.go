@@ -58,7 +58,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 2:")
+	assertContains(t, stdout.String(), "Phase 3:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -171,6 +171,247 @@ func TestRunConnectRejectsUnknownFlag(t *testing.T) {
 		t.Fatalf("Run returned %d, want 1", code)
 	}
 	assertContains(t, stderr.String(), `unknown flag "--bogus"`)
+}
+
+func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
+	args := connectFlagsAsAddArgs(connectFlags{inventoryFlags: inventoryFlags{Config: "/tmp/config"}})
+
+	if strings.Join(args, "\x00") != "--config\x00/tmp/config" {
+		t.Fatalf("args = %#v, want config passthrough", args)
+	}
+}
+
+func TestRunAddDryRunDoesNotWrite(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, "Host old\n  HostName old.example.com\n")
+
+	code := Run([]string{"add", "--alias", "prod", "--host", "prod.example.com", "--config", config, "--dry-run"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[would-added] prod")
+	assertContains(t, stdout.String(), "+Host prod")
+	assertNotContains(t, readFile(t, config), "prod.example.com")
+}
+
+func TestRunAddWritesConfigAndCreatesBackup(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, "Host old\n  HostName old.example.com\n")
+
+	code := Run([]string{"add", "--alias", "prod", "--host", "prod.example.com", "--user", "alice", "--config", config, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[added] prod")
+	assertContains(t, stdout.String(), "[backup]")
+	got := readFile(t, config)
+	assertContains(t, got, "Host prod")
+	assertContains(t, got, "  HostName prod.example.com")
+	assertContains(t, got, "  User alice")
+
+	backups := globBackups(t, config)
+	if len(backups) != 1 {
+		t.Fatalf("backups = %#v, want one backup", backups)
+	}
+	assertContains(t, readFile(t, backups[0]), "Host old")
+}
+
+func TestRunAddUpdatesIncludedSourceByDefault(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	root := filepath.Join(dir, "config")
+	include := filepath.Join(dir, "config.d", "hosts.conf")
+	if err := os.MkdirAll(filepath.Dir(include), 0o700); err != nil {
+		t.Fatalf("os.MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(root, []byte("Include config.d/*.conf\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile root returned error: %v", err)
+	}
+	if err := os.WriteFile(include, []byte("Host prod\n  HostName old.example.com\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile include returned error: %v", err)
+	}
+
+	code := Run([]string{"add", "--alias", "prod", "--host", "new.example.com", "--yes", "--config", root}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, readFile(t, root), "Include")
+	assertContains(t, readFile(t, root), "Host prod")
+	assertNotContains(t, readFile(t, include), "new.example.com")
+}
+
+func TestRunAddWithoutExplicitConfigUpdatesIncludedSource(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".ssh", "config")
+	include := filepath.Join(home, ".ssh", "config.d", "hosts.conf")
+	if err := os.MkdirAll(filepath.Dir(include), 0o700); err != nil {
+		t.Fatalf("os.MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(root, []byte("Include config.d/*.conf\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile root returned error: %v", err)
+	}
+	if err := os.WriteFile(include, []byte("Host prod\n  HostName old.example.com\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile include returned error: %v", err)
+	}
+
+	code := Run([]string{"add", "--alias", "prod", "--host", "new.example.com", "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertNotContains(t, readFile(t, root), "Host prod")
+	assertContains(t, readFile(t, include), "new.example.com")
+}
+
+func TestRunEditSetUpdatesAlias(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `Host prod
+  HostName old.example.com
+  User old
+  ForwardAgent yes
+`)
+
+	code := Run([]string{"edit", "set", "prod", "--host", "new.example.com", "--user", "alice", "--clear-port", "--config", config, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	got := readFile(t, config)
+	assertContains(t, got, "HostName new.example.com")
+	assertContains(t, got, "User alice")
+	assertContains(t, got, "ForwardAgent yes")
+	assertNotContains(t, got, "old.example.com")
+}
+
+func TestRunEditDeleteRemovesOnlySelectedTokenFromMultiAlias(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `Host prod web
+  HostName shared.example.com
+`)
+
+	code := Run([]string{"edit", "delete", "prod", "--config", config, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	got := readFile(t, config)
+	assertContains(t, got, "Host web")
+	assertNotContains(t, got, "Host prod web")
+}
+
+func TestRunEditDeleteRequiresAllSourcesForDuplicateFiles(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".ssh", "config")
+	first := filepath.Join(home, ".ssh", "config.d", "a.conf")
+	second := filepath.Join(home, ".ssh", "config.d", "b.conf")
+	if err := os.MkdirAll(filepath.Dir(first), 0o700); err != nil {
+		t.Fatalf("os.MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(root, []byte("Include config.d/*.conf\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile root returned error: %v", err)
+	}
+	if err := os.WriteFile(first, []byte("Host prod\n  HostName one.example.com\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile first returned error: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("Host prod\n  HostName two.example.com\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile second returned error: %v", err)
+	}
+
+	code := Run([]string{"edit", "delete", "prod", "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "--all-sources")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"edit", "delete", "prod", "--all-sources", "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertNotContains(t, readFile(t, first), "Host prod")
+	assertNotContains(t, readFile(t, second), "Host prod")
+}
+
+func TestRunEditDeleteProtectsWildcardStanzas(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `Host prod *.example.com
+  User alice
+`)
+
+	code := Run([]string{"edit", "delete", "prod", "--config", config, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "wildcard")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"edit", "delete", "prod", "--config", config, "--delete-patterns", "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, readFile(t, config), "Host *.example.com")
+	assertNotContains(t, readFile(t, config), "Host prod *.example.com")
+}
+
+func TestRunEditDeleteAllRequiresExactConfirmation(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `Host prod
+  HostName prod.example.com
+
+Host web
+  HostName web.example.com
+`)
+
+	code := Run([]string{"edit", "delete-all", "--config", config, "--confirm", "delete 1 aliases"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[skipped] confirmation did not match")
+	assertContains(t, readFile(t, config), "Host prod")
+	assertContains(t, readFile(t, config), "Host web")
+}
+
+func TestRunEditDeleteAllDryRunShowsDiff(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `Host prod
+  HostName prod.example.com
+
+Host web
+  HostName web.example.com
+`)
+
+	code := Run([]string{"edit", "delete-all", "--config", config, "--dry-run"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[would-removed] 2 aliases")
+	assertContains(t, stdout.String(), "-Host prod")
+	assertContains(t, readFile(t, config), "Host prod")
 }
 
 func TestRunListJSON(t *testing.T) {
@@ -329,7 +570,7 @@ func TestRunUnsupportedSubcommand(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := Run([]string{"add"}, &stdout, &stderr, BuildInfo{})
+	code := Run([]string{"authkeys"}, &stdout, &stderr, BuildInfo{})
 
 	if code != 1 {
 		t.Fatalf("Run returned %d, want 1", code)
@@ -337,7 +578,7 @@ func TestRunUnsupportedSubcommand(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	assertContains(t, stderr.String(), "add is not implemented yet")
+	assertContains(t, stderr.String(), "authkeys is not implemented yet")
 }
 
 func TestRunRejectsExtraVersionArgs(t *testing.T) {
@@ -377,6 +618,26 @@ func writeFakeSSH(t *testing.T, exitCode int) (string, string) {
 	return path, logPath
 }
 
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%s) returned error: %v", path, err)
+	}
+	return string(data)
+}
+
+func globBackups(t *testing.T, path string) []string {
+	t.Helper()
+
+	matches, err := filepath.Glob(path + ".ssherpa-backup.*")
+	if err != nil {
+		t.Fatalf("filepath.Glob returned error: %v", err)
+	}
+	return matches
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
@@ -385,5 +646,12 @@ func assertContains(t *testing.T, got string, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
 		t.Fatalf("got %q, want substring %q", got, want)
+	}
+}
+
+func assertNotContains(t *testing.T, got string, unwanted string) {
+	t.Helper()
+	if strings.Contains(got, unwanted) {
+		t.Fatalf("got %q, unwanted substring %q", got, unwanted)
 	}
 }

@@ -38,8 +38,8 @@ type PickOptions struct {
 
 func BuildItems(aliases []hostlist.Alias) []Item {
 	items := []Item{
-		{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "available in a later phase"},
-		{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "available in a later phase"},
+		{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "write a safe Host stanza"},
+		{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries"},
 		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys on this device", Description: "available in a later phase"},
 		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "available in a later phase"},
 		{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "available in a later phase"},

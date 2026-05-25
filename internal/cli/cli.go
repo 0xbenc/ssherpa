@@ -20,6 +20,8 @@ const usage = `Usage:
   ssherpa [connect-flags] [-- ssh-args...]
 
 Available Commands:
+  add        Add or update an SSH alias
+  edit       Edit or delete SSH aliases
   list       List SSH aliases from OpenSSH config
   show       Show one SSH alias from OpenSSH config
   version    Print build version information
@@ -40,10 +42,18 @@ Connect Flags:
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
 
-Phase 2:
-  SSH config inventory, picker, print mode, and direct SSH execution are
-  available. Config mutation, jump/proxy flows, and authorized_keys
-  management are not implemented yet.
+Mutation Commands:
+  ssherpa add --alias NAME --host HOST [--user USER] [--port PORT] [--yes]
+  ssherpa add --alias NAME --host HOST --dry-run
+  ssherpa edit set ALIAS [--host HOST] [--user USER] [--port PORT] [--yes]
+  ssherpa edit delete ALIAS [--all-sources] [--yes]
+  ssherpa edit delete-all --dry-run
+  ssherpa edit delete-all --confirm "delete N aliases"
+
+Phase 3:
+  SSH config inventory, picker, direct SSH execution, and safe SSH config
+  add/edit/delete mutations are available. Jump/proxy flows and
+  authorized_keys management are not implemented yet.
 `
 
 type BuildInfo struct {
@@ -69,6 +79,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 	}
 
 	switch args[0] {
+	case "add":
+		return runAdd(args[1:], stdout, stderr)
+	case "edit":
+		return runEdit(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
 	case "show":
@@ -87,7 +101,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		}
 		printUsage(stdout)
 		return 0
-	case "add", "edit", "authkeys", "jump", "proxy":
+	case "authkeys", "jump", "proxy":
 		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", args[0])
 		return 1
 	default:
@@ -126,9 +140,18 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	alias, ok, code := selectConnectAlias(flags, inventory, stderr)
+	item, alias, ok, code := selectConnectItem(flags, inventory, stderr)
 	if !ok {
 		return code
+	}
+	switch item.Kind {
+	case ui.ItemAdd:
+		return runAdd(connectFlagsAsAddArgs(flags), stdout, stderr)
+	case ui.ItemEdit:
+		return runEdit(connectFlagsAsEditArgs(flags), stdout, stderr)
+	case ui.ItemAuthkeys, ui.ItemProxy, ui.ItemJump:
+		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", item.Title)
+		return 1
 	}
 
 	base := sshcmd.Resolve(sshcmd.ResolveOptions{
@@ -226,14 +249,14 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 	return flags, true
 }
 
-func selectConnectAlias(flags connectFlags, inventory hostlist.Inventory, stderr io.Writer) (hostlist.Alias, bool, int) {
+func selectConnectItem(flags connectFlags, inventory hostlist.Inventory, stderr io.Writer) (ui.Item, hostlist.Alias, bool, int) {
 	if flags.Select != "" {
 		alias := findAlias(inventory.Aliases, flags.Select)
 		if alias == nil {
 			fmt.Fprintf(stderr, "ssherpa: alias %q not found\n", flags.Select)
-			return hostlist.Alias{}, false, 2
+			return ui.Item{}, hostlist.Alias{}, false, 2
 		}
-		return *alias, true, 0
+		return ui.Item{Kind: ui.ItemAlias, Token: alias.Name, Title: alias.Name}, *alias, true, 0
 	}
 
 	item, ok, err := ui.Pick(context.Background(), ui.BuildItems(inventory.Aliases), ui.PickOptions{
@@ -244,23 +267,22 @@ func selectConnectAlias(flags connectFlags, inventory hostlist.Inventory, stderr
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
-		return hostlist.Alias{}, false, 1
+		return ui.Item{}, hostlist.Alias{}, false, 1
 	}
 	if !ok {
 		fmt.Fprintln(stderr, "[skipped] no selection made")
-		return hostlist.Alias{}, false, 0
+		return ui.Item{}, hostlist.Alias{}, false, 0
 	}
 	if item.Kind != ui.ItemAlias {
-		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", item.Title)
-		return hostlist.Alias{}, false, 1
+		return item, hostlist.Alias{}, true, 0
 	}
 
 	alias := findAlias(inventory.Aliases, item.Token)
 	if alias == nil {
 		fmt.Fprintf(stderr, "ssherpa: selected alias %q disappeared\n", item.Token)
-		return hostlist.Alias{}, false, 2
+		return ui.Item{}, hostlist.Alias{}, false, 2
 	}
-	return *alias, true, 0
+	return item, *alias, true, 0
 }
 
 type inventoryFlags struct {
