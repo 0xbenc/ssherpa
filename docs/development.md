@@ -101,6 +101,8 @@ go run ./cmd/ssherpa version
 go run ./cmd/ssherpa list --json --config internal/sshconfig/testdata/matrix/config
 go run ./cmd/ssherpa --print --select prod --config internal/sshconfig/testdata/matrix/config
 go run ./cmd/ssherpa add --alias smoke --host smoke.example.com --config internal/sshconfig/testdata/matrix/config --dry-run
+go run ./cmd/ssherpa jump --dest prod --hop quoted --print --config internal/sshconfig/testdata/matrix/config
+go run ./cmd/ssherpa proxy --select prod --port 1080 --print --config internal/sshconfig/testdata/matrix/config
 go build -trimpath -o ssherpa ./cmd/ssherpa
 ```
 

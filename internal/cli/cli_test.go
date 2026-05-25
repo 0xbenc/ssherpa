@@ -58,7 +58,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 3:")
+	assertContains(t, stdout.String(), "Phase 4:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -178,6 +178,201 @@ func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
 
 	if strings.Join(args, "\x00") != "--config\x00/tmp/config" {
 		t.Fatalf("args = %#v, want config passthrough", args)
+	}
+}
+
+func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
+	flags := connectFlags{
+		inventoryFlags: inventoryFlags{
+			All:    true,
+			Filter: "prod",
+			User:   "alice",
+			Config: "/tmp/config",
+		},
+		Print:     true,
+		SSHBinary: "/tmp/fake-ssh",
+		NoKitty:   true,
+		NoColor:   true,
+		SSHArgs:   []string{"-v"},
+	}
+
+	args := connectFlagsAsJumpArgs(flags)
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--no-kitty\x00--no-color\x00--\x00-v"
+	if got := strings.Join(args, "\x00"); got != want {
+		t.Fatalf("jump args = %#v, want %q", args, want)
+	}
+
+	proxyArgs := connectFlagsAsProxyArgs(flags)
+	if got := strings.Join(proxyArgs, "\x00"); got != want {
+		t.Fatalf("proxy args = %#v, want %q", proxyArgs, want)
+	}
+}
+
+func TestRunJumpPrint(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+
+Host bastion
+  HostName bastion.example.com
+
+Host edge
+  HostName edge.example.com
+`)
+
+	code := Run([]string{"jump", "--dest", "prod", "--hop", "bastion", "--hop", "edge", "--print", "--config", config, "--", "-A"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh -J bastion,edge prod -A")
+}
+
+func TestRunJumpExecutesFakeSSH(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+	fakeSSH, logPath := writeFakeSSH(t, 0)
+
+	code := Run([]string{"jump", "--dest", "prod", "--hop", "bastion", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "[exec]")
+	assertContains(t, stdout.String(), "fake ssh stdout")
+	if got := strings.TrimSpace(readFile(t, logPath)); got != "-J bastion prod -v" {
+		t.Fatalf("fake ssh argv log = %q, want %q", got, "-J bastion prod -v")
+	}
+}
+
+func TestRunJumpRejectsInvalidRoutes(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+		code int
+	}{
+		{name: "duplicate hop", args: []string{"jump", "--dest", "prod", "--hop", "bastion", "--hop", "bastion", "--config", config}, want: "duplicate", code: 1},
+		{name: "destination as hop", args: []string{"jump", "--dest", "prod", "--hop", "prod", "--config", config}, want: "destination", code: 1},
+		{name: "missing hop", args: []string{"jump", "--dest", "prod", "--config", config}, want: "requires --dest", code: 1},
+		{name: "unknown alias", args: []string{"jump", "--dest", "prod", "--hop", "missing", "--config", config}, want: "alias not found", code: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(tt.args, nil, &stderr, BuildInfo{})
+			if code != tt.code {
+				t.Fatalf("Run returned %d, want %d; stderr = %q", code, tt.code, stderr.String())
+			}
+			assertContains(t, stderr.String(), tt.want)
+		})
+	}
+}
+
+func TestRunProxyPrintDefaultBindPort(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	code := Run([]string{"proxy", "--select", "prod", "--print", "--config", config}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
+}
+
+func TestRunProxyPrintCustomBindPortAndPassthrough(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	code := Run([]string{"proxy", "--select", "prod", "--bind", "0.0.0.0", "--port", "1081", "--print", "--config", config, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
+}
+
+func TestRunProxyExecutesFakeSSH(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	fakeSSH, logPath := writeFakeSSH(t, 0)
+
+	code := Run([]string{"proxy", "prod", "--port", "1081", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "[exec]")
+	assertContains(t, stdout.String(), "fake ssh stdout")
+	want := "-D 127.0.0.1:1081 -C -N -o ExitOnForwardFailure=yes prod -v"
+	if got := strings.TrimSpace(readFile(t, logPath)); got != want {
+		t.Fatalf("fake ssh argv log = %q, want %q", got, want)
+	}
+}
+
+func TestRunProxyRejectsInvalidInputs(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+		code int
+	}{
+		{name: "bad port", args: []string{"proxy", "--select", "prod", "--port", "70000", "--config", config}, want: "proxy port", code: 1},
+		{name: "unknown alias", args: []string{"proxy", "--select", "missing", "--config", config}, want: "alias", code: 2},
+		{name: "empty bind", args: []string{"proxy", "--select", "prod", "--bind", "", "--config", config}, want: "bind", code: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(tt.args, nil, &stderr, BuildInfo{})
+			if code != tt.code {
+				t.Fatalf("Run returned %d, want %d; stderr = %q", code, tt.code, stderr.String())
+			}
+			assertContains(t, stderr.String(), tt.want)
+		})
 	}
 }
 

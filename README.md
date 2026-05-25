@@ -4,11 +4,11 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 3 config mutation. The repository has a Go module,
+Current status: Phase 4 jump and proxy. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
-config mutations, CI, contributor notes, and a draft GoReleaser config
-with publishing disabled.
+config mutations, jump routing, SOCKS proxy launching, CI, contributor
+notes, and a draft GoReleaser config with publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -22,6 +22,8 @@ go run ./cmd/ssherpa --print --select ALIAS
 go run ./cmd/ssherpa add --alias ALIAS --host HOST --dry-run
 go run ./cmd/ssherpa edit set ALIAS --host HOST --dry-run
 go run ./cmd/ssherpa edit delete ALIAS --dry-run
+go run ./cmd/ssherpa jump --dest DEST --hop HOP --print
+go run ./cmd/ssherpa proxy --select ALIAS --port 1080 --print
 go test ./...
 go vet ./...
 ```
@@ -33,8 +35,8 @@ git-user hiding, and basic parsed effective values.
 
 Config mutation uses dry-run diffs, backups for writes to existing
 files, temp-file atomic renames, permission preservation, and safeguards
-for multi-alias or wildcard `Host` stanzas. Jump/proxy flows and
-`authorized_keys` management have not been ported yet.
+for multi-alias or wildcard `Host` stanzas. Jump/proxy flows are
+available. `authorized_keys` management has not been ported yet.
 
 ## Examples
 
@@ -50,6 +52,8 @@ ssherpa add --alias prod --host prod.example.com --user alice --yes
 ssherpa edit set prod --port 2222 --identity ~/.ssh/prod --yes
 ssherpa edit delete prod --all-sources --dry-run
 ssherpa edit delete-all --filter scratch --dry-run
+ssherpa jump --dest prod --hop bastion --hop edge --print
+ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
 ```
 
 Default inventory reads `~/.ssh/config`. Use `--config PATH` for a

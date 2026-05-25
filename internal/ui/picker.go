@@ -34,6 +34,8 @@ type PickOptions struct {
 	Output      io.Writer
 	NoAltScreen bool
 	NoColor     bool
+	Title       string
+	Footer      string
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -41,8 +43,8 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 		{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "write a safe Host stanza"},
 		{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries"},
 		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys on this device", Description: "available in a later phase"},
-		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "available in a later phase"},
-		{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "available in a later phase"},
+		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port"},
+		{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "build a ProxyJump route"},
 	}
 
 	for _, alias := range aliases {
@@ -94,6 +96,8 @@ type pickerModel struct {
 	canceled    bool
 	noAltScreen bool
 	noColor     bool
+	title       string
+	footer      string
 }
 
 func newPickerModel(items []Item, opts PickOptions) pickerModel {
@@ -102,6 +106,8 @@ func newPickerModel(items []Item, opts PickOptions) pickerModel {
 		selected:    -1,
 		noAltScreen: opts.NoAltScreen,
 		noColor:     opts.NoColor,
+		title:       opts.Title,
+		footer:      opts.Footer,
 	}
 	model.applyFilter()
 	return model
@@ -149,7 +155,12 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m pickerModel) View() tea.View {
 	var b strings.Builder
-	b.WriteString("Pick an SSH alias\n")
+	title := m.title
+	if title == "" {
+		title = "Pick an SSH alias"
+	}
+	b.WriteString(title)
+	b.WriteByte('\n')
 	b.WriteString("Filter: ")
 	b.WriteString(m.query)
 	b.WriteString("\n\n")
@@ -175,7 +186,13 @@ func (m pickerModel) View() tea.View {
 		}
 	}
 
-	b.WriteString("\nenter select  /  type filter  /  up/down move  /  q cancel\n")
+	footer := m.footer
+	if footer == "" {
+		footer = "enter select  /  type filter  /  up/down move  /  q cancel"
+	}
+	b.WriteByte('\n')
+	b.WriteString(footer)
+	b.WriteByte('\n')
 
 	view := tea.NewView(b.String())
 	view.AltScreen = !m.noAltScreen

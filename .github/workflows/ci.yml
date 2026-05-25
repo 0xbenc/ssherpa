@@ -55,6 +55,11 @@ jobs:
       - name: Smoke test print mode
         run: go run ./cmd/ssherpa --print --select prod --config internal/sshconfig/testdata/matrix/config -- -L 8080:localhost:8080
 
+      - name: Smoke test jump and proxy
+        run: |
+          go run ./cmd/ssherpa jump --dest prod --hop quoted --print --config internal/sshconfig/testdata/matrix/config -- -A
+          go run ./cmd/ssherpa proxy --select prod --port 1080 --print --config internal/sshconfig/testdata/matrix/config
+
       - name: Smoke test config mutation
         shell: bash
         run: |

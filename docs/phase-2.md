@@ -42,8 +42,8 @@ rows:
 - Jump via intermediate hops
 
 Those rows are visible so the default interaction matches the Bash
-script. Add/edit rows are wired in Phase 3; the remaining rows still
-return clear not-yet-implemented errors.
+script. Add/edit rows are wired in Phase 3, jump/proxy rows are wired in
+Phase 4, and authkeys remains a later phase.
 
 Picker controls:
 
@@ -100,8 +100,8 @@ Fake SSH execution and exit-code propagation are covered by
 
 ## Known Limits
 
-- Authkeys, proxy, and jump picker rows are placeholders until their
-  implementation phases.
+- Authkeys remains a placeholder until its implementation phase. Proxy
+  and jump are implemented in Phase 4.
 - The default direct runner does not yet supervise sessions or record
   state.
 - Signal-forwarding behavior is the standard `exec.Command` inherited

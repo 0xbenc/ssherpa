@@ -22,6 +22,8 @@ const usage = `Usage:
 Available Commands:
   add        Add or update an SSH alias
   edit       Edit or delete SSH aliases
+  jump       Connect through one or more ProxyJump hops
+  proxy      Start a local SOCKS proxy through an SSH alias
   list       List SSH aliases from OpenSSH config
   show       Show one SSH alias from OpenSSH config
   version    Print build version information
@@ -50,10 +52,14 @@ Mutation Commands:
   ssherpa edit delete-all --dry-run
   ssherpa edit delete-all --confirm "delete N aliases"
 
-Phase 3:
+Route Commands:
+  ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print]
+  ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print]
+
+Phase 4:
   SSH config inventory, picker, direct SSH execution, and safe SSH config
-  add/edit/delete mutations are available. Jump/proxy flows and
-  authorized_keys management are not implemented yet.
+  add/edit/delete mutations are available. Jump/proxy flows are available.
+  authorized_keys management is not implemented yet.
 `
 
 type BuildInfo struct {
@@ -83,6 +89,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runAdd(args[1:], stdout, stderr)
 	case "edit":
 		return runEdit(args[1:], stdout, stderr)
+	case "jump":
+		return runJump(args[1:], stdout, stderr)
+	case "proxy":
+		return runProxy(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
 	case "show":
@@ -101,7 +111,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		}
 		printUsage(stdout)
 		return 0
-	case "authkeys", "jump", "proxy":
+	case "authkeys":
 		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", args[0])
 		return 1
 	default:
@@ -149,16 +159,16 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runAdd(connectFlagsAsAddArgs(flags), stdout, stderr)
 	case ui.ItemEdit:
 		return runEdit(connectFlagsAsEditArgs(flags), stdout, stderr)
-	case ui.ItemAuthkeys, ui.ItemProxy, ui.ItemJump:
+	case ui.ItemProxy:
+		return runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
+	case ui.ItemJump:
+		return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
+	case ui.ItemAuthkeys:
 		fmt.Fprintf(stderr, "ssherpa: %s is not implemented yet in the Go port\n", item.Title)
 		return 1
 	}
 
-	base := sshcmd.Resolve(sshcmd.ResolveOptions{
-		SSHBinary: flags.SSHBinary,
-		NoKitty:   flags.NoKitty,
-		Env:       sshcmd.Env(),
-	})
+	base := resolveSSHCommand(flags)
 	cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
 
 	if flags.Print {
@@ -173,8 +183,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	fmt.Fprintf(stderr, "[exec] %s\n", sshcmd.QuoteArgv(cmd.Argv))
-	return sshcmd.RunDirect(cmd, os.Stdin, stdout, stderr)
+	return printOrRunSSH(cmd, false, stdout, stderr)
 }
 
 func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {

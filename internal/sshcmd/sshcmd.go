@@ -59,6 +59,64 @@ func BuildDirect(base Command, alias string, extraArgs []string) Command {
 	return Command{Argv: argv}
 }
 
+func BuildJump(base Command, destination string, hops []string, extraArgs []string) Command {
+	argv := append([]string(nil), base.Argv...)
+	argv = append(argv, "-J", strings.Join(hops, ","), destination)
+	argv = append(argv, extraArgs...)
+	return Command{Argv: argv}
+}
+
+func BuildProxy(base Command, alias string, bind string, port int, extraArgs []string) Command {
+	argv := append([]string(nil), base.Argv...)
+	argv = append(argv,
+		"-D", fmt.Sprintf("%s:%d", bind, port),
+		"-C",
+		"-N",
+		"-o", "ExitOnForwardFailure=yes",
+		alias,
+	)
+	argv = append(argv, extraArgs...)
+	return Command{Argv: argv}
+}
+
+func ValidateJumpRoute(destination string, hops []string) error {
+	destination = strings.TrimSpace(destination)
+	if destination == "" {
+		return errors.New("jump destination is required")
+	}
+	if len(hops) == 0 {
+		return errors.New("at least one jump hop is required")
+	}
+
+	seen := map[string]bool{}
+	for _, hop := range hops {
+		hop = strings.TrimSpace(hop)
+		switch {
+		case hop == "":
+			return errors.New("jump hop cannot be empty")
+		case hop == destination:
+			return fmt.Errorf("jump hop %q cannot be the destination", hop)
+		case seen[hop]:
+			return fmt.Errorf("duplicate jump hop %q", hop)
+		}
+		seen[hop] = true
+	}
+	return nil
+}
+
+func ValidateProxy(alias string, bind string, port int) error {
+	if strings.TrimSpace(alias) == "" {
+		return errors.New("proxy alias is required")
+	}
+	if strings.TrimSpace(bind) == "" {
+		return errors.New("proxy bind address is required")
+	}
+	if port < 1 || port > 65535 {
+		return errors.New("proxy port must be an integer from 1 to 65535")
+	}
+	return nil
+}
+
 func RunDirect(cmd Command, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
 	if len(cmd.Argv) == 0 {
 		fmt.Fprintln(stderr, "ssherpa: empty SSH command")
