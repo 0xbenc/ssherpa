@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,7 +68,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 9:")
+	assertContains(t, stdout.String(), "Phase 10:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -299,6 +300,16 @@ Host prod
 	}
 }
 
+func TestRunConnectRejectsInvalidThemeFlag(t *testing.T) {
+	var stderr bytes.Buffer
+	code := Run([]string{"--print", "--theme", "imaginary"}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "unknown theme")
+}
+
 func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
 	args := connectFlagsAsAddArgs(connectFlags{inventoryFlags: inventoryFlags{Config: "/tmp/config"}})
 
@@ -325,11 +336,13 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 		ComposerKeyName:   "Ctrl-R",
 		NoKitty:           true,
 		NoColor:           true,
+		ThemeName:         "vivid",
+		ThemeFile:         "/tmp/theme.conf",
 		SSHArgs:           []string{"-v"},
 	}
 
 	args := connectFlagsAsJumpArgs(flags)
-	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--composer-key\x00Ctrl-R\x00--no-kitty\x00--no-color\x00--\x00-v"
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--composer-key\x00Ctrl-R\x00--no-kitty\x00--no-color\x00--theme\x00vivid\x00--theme-file\x00/tmp/theme.conf\x00--\x00-v"
 	if got := strings.Join(args, "\x00"); got != want {
 		t.Fatalf("jump args = %#v, want %q", args, want)
 	}
@@ -337,6 +350,48 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 	proxyArgs := connectFlagsAsProxyArgs(flags)
 	if got := strings.Join(proxyArgs, "\x00"); got != want {
 		t.Fatalf("proxy args = %#v, want %q", proxyArgs, want)
+	}
+}
+
+func TestParseThemeFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func([]string, io.Writer) (string, string, bool)
+	}{
+		{
+			name: "connect",
+			run: func(args []string, stderr io.Writer) (string, string, bool) {
+				flags, ok := parseConnectFlags(args, stderr)
+				return flags.ThemeName, flags.ThemeFile, ok
+			},
+		},
+		{
+			name: "jump",
+			run: func(args []string, stderr io.Writer) (string, string, bool) {
+				flags, ok := parseJumpFlags(args, stderr)
+				return flags.ThemeName, flags.ThemeFile, ok
+			},
+		},
+		{
+			name: "proxy",
+			run: func(args []string, stderr io.Writer) (string, string, bool) {
+				flags, ok := parseProxyFlags(args, stderr)
+				return flags.ThemeName, flags.ThemeFile, ok
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			theme, file, ok := tt.run([]string{"--theme=vivid", "--theme-file", "/tmp/theme.conf"}, &stderr)
+			if !ok {
+				t.Fatalf("parse failed: %s", stderr.String())
+			}
+			if theme != "vivid" || file != "/tmp/theme.conf" {
+				t.Fatalf("theme = %q, file = %q; want vivid and /tmp/theme.conf", theme, file)
+			}
+		})
 	}
 }
 

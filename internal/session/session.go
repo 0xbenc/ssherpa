@@ -16,6 +16,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sessionview"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 )
@@ -37,14 +38,18 @@ type Metadata struct {
 }
 
 type Options struct {
-	StateDir string
-	Stdin    *os.File
-	Stdout   io.Writer
-	Stderr   io.Writer
-	Env      []string
-	Now      func() time.Time
-	Watchdog WatchdogOptions
-	Composer ComposerOptions
+	StateDir  string
+	Stdin     *os.File
+	Stdout    io.Writer
+	Stderr    io.Writer
+	Env       []string
+	Now       func() time.Time
+	Watchdog  WatchdogOptions
+	Composer  ComposerOptions
+	Theme     termstyle.Theme
+	ThemeName string
+	ThemeFile string
+	NoColor   bool
 }
 
 type ComposerOptions struct {
@@ -118,6 +123,11 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	if env == nil {
 		env = os.Environ()
 	}
+	theme, err := resolveSessionTheme(opts, env)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
 	record := buildRecord(command, metadata, now(), env)
 	var recordMu sync.Mutex
 
@@ -149,7 +159,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	output := &lockedWriter{w: stdout}
 	done := make(chan struct{})
 	outputDone := make(chan struct{})
-	go copyInput(ptmx, stdin, output, stateDir, record.ID, opts.Composer, done)
+	go copyInput(ptmx, stdin, output, stateDir, record.ID, opts.Composer, theme, done)
 	go func() {
 		_, _ = io.Copy(output, ptmx)
 		close(outputDone)
@@ -186,6 +196,18 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 	}
 	return exitCode
+}
+
+func resolveSessionTheme(opts Options, env []string) (termstyle.Theme, error) {
+	if !opts.Theme.IsZero() {
+		return opts.Theme.WithNoColor(opts.Theme.NoColor || opts.NoColor), nil
+	}
+	return termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    opts.ThemeName,
+		File:    opts.ThemeFile,
+		NoColor: opts.NoColor,
+		Env:     env,
+	})
 }
 
 func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, env []string) state.SessionRecord {
@@ -274,7 +296,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, done <-chan struct{}) {
+func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -284,9 +306,9 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 		if n > 0 {
 			switch {
 			case buf[0] == OverlayHotkey:
-				showSessionOverlay(stdin, output, stateDir, currentID)
+				showSessionOverlay(stdin, output, stateDir, currentID, theme)
 			case composer.enabled() && buf[0] == composer.hotkey():
-				showComposer(stdin, output, ptmx, composer)
+				showComposer(stdin, output, ptmx, composer, theme)
 			default:
 				_, _ = ptmx.Write(buf[:n])
 			}
@@ -302,11 +324,11 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 	}
 }
 
-func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string) {
+func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme) {
 	output.mu.Lock()
 	defer output.mu.Unlock()
 
-	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID)
+	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
 	defer clearSessionOverlay(output.w, frame)
 
 	var buf [1]byte
@@ -323,19 +345,20 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 			return
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
 		}
 	}
 }
 
-func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string) overlayFrame {
+func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
 	lines := sessionOverlayLines(stateDir, currentID)
-	lines = append(lines, "", fmt.Sprintf("%s/q/Esc close   r refresh   local only", OverlayHotkeyName))
+	lines = styleOverlayLines(lines, theme)
+	lines = append(lines, "", overlayHelp(fmt.Sprintf("%s/q/Esc close   r refresh   local only", OverlayHotkeyName), theme))
 
 	if !terminalOutput {
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "----- ssherpa session overlay -----")
+		fmt.Fprintln(w, overlayTitle("ssherpa session overlay", theme))
 		for _, line := range lines {
 			fmt.Fprintln(w, line)
 		}
@@ -364,12 +387,12 @@ func clearSessionOverlay(w io.Writer, frame overlayFrame) {
 	fmt.Fprint(w, "\x1b8\x1b[?25h")
 }
 
-func showComposer(stdin *os.File, output *lockedWriter, ptmx *os.File, composer ComposerOptions) {
+func showComposer(stdin *os.File, output *lockedWriter, ptmx *os.File, composer ComposerOptions, theme termstyle.Theme) {
 	output.mu.Lock()
 	defer output.mu.Unlock()
 
 	var buffer []byte
-	frame := drawComposer(output.w, stdin, buffer, composer)
+	frame := drawComposer(output.w, stdin, buffer, composer, theme)
 	sent := false
 	defer func() {
 		clearComposer(output.w, frame, sent)
@@ -411,29 +434,29 @@ func showComposer(stdin *os.File, output *lockedWriter, ptmx *os.File, composer 
 
 		if frame.terminal {
 			clearTerminalFrame(output.w, frame)
-			frame = drawComposer(output.w, stdin, buffer, composer)
+			frame = drawComposer(output.w, stdin, buffer, composer, theme)
 		}
 	}
 }
 
-func drawComposer(w io.Writer, stdin *os.File, buffer []byte, composer ComposerOptions) overlayFrame {
+func drawComposer(w io.Writer, stdin *os.File, buffer []byte, composer ComposerOptions, theme termstyle.Theme) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
 	display := string(buffer)
 	if display == "" {
 		display = "<empty>"
 	}
 	lines := []string{
-		"ssherpa composer (local)",
-		"buffer: " + display,
-		fmt.Sprintf("Enter send+newline   %s send   Esc cancel   Backspace edit   Ctrl-U clear", ComposerSendHotkeyName),
+		overlayTitle("ssherpa composer", theme),
+		overlayField("buffer", display, theme),
+		overlayHelp(fmt.Sprintf("Enter send+newline   %s send   Esc cancel   Backspace edit   Ctrl-U clear", ComposerSendHotkeyName), theme),
 	}
 	if composer.hotkeyName() != ComposerHotkeyName {
-		lines = append(lines, "hotkey: "+composer.hotkeyName())
+		lines = append(lines, overlayField("hotkey", composer.hotkeyName(), theme))
 	}
 
 	if !terminalOutput {
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "----- ssherpa composer -----")
+		fmt.Fprintln(w, overlayTitle("ssherpa composer", theme))
 		for _, line := range lines {
 			fmt.Fprintln(w, line)
 		}
@@ -472,6 +495,39 @@ func clearTerminalFrame(w io.Writer, frame overlayFrame) {
 
 func isComposerPrintable(key byte) bool {
 	return key == '\t' || (key >= 0x20 && key <= 0x7e)
+}
+
+func styleOverlayLines(lines []string, theme termstyle.Theme) []string {
+	styled := append([]string(nil), lines...)
+	for i, line := range styled {
+		switch {
+		case i == 0:
+			styled[i] = overlayTitle(line, theme)
+		case strings.HasPrefix(line, "state:"):
+			styled[i] = theme.Style(termstyle.RoleMuted, line)
+		case strings.HasPrefix(line, "active:"):
+			styled[i] = theme.Style(termstyle.RoleSuccess, line)
+		case strings.Contains(line, "[active]"):
+			styled[i] = theme.Style(termstyle.RoleSuccess, line)
+		case strings.Contains(line, "[exit"):
+			styled[i] = theme.Style(termstyle.RoleMuted, line)
+		case strings.Contains(line, "current"):
+			styled[i] = theme.Style(termstyle.RolePrimary, line)
+		}
+	}
+	return styled
+}
+
+func overlayTitle(value string, theme termstyle.Theme) string {
+	return theme.Style(termstyle.RoleTitle, value)
+}
+
+func overlayField(label string, value string, theme termstyle.Theme) string {
+	return theme.Style(termstyle.RoleAccent, label+":") + " " + theme.Style(termstyle.RoleForeground, value)
+}
+
+func overlayHelp(value string, theme termstyle.Theme) string {
+	return theme.Style(termstyle.RoleMuted, value)
 }
 
 func sessionOverlayLines(stateDir string, currentID string) []string {
@@ -688,6 +744,10 @@ func truncateOverlayLine(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
+	if termstyle.VisibleWidth(value) <= width {
+		return value
+	}
+	value = termstyle.Strip(value)
 	runes := []rune(value)
 	if len(runes) <= width {
 		return value

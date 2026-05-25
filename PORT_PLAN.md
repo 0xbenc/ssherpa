@@ -84,6 +84,9 @@ Current repository state:
   warning events, and explicitly configured disconnects for sustained
   unhealthy probes. Phase 9 adds a local queued-input composer for
   supervised sessions with configurable hotkey and disable controls.
+  Phase 10 adds the first full TUI design pass: semantic terminal-palette
+  theme support, responsive picker layout, stronger first-screen
+  hierarchy, and styled in-session overlays.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.
@@ -95,7 +98,7 @@ Default mode:
 
 ```text
 ssherpa [--all] [--print|--exec] [--filter SUBSTR] [--user USER]
-        [--no-color] [--config PATH]
+        [--no-color] [--theme NAME] [--theme-file PATH] [--config PATH]
         [--] [ssh-args...]
 ```
 
@@ -270,6 +273,8 @@ New flags:
 | `--composer-key KEY` | supervised connect | Composer hotkey; default `ctrl-g` |
 | `--no-composer` | supervised connect | Disable queued input composer |
 | `--state-dir PATH` | supervised connect and session flows | Override state directory |
+| `--theme NAME` | UI output | Use `terminal` or `vivid`; default `terminal` |
+| `--theme-file PATH` | UI output | Load semantic theme role overrides |
 
 ### Environment Contract
 
@@ -291,6 +296,9 @@ Add new variables:
 | `SSHERPA_STATE_DIR` | Override session state directory |
 | `SSHERPA_LOG_DIR` | Override debug/session log directory |
 | `SSHERPA_NO_ALT_SCREEN` | Disable alternate-screen UI where possible |
+| `SSHERPA_THEME` | Default UI theme name: `terminal` or `vivid` |
+| `SSHERPA_THEME_FILE` | UI theme override file; defaults to user config when present |
+| `SSHERPA_NO_COLOR`, `NO_COLOR` | Disable UI color styling |
 | `SSHERPA_SESSION_ID` | Current supervised session ID |
 | `SSHERPA_PARENT_SESSION_ID` | Parent session ID for nested route tracking |
 | `SSHERPA_ROUTE` | Comma-separated route metadata |
@@ -1373,6 +1381,28 @@ Acceptance:
 - Composer can be toggled without corrupting normal input. Done.
 - Full-screen remote app smoke tests pass. Done.
 - Feature can be disabled completely. Done.
+
+### Phase 10: TUI Design Overhaul
+
+Deliverables:
+
+- Styled first-screen picker. Done.
+- Responsive wide/narrow picker layouts. Done.
+- Wide-terminal selection preview. Done.
+- Terminal-palette default theme with `--no-color` fallback. Done.
+- Custom semantic theme roles via config, env, and connect flags. Done.
+- Opt-in `vivid` truecolor palette for the Phase 10 design look. Done.
+- Styled session map and composer overlays. Done.
+- ANSI-safe layout helpers and tests. Done.
+
+Acceptance:
+
+- Picker remains keyboard-compatible. Done.
+- `--no-color` output has no ANSI escapes in UI snapshots. Done.
+- Default styling avoids hardcoded RGB and follows the terminal palette. Done.
+- Theme role overrides affect picker and in-session overlays. Done.
+- Narrow and wide terminal layouts remain readable. Done.
+- Overlays keep local-only behavior while looking intentional. Done.
 
 ### Phase X: Packaging and Bash Zoo Integration Prep
 

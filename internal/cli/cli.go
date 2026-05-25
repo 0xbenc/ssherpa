@@ -15,6 +15,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -58,6 +59,8 @@ Connect Flags:
   --no-composer      Disable local queued-input composer
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
+  --theme NAME       Use UI theme: terminal or vivid
+  --theme-file PATH  Load UI theme role overrides from PATH
 
 Mutation Commands:
   ssherpa add --alias NAME --host HOST [--user USER] [--port PORT] [--yes]
@@ -85,14 +88,16 @@ Session Commands:
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
   ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
 
-Phase 9:
+Phase 10:
   SSH config inventory, picker, supervised SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
   management are available. Supervised PTY sessions, session maps, and
-  upgraded picker UX are available. In supervised sessions, Ctrl-] opens
-  the local active-session map overlay and Ctrl-G opens the local input
-  composer. Opt-in sidecar latency warnings and explicit latency
-  disconnects are available with supervised sessions.
+  upgraded picker UX are available. The TUI defaults to the terminal
+  palette, supports theme role overrides, and still honors --no-color.
+  In supervised sessions, Ctrl-] opens the local active-session map
+  overlay and Ctrl-G opens the local input composer. Opt-in sidecar
+  latency warnings and explicit latency disconnects are available with
+  supervised sessions.
 `
 
 type BuildInfo struct {
@@ -167,6 +172,8 @@ type connectFlags struct {
 	NoComposer        bool
 	NoKitty           bool
 	NoColor           bool
+	ThemeName         string
+	ThemeFile         string
 	Select            string
 	SSHArgs           []string
 }
@@ -185,6 +192,9 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if !validateComposerFlags(flags, stderr) {
+		return 1
+	}
+	if !validateThemeFlags(flags, stderr) {
 		return 1
 	}
 	if flags.JSON && !flags.Print {
@@ -366,6 +376,22 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.NoKitty = true
 		case arg == "--no-color":
 			flags.NoColor = true
+		case arg == "--theme":
+			value, ok := nextArg(args, &i, stderr, "--theme")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeName = value
+		case strings.HasPrefix(arg, "--theme="):
+			flags.ThemeName = strings.TrimPrefix(arg, "--theme=")
+		case arg == "--theme-file":
+			value, ok := nextArg(args, &i, stderr, "--theme-file")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeFile = value
+		case strings.HasPrefix(arg, "--theme-file="):
+			flags.ThemeFile = strings.TrimPrefix(arg, "--theme-file=")
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(stderr, "ssherpa: unknown flag %q\n", arg)
 			return flags, false
@@ -399,6 +425,23 @@ func validateComposerFlags(flags connectFlags, stderr io.Writer) bool {
 	}
 	if flags.Direct && (flags.NoComposer || flags.ComposerKey != 0) {
 		fmt.Fprintln(stderr, "ssherpa: composer flags require supervised mode; remove --direct")
+		return false
+	}
+	return true
+}
+
+func validateThemeFlags(flags connectFlags, stderr io.Writer) bool {
+	if flags.ThemeName == "" && flags.ThemeFile == "" {
+		return true
+	}
+	_, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:            flags.ThemeName,
+		File:            flags.ThemeFile,
+		NoColor:         flags.NoColor,
+		SkipDefaultFile: true,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return false
 	}
 	return true
@@ -469,6 +512,8 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
 		Title:       "ssherpa",
 		Subtitle:    pickerMode(flags),
 		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions),
@@ -534,6 +579,12 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		scope = append(scope, "composer=off")
 	} else if flags.ComposerKeyName != "" {
 		scope = append(scope, "composer="+flags.ComposerKeyName)
+	}
+	if flags.ThemeName != "" {
+		scope = append(scope, "theme="+flags.ThemeName)
+	}
+	if flags.ThemeFile != "" {
+		scope = append(scope, "theme-file="+flags.ThemeFile)
 	}
 	if activeSessions > 0 {
 		scope = append(scope, fmt.Sprintf("active-sessions=%d", activeSessions))

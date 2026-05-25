@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 type ItemKind string
@@ -38,6 +39,9 @@ type PickOptions struct {
 	Output      io.Writer
 	NoAltScreen bool
 	NoColor     bool
+	Theme       termstyle.Theme
+	ThemeName   string
+	ThemeFile   string
 	Title       string
 	Subtitle    string
 	Summary     []string
@@ -83,7 +87,11 @@ func Pick(ctx context.Context, items []Item, opts PickOptions) (Item, bool, erro
 		return Item{}, false, nil
 	}
 
-	model := newPickerModel(items, opts)
+	theme, err := resolvePickTheme(opts)
+	if err != nil {
+		return Item{}, false, err
+	}
+	model := newPickerModelWithTheme(items, opts, theme)
 	programOptions := []tea.ProgramOption{
 		tea.WithContext(ctx),
 	}
@@ -114,7 +122,7 @@ type pickerModel struct {
 	selected    int
 	canceled    bool
 	noAltScreen bool
-	noColor     bool
+	theme       termstyle.Theme
 	title       string
 	subtitle    string
 	summary     []string
@@ -124,11 +132,19 @@ type pickerModel struct {
 }
 
 func newPickerModel(items []Item, opts PickOptions) pickerModel {
+	theme := opts.Theme
+	if theme.IsZero() {
+		theme = termstyle.TerminalTheme()
+	}
+	return newPickerModelWithTheme(items, opts, theme.WithNoColor(opts.NoColor))
+}
+
+func newPickerModelWithTheme(items []Item, opts PickOptions, theme termstyle.Theme) pickerModel {
 	model := pickerModel{
 		items:       append([]Item(nil), items...),
 		selected:    -1,
 		noAltScreen: opts.NoAltScreen,
-		noColor:     opts.NoColor,
+		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),
 		title:       opts.Title,
 		subtitle:    opts.Subtitle,
 		summary:     append([]string(nil), opts.Summary...),
@@ -138,6 +154,17 @@ func newPickerModel(items []Item, opts PickOptions) pickerModel {
 	}
 	model.applyFilter()
 	return model
+}
+
+func resolvePickTheme(opts PickOptions) (termstyle.Theme, error) {
+	if !opts.Theme.IsZero() {
+		return opts.Theme.WithNoColor(opts.Theme.NoColor || opts.NoColor), nil
+	}
+	return termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    opts.ThemeName,
+		File:    opts.ThemeFile,
+		NoColor: opts.NoColor,
+	})
 }
 
 func (m pickerModel) Init() tea.Cmd {
@@ -189,66 +216,169 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m pickerModel) View() tea.View {
 	var b strings.Builder
-	width := clamp(m.width, 48, 120)
-	title := m.title
-	if title == "" {
-		title = "ssherpa"
-	}
-	b.WriteString(title)
-	if m.subtitle != "" {
-		b.WriteString("  ")
-		b.WriteString(truncate(m.subtitle, max(0, width-len(title)-2)))
-	}
-	b.WriteByte('\n')
-	if len(m.summary) > 0 {
-		for _, line := range m.summary {
-			b.WriteString("  ")
-			b.WriteString(truncate(line, width-2))
-			b.WriteByte('\n')
-		}
-	}
-	b.WriteString(strings.Repeat("-", width))
-	b.WriteByte('\n')
-	fmt.Fprintf(&b, "Search  %-*s  %d/%d\n", max(0, width-22), truncate(m.query, max(0, width-22)), len(m.filtered), len(m.items))
-	b.WriteString("\n\n")
+	width := clamp(m.width, 56, 140)
+	theme := pickerTheme{theme: m.theme}
 
-	if len(m.filtered) == 0 {
-		b.WriteString("No matches\n")
-	} else {
-		limit := visibleLimit(m.height, len(m.summary))
-		lastGroup := ""
-		rendered := 0
-		for i := 0; i < len(m.filtered) && rendered < limit; i++ {
-			index := m.filtered[i]
-			item := m.items[index]
-			if item.Group != "" && item.Group != lastGroup {
-				if rendered > 0 {
-					b.WriteByte('\n')
-				}
-				fmt.Fprintf(&b, "%s\n", item.Group)
-				lastGroup = item.Group
-			}
-			b.WriteString(m.renderRow(item, i == m.cursor, width))
-			rendered++
-		}
-		if len(m.filtered) > rendered {
-			fmt.Fprintf(&b, "  ... %d more\n", len(m.filtered)-rendered)
-		}
+	b.WriteString(m.renderHeader(width, theme))
+	b.WriteByte('\n')
+	for _, line := range m.renderBody(width, theme) {
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
 
 	footer := m.footer
 	if footer == "" {
-		footer = "enter select  /  type search  /  arrows move  /  q quit"
+		footer = "enter select  /  type filter  /  arrows move  /  q quit"
 	}
+	b.WriteString(theme.rule(width))
 	b.WriteByte('\n')
-	b.WriteString(strings.Repeat("-", width))
-	b.WriteByte('\n')
-	b.WriteString(footer)
+	b.WriteString(theme.footer(termstyle.Truncate(footer, width)))
 	b.WriteByte('\n')
 
 	view := tea.NewView(b.String())
 	view.AltScreen = !m.noAltScreen
 	return view
+}
+
+func (m pickerModel) renderHeader(width int, theme pickerTheme) string {
+	var b strings.Builder
+	title := strings.TrimSpace(m.title)
+	if title == "" {
+		title = "ssherpa"
+	}
+	header := theme.logo(strings.ToUpper(title))
+	if m.subtitle != "" {
+		header += " " + theme.pill(strings.ToUpper(m.subtitle))
+	}
+	b.WriteString(termstyle.PadRight(header, width))
+	b.WriteByte('\n')
+	for _, line := range m.summary {
+		b.WriteString("  ")
+		b.WriteString(theme.summary(termstyle.Truncate(line, width-4)))
+		b.WriteByte('\n')
+	}
+	b.WriteString(theme.rule(width))
+	b.WriteByte('\n')
+
+	counter := fmt.Sprintf("%d/%d", len(m.filtered), len(m.items))
+	label := theme.label("FILTER")
+	counterText := theme.counter(counter)
+	query := m.query
+	if query == "" {
+		query = "type to filter"
+	}
+	fieldWidth := max(8, width-termstyle.VisibleWidth(label)-termstyle.VisibleWidth(counterText)-8)
+	field := "[" + termstyle.PadRight(termstyle.Truncate(query, fieldWidth), fieldWidth) + "]"
+	if m.query == "" {
+		field = theme.muted(field)
+	} else {
+		field = theme.search(field)
+	}
+	b.WriteString(label)
+	b.WriteString("  ")
+	b.WriteString(field)
+	b.WriteString("  ")
+	b.WriteString(counterText)
+	b.WriteByte('\n')
+	b.WriteString(theme.rule(width))
+	return b.String()
+}
+
+func (m pickerModel) renderBody(width int, theme pickerTheme) []string {
+	listWidth := width
+	previewWidth := 0
+	if width >= 100 && len(m.filtered) > 0 {
+		listWidth = clamp(width*62/100, 58, 88)
+		previewWidth = width - listWidth - 3
+	}
+
+	list := m.renderListLines(listWidth, theme)
+	if previewWidth <= 0 {
+		return list
+	}
+	preview := m.renderPreviewLines(previewWidth, theme)
+	lines := max(len(list), len(preview))
+	out := make([]string, 0, lines)
+	divider := theme.muted("|")
+	for i := 0; i < lines; i++ {
+		left := ""
+		if i < len(list) {
+			left = list[i]
+		}
+		right := ""
+		if i < len(preview) {
+			right = preview[i]
+		}
+		out = append(out, termstyle.PadRight(left, listWidth)+" "+divider+" "+right)
+	}
+	return out
+}
+
+func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
+	if len(m.filtered) == 0 {
+		return []string{"", "  " + theme.empty("No matches")}
+	}
+
+	limit := visibleLimit(m.height, len(m.summary))
+	lines := []string{""}
+	lastGroup := ""
+	rendered := 0
+	for i := 0; i < len(m.filtered) && rendered < limit; i++ {
+		index := m.filtered[i]
+		item := m.items[index]
+		if item.Group != "" && item.Group != lastGroup {
+			if rendered > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, theme.groupHeader(item.Group, width))
+			lastGroup = item.Group
+		}
+		lines = append(lines, m.renderRow(item, i == m.cursor, width, theme))
+		rendered++
+	}
+	if len(m.filtered) > rendered {
+		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more hidden by terminal height", len(m.filtered)-rendered)))
+	}
+	return lines
+}
+
+func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
+	item, ok := m.currentItem()
+	if !ok {
+		return nil
+	}
+
+	lines := []string{
+		"",
+		theme.groupHeader("Selection", width),
+		theme.previewTitle(termstyle.Truncate(item.Title, width)),
+	}
+	if item.Badge != "" {
+		lines = append(lines, previewKV(theme, width, "Type", strings.ToUpper(item.Badge)))
+	}
+	if item.Token != "" && item.Token != item.Title {
+		lines = append(lines, previewKV(theme, width, "Token", item.Token))
+	}
+	if item.Description != "" {
+		lines = append(lines, previewKV(theme, width, "Target", item.Description))
+	}
+	if item.Detail != "" {
+		lines = append(lines, previewKV(theme, width, "Source", item.Detail))
+	}
+	lines = append(lines, "")
+	lines = append(lines, theme.muted(termstyle.Truncate(selectionHint(item), width)))
+	return lines
+}
+
+func (m pickerModel) currentItem() (Item, bool) {
+	if len(m.filtered) == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
+		return Item{}, false
+	}
+	index := m.filtered[m.cursor]
+	if index < 0 || index >= len(m.items) {
+		return Item{}, false
+	}
+	return m.items[index], true
 }
 
 func (m *pickerModel) applyFilter() {
@@ -263,10 +393,10 @@ func (m *pickerModel) applyFilter() {
 	}
 }
 
-func (m pickerModel) renderRow(item Item, selected bool, width int) string {
+func (m pickerModel) renderRow(item Item, selected bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
-		cursor = "> "
+		cursor = ">>"
 	}
 
 	badge := item.Badge
@@ -274,24 +404,155 @@ func (m pickerModel) renderRow(item Item, selected bool, width int) string {
 		badge = string(item.Kind)
 	}
 
-	titleWidth := clamp(width/3, 16, 30)
-	badgeWidth := 7
-	descWidth := max(10, width-len(cursor)-badgeWidth-titleWidth-6)
-	title := truncate(item.Title, titleWidth)
-	desc := truncate(item.Description, descWidth)
+	titleWidth := clamp(width/3, 16, 28)
+	badgeWidth := 10
+	descWidth := max(10, width-len(cursor)-badgeWidth-titleWidth-8)
+	title := termstyle.Truncate(item.Title, titleWidth)
+	desc := termstyle.Truncate(item.Description, descWidth)
 	if item.Detail != "" && descWidth > 24 {
 		detailWidth := min(18, descWidth/3)
-		desc = truncate(item.Description, descWidth-detailWidth-3) + "  " + truncate(item.Detail, detailWidth)
+		desc = termstyle.Truncate(item.Description, descWidth-detailWidth-3) + "  " + termstyle.Truncate(item.Detail, detailWidth)
 	}
-	return fmt.Sprintf("%s%-*s %-*s %s\n", cursor, badgeWidth, badge, titleWidth, title, desc)
+	cursor = theme.cursor(cursor, selected)
+	badgeText := theme.badge(item.Kind, "["+strings.ToUpper(badge)+"]")
+	titleText := theme.rowTitle(title, selected)
+	descText := theme.rowDesc(desc, selected)
+	line := cursor + " " + termstyle.PadRight(badgeText, badgeWidth) + " " + termstyle.PadRight(titleText, titleWidth) + " " + descText
+	return termstyle.PadRight(line, width)
 }
 
 func visibleLimit(height int, summaryLines int) int {
 	if height <= 0 {
-		return 14
+		return 12
 	}
-	limit := height - summaryLines - 10
-	return clamp(limit, 8, 18)
+	limit := height - summaryLines - 11
+	return clamp(limit, 7, 18)
+}
+
+type pickerTheme struct {
+	theme termstyle.Theme
+}
+
+func (t pickerTheme) logo(value string) string {
+	return t.theme.Style(termstyle.RoleTitle, value)
+}
+
+func (t pickerTheme) pill(value string) string {
+	return t.theme.Style(termstyle.RolePill, " "+value+" ")
+}
+
+func (t pickerTheme) summary(value string) string {
+	return t.theme.Style(termstyle.RoleSecondary, value)
+}
+
+func (t pickerTheme) rule(width int) string {
+	return t.theme.Style(termstyle.RoleBorder, strings.Repeat("-", width))
+}
+
+func (t pickerTheme) label(value string) string {
+	return t.theme.Style(termstyle.RoleAccent, value)
+}
+
+func (t pickerTheme) counter(value string) string {
+	return t.theme.Style(termstyle.RoleSuccess, value)
+}
+
+func (t pickerTheme) search(value string) string {
+	return t.theme.Style(termstyle.RoleSearch, value)
+}
+
+func (t pickerTheme) muted(value string) string {
+	return t.theme.Style(termstyle.RoleMuted, value)
+}
+
+func (t pickerTheme) empty(value string) string {
+	return t.theme.Style(termstyle.RoleWarning, value)
+}
+
+func (t pickerTheme) footer(value string) string {
+	return t.theme.Style(termstyle.RoleMuted, value)
+}
+
+func (t pickerTheme) groupHeader(value string, width int) string {
+	label := " " + strings.ToUpper(value) + " "
+	if termstyle.VisibleWidth(label) >= width {
+		return t.theme.Style(termstyle.RoleAccent, termstyle.Truncate(strings.ToUpper(value), width))
+	}
+	line := label + strings.Repeat("-", width-termstyle.VisibleWidth(label))
+	return t.theme.Style(termstyle.RoleAccent, line)
+}
+
+func (t pickerTheme) cursor(value string, selected bool) string {
+	if selected {
+		return t.theme.Style(termstyle.RoleSuccess, value)
+	}
+	return t.theme.Style(termstyle.RoleBorder, value)
+}
+
+func (t pickerTheme) badge(kind ItemKind, value string) string {
+	role := termstyle.RolePrimary
+	switch kind {
+	case ItemAlias:
+		role = termstyle.RoleSuccess
+	case ItemAdd:
+		role = termstyle.RolePrimary
+	case ItemEdit:
+		role = termstyle.RoleWarning
+	case ItemJump:
+		role = termstyle.RoleInfo
+	case ItemProxy:
+		role = termstyle.RoleDanger
+	case ItemAuthkeys:
+		role = termstyle.RoleSecondary
+	case ItemSessions:
+		role = termstyle.RoleSuccess
+	}
+	return t.theme.Style(role, value)
+}
+
+func (t pickerTheme) rowTitle(value string, selected bool) string {
+	if selected {
+		return t.theme.Style(termstyle.RoleSelected, value)
+	}
+	return t.theme.Style(termstyle.RoleForeground, value)
+}
+
+func (t pickerTheme) rowDesc(value string, selected bool) string {
+	if selected {
+		return t.theme.Style(termstyle.RoleForeground, value)
+	}
+	return t.theme.Style(termstyle.RoleMuted, value)
+}
+
+func (t pickerTheme) previewTitle(value string) string {
+	return t.theme.Style(termstyle.RoleSelected, value)
+}
+
+func previewKV(theme pickerTheme, width int, key string, value string) string {
+	keyText := termstyle.PadRight(theme.muted(key), 8)
+	valueText := theme.rowDesc(termstyle.Truncate(value, max(0, width-9)), false)
+	return keyText + " " + valueText
+}
+
+func selectionHint(item Item) string {
+	switch item.Kind {
+	case ItemAlias:
+		return "Connects with local OpenSSH under supervised mode."
+	case ItemAdd:
+		return "Creates a new Host stanza with safe write behavior."
+	case ItemEdit:
+		return "Updates or removes existing Host entries."
+	case ItemJump:
+		return "Builds a ProxyJump route through selected hops."
+	case ItemProxy:
+		return "Starts a local SOCKS proxy through an SSH alias."
+	case ItemAuthkeys:
+		return "Manages authorized_keys on this device."
+	case ItemSessions:
+		return "Opens the active session route map."
+	default:
+		return "Ready."
+	}
 }
 
 func fuzzyMatch(value string, query string) bool {
@@ -371,20 +632,6 @@ func shortPath(path string) string {
 		return path
 	}
 	return strings.Join(parts[len(parts)-2:], "/")
-}
-
-func truncate(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 1 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-1]) + "~"
 }
 
 func clamp(value int, low int, high int) int {

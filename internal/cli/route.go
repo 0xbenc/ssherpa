@@ -40,6 +40,9 @@ type connectOptions struct {
 	StateDir  string
 	Watchdog  session.WatchdogOptions
 	Composer  session.ComposerOptions
+	NoColor   bool
+	ThemeName string
+	ThemeFile string
 }
 
 func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
@@ -57,6 +60,9 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 			Hotkey:     flags.ComposerKey,
 			HotkeyName: flags.ComposerKeyName,
 		},
+		NoColor:   flags.NoColor,
+		ThemeName: flags.ThemeName,
+		ThemeFile: flags.ThemeFile,
 	}
 }
 
@@ -74,6 +80,9 @@ func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if !validateComposerFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if !validateThemeFlags(flags.connectFlags, stderr) {
 		return 1
 	}
 	if flags.JSON {
@@ -121,6 +130,9 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if !validateComposerFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if !validateThemeFlags(flags.connectFlags, stderr) {
 		return 1
 	}
 	if flags.JSON {
@@ -303,6 +315,22 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.NoKitty = true
 		case arg == "--no-color":
 			flags.NoColor = true
+		case arg == "--theme":
+			value, ok := nextArg(args, &i, stderr, "--theme")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeName = value
+		case strings.HasPrefix(arg, "--theme="):
+			flags.ThemeName = strings.TrimPrefix(arg, "--theme=")
+		case arg == "--theme-file":
+			value, ok := nextArg(args, &i, stderr, "--theme-file")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeFile = value
+		case strings.HasPrefix(arg, "--theme-file="):
+			flags.ThemeFile = strings.TrimPrefix(arg, "--theme-file=")
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(stderr, "ssherpa: unknown jump flag %q\n", arg)
 			return flags, false
@@ -475,6 +503,22 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.NoKitty = true
 		case arg == "--no-color":
 			flags.NoColor = true
+		case arg == "--theme":
+			value, ok := nextArg(args, &i, stderr, "--theme")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeName = value
+		case strings.HasPrefix(arg, "--theme="):
+			flags.ThemeName = strings.TrimPrefix(arg, "--theme=")
+		case arg == "--theme-file":
+			value, ok := nextArg(args, &i, stderr, "--theme-file")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeFile = value
+		case strings.HasPrefix(arg, "--theme-file="):
+			flags.ThemeFile = strings.TrimPrefix(arg, "--theme-file=")
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(stderr, "ssherpa: unknown proxy flag %q\n", arg)
 			return flags, false
@@ -507,10 +551,10 @@ func resolveJumpRoute(flags jumpFlags, inventory hostlist.Inventory, stderr io.W
 		return flags.Destination, append([]string(nil), flags.Hops...), true, 0
 	}
 
-	return pickJumpRoute(inventory.Aliases, flags.NoColor, stderr)
+	return pickJumpRoute(inventory.Aliases, flags.NoColor, flags.ThemeName, flags.ThemeFile, stderr)
 }
 
-func pickJumpRoute(aliases []hostlist.Alias, noColor bool, stderr io.Writer) (string, []string, bool, int) {
+func pickJumpRoute(aliases []hostlist.Alias, noColor bool, themeName string, themeFile string, stderr io.Writer) (string, []string, bool, int) {
 	if len(aliases) == 0 {
 		fmt.Fprintln(stderr, "[skipped] no aliases available for jump")
 		return "", nil, false, 0
@@ -520,7 +564,7 @@ func pickJumpRoute(aliases []hostlist.Alias, noColor bool, stderr io.Writer) (st
 		return "", nil, false, 0
 	}
 
-	dest, ok, err := pickAlias(aliases, noColor, "Jump: pick destination", stderr)
+	dest, ok, err := pickAlias(aliases, noColor, themeName, themeFile, "Jump: pick destination", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
 		return "", nil, false, 1
@@ -531,7 +575,7 @@ func pickJumpRoute(aliases []hostlist.Alias, noColor bool, stderr io.Writer) (st
 	}
 
 	firstChoices := aliasesExcluding(aliases, dest.Name, nil)
-	firstHop, ok, err := pickAlias(firstChoices, noColor, "Jump: pick first hop", stderr)
+	firstHop, ok, err := pickAlias(firstChoices, noColor, themeName, themeFile, "Jump: pick first hop", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
 		return "", nil, false, 1
@@ -561,6 +605,8 @@ func pickJumpRoute(aliases []hostlist.Alias, noColor bool, stderr io.Writer) (st
 			Output:      stderr,
 			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 			NoColor:     noColor,
+			ThemeName:   themeName,
+			ThemeFile:   themeFile,
 			Title:       "Jump: add another hop or finish",
 		})
 		if err != nil {
@@ -590,7 +636,7 @@ func resolveProxyAlias(flags proxyFlags, inventory hostlist.Inventory, stderr io
 		return *alias, true, 0
 	}
 
-	alias, ok, err := pickAlias(inventory.Aliases, flags.NoColor, "Proxy: pick host", stderr)
+	alias, ok, err := pickAlias(inventory.Aliases, flags.NoColor, flags.ThemeName, flags.ThemeFile, "Proxy: pick host", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
 		return hostlist.Alias{}, false, 1
@@ -602,7 +648,7 @@ func resolveProxyAlias(flags proxyFlags, inventory hostlist.Inventory, stderr io
 	return alias, true, 0
 }
 
-func pickAlias(aliases []hostlist.Alias, noColor bool, title string, stderr io.Writer) (hostlist.Alias, bool, error) {
+func pickAlias(aliases []hostlist.Alias, noColor bool, themeName string, themeFile string, title string, stderr io.Writer) (hostlist.Alias, bool, error) {
 	if len(aliases) == 0 {
 		return hostlist.Alias{}, false, nil
 	}
@@ -611,6 +657,8 @@ func pickAlias(aliases []hostlist.Alias, noColor bool, title string, stderr io.W
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		NoColor:     noColor,
+		ThemeName:   themeName,
+		ThemeFile:   themeFile,
 		Title:       title,
 	})
 	if err != nil || !ok {
@@ -708,12 +756,15 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			fmt.Fprintln(stderr)
 		}
 		return session.RunSupervised(cmd, metadata, session.Options{
-			StateDir: options.StateDir,
-			Stdin:    os.Stdin,
-			Stdout:   stdout,
-			Stderr:   stderr,
-			Watchdog: options.Watchdog,
-			Composer: options.Composer,
+			StateDir:  options.StateDir,
+			Stdin:     os.Stdin,
+			Stdout:    stdout,
+			Stderr:    stderr,
+			Watchdog:  options.Watchdog,
+			Composer:  options.Composer,
+			ThemeName: options.ThemeName,
+			ThemeFile: options.ThemeFile,
+			NoColor:   options.NoColor,
 		})
 	}
 
@@ -775,6 +826,12 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.NoColor {
 		args = append(args, "--no-color")
+	}
+	if flags.ThemeName != "" {
+		args = append(args, "--theme", flags.ThemeName)
+	}
+	if flags.ThemeFile != "" {
+		args = append(args, "--theme-file", flags.ThemeFile)
 	}
 	if len(flags.SSHArgs) > 0 {
 		args = append(args, "--")

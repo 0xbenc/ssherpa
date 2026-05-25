@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
@@ -66,6 +67,7 @@ func TestPickerViewHonorsNoAltScreen(t *testing.T) {
 func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
+		NoColor:     true,
 		Title:       "ssherpa",
 		Subtitle:    "exec mode",
 		Summary:     []string{"1 host  0 warnings"},
@@ -73,7 +75,57 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	view := model.View()
 	text := view.Content
 
-	for _, want := range []string{"ssherpa  exec mode", "1 host  0 warnings", "Actions", "Sessions and route map", "Hosts", "prod"} {
+	for _, want := range []string{"SSHERPA", "EXEC MODE", "1 host  0 warnings", "FILTER", "ACTIONS", "Sessions and route map", "HOSTS", "prod"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view = %q, want substring %q", text, want)
+		}
+	}
+	if strings.Contains(text, "\x1b[") {
+		t.Fatalf("view contains ANSI escapes with NoColor: %q", text)
+	}
+}
+
+func TestPickerViewUsesColorWhenEnabled(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		Title:       "ssherpa",
+		Subtitle:    "supervised mode",
+	})
+
+	if text := model.View().Content; !strings.Contains(text, "\x1b[") {
+		t.Fatalf("view = %q, want ANSI styling", text)
+	}
+	if text := model.View().Content; strings.Contains(text, "38;2;") {
+		t.Fatalf("view = %q, want default terminal palette instead of truecolor", text)
+	}
+}
+
+func TestPickerViewUsesCustomTheme(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		Theme: termstyle.Theme{
+			Name: "terminal",
+			Codes: map[termstyle.Role]string{
+				termstyle.RoleTitle: "35",
+			},
+		},
+		Title: "ssherpa",
+	})
+
+	if text := model.View().Content; !strings.Contains(text, "\x1b[35mSSHERPA") {
+		t.Fatalf("view = %q, want custom title color", text)
+	}
+}
+
+func TestPickerViewRendersWideSelectionPreview(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com", SourcePath: "/tmp/config", SourceLine: 12}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 120
+
+	text := model.View().Content
+	for _, want := range []string{"SELECTION", "Add new alias", "Type", "ADD"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view = %q, want substring %q", text, want)
 		}

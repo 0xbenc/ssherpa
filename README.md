@@ -4,15 +4,16 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 9 queued input composer. The repository has a Go module,
+Current status: Phase 10 TUI design overhaul. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
 config mutations, jump routing, SOCKS proxy launching, safe
 `authorized_keys` management, supervised PTY sessions by default with
 local session records, a session route map, an upgraded first-screen
 picker, opt-in sidecar latency warnings, explicit latency disconnects,
-a local queued input composer, CI, contributor notes, and a draft
-GoReleaser config with publishing disabled.
+a local queued input composer, a responsive styled TUI, CI, contributor
+notes, terminal-palette-first theme support, and a draft GoReleaser
+config with publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -52,8 +53,9 @@ replace, delete, dry-run diffs, backups, option preservation, cert key
 types, and `SSHERPA_AUTHORIZED_KEYS_PATH`. Connection flows run under a
 supervised PTY by default, propagate basic `SSHERPA_SESSION_*` metadata
 into the child process, and write JSON records under the platform state
-directory. The default picker opens with a status summary, grouped
-actions, host rows, and a Sessions route map entry. While inside a
+directory. The default picker opens with a styled status surface,
+grouped actions, host rows, a responsive detail preview on wider
+terminals, and a Sessions route map entry. While inside a
 supervised session, press `Ctrl-]` to open the local active-session map
 overlay; press `Ctrl-]`, `q`, or `Esc` to return to the remote session.
 `ssherpa session map` shows active sessions by default; use
@@ -68,6 +70,32 @@ only when you explicitly want ssherpa to terminate a session after
 sustained unhealthy probes; it requires `--latency-warn`. Use
 `--direct` only when you need the old unsupervised runner. Use
 `--state-dir PATH` or `SSHERPA_STATE_DIR` for disposable testing.
+
+## UI Themes
+
+The TUI defaults to the terminal palette, so `primary`, `secondary`,
+`accent`, and status colors inherit the user's terminal emulator theme.
+Use `--theme vivid` or `SSHERPA_THEME=vivid` for the explicit truecolor
+palette from the Phase 10 design pass.
+
+Custom role overrides can live at `~/.config/ssherpa/theme.conf`, or in
+a path set with `--theme-file PATH` or `SSHERPA_THEME_FILE=PATH`:
+
+```text
+theme = terminal
+primary = cyan
+secondary = blue
+accent = yellow
+muted = bright-black
+success = green
+warning = yellow
+danger = red
+pill = bold reverse
+```
+
+Values may be terminal color names, style tokens such as `bold` and
+`reverse`, or raw SGR codes such as `38;2;96;221;255`. `--no-color`,
+`SSHERPA_NO_COLOR=1`, and `NO_COLOR=1` disable styling.
 
 ## Examples
 
@@ -96,6 +124,8 @@ ssherpa --select prod --composer-key ctrl-r
 ssherpa --select prod --no-composer
 ssherpa --select prod --latency-warn 2s
 ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
+ssherpa --theme vivid
+ssherpa --theme-file ~/.config/ssherpa/theme.conf
 ssherpa --direct --select prod
 ssherpa jump --dest prod --hop bastion
 ssherpa session list
