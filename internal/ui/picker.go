@@ -22,6 +22,7 @@ const (
 	ItemProxy    ItemKind = "proxy"
 	ItemJump     ItemKind = "jump"
 	ItemSessions ItemKind = "sessions"
+	ItemTheme    ItemKind = "theme"
 )
 
 type Item struct {
@@ -65,6 +66,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port", Group: "Actions", Badge: "proxy"},
 		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Description: "add, merge, replace, or delete login keys", Group: "Actions", Badge: "keys"},
 		{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Description: sessionDescription(opts), Group: "Actions", Badge: "map"},
+		{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Description: "preview and save UI palette", Group: "Actions", Badge: "theme"},
 	}
 
 	for _, alias := range aliases {
@@ -506,6 +508,8 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleSecondary
 	case ItemSessions:
 		role = termstyle.RoleSuccess
+	case ItemTheme:
+		role = termstyle.RoleInfo
 	}
 	return t.theme.Style(role, value)
 }
@@ -550,6 +554,8 @@ func selectionHint(item Item) string {
 		return "Manages authorized_keys on this device."
 	case ItemSessions:
 		return "Opens the active session route map."
+	case ItemTheme:
+		return "Builds and saves a UI color schema."
 	default:
 		return "Ready."
 	}

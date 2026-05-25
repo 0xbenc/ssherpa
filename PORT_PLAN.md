@@ -274,7 +274,7 @@ New flags:
 | `--no-composer` | supervised connect | Disable queued input composer |
 | `--state-dir PATH` | supervised connect and session flows | Override state directory |
 | `--theme NAME` | UI output | Use `terminal` or `vivid`; default `terminal` |
-| `--theme-file PATH` | UI output | Load semantic theme role overrides |
+| `--theme-file PATH` | UI output, theme editor | Load or edit semantic theme role overrides |
 
 ### Environment Contract
 
@@ -1392,6 +1392,8 @@ Deliverables:
 - Terminal-palette default theme with `--no-color` fallback. Done.
 - Custom semantic theme roles via config, env, and connect flags. Done.
 - Opt-in `vivid` truecolor palette for the Phase 10 design look. Done.
+- First-screen and `ssherpa theme` live theme editor. Done.
+- Atomic theme config writes with backup for existing files. Done.
 - Styled session map and composer overlays. Done.
 - ANSI-safe layout helpers and tests. Done.
 
@@ -1401,6 +1403,7 @@ Acceptance:
 - `--no-color` output has no ANSI escapes in UI snapshots. Done.
 - Default styling avoids hardcoded RGB and follows the terminal palette. Done.
 - Theme role overrides affect picker and in-session overlays. Done.
+- Theme editor can build, preview, validate, and save a color schema. Done.
 - Narrow and wide terminal layouts remain readable. Done.
 - Overlays keep local-only behavior while looking intentional. Done.
 

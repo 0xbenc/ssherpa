@@ -12,8 +12,8 @@ config mutations, jump routing, SOCKS proxy launching, safe
 local session records, a session route map, an upgraded first-screen
 picker, opt-in sidecar latency warnings, explicit latency disconnects,
 a local queued input composer, a responsive styled TUI, CI, contributor
-notes, terminal-palette-first theme support, and a draft GoReleaser
-config with publishing disabled.
+notes, terminal-palette-first theme support with a live TUI editor, and
+a draft GoReleaser config with publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -32,6 +32,7 @@ go run ./cmd/ssherpa proxy --select ALIAS --port 1080 --print
 go run ./cmd/ssherpa authkeys list --json
 go run ./cmd/ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 go run ./cmd/ssherpa --select ALIAS
+go run ./cmd/ssherpa theme
 go run ./cmd/ssherpa session list
 go run ./cmd/ssherpa session map
 go run ./cmd/ssherpa session map --all
@@ -75,6 +76,8 @@ sustained unhealthy probes; it requires `--latency-warn`. Use
 
 The TUI defaults to the terminal palette, so `primary`, `secondary`,
 `accent`, and status colors inherit the user's terminal emulator theme.
+Use the `Theme and colors` row on the first screen, or run
+`ssherpa theme`, to build a schema with a live picker/overlay preview.
 Use `--theme vivid` or `SSHERPA_THEME=vivid` for the explicit truecolor
 palette from the Phase 10 design pass.
 
@@ -96,6 +99,18 @@ pill = bold reverse
 Values may be terminal color names, style tokens such as `bold` and
 `reverse`, or raw SGR codes such as `38;2;96;221;255`. `--no-color`,
 `SSHERPA_NO_COLOR=1`, and `NO_COLOR=1` disable styling.
+
+Theme editor keys:
+
+```text
+arrows / h l  change selection or value
+b             switch base theme
+e / enter     edit the selected role as raw text
+d             clear a role override so it inherits from the base theme
+r             reset to terminal defaults
+s             save
+q / Esc       cancel
+```
 
 ## Examples
 
@@ -124,6 +139,7 @@ ssherpa --select prod --composer-key ctrl-r
 ssherpa --select prod --no-composer
 ssherpa --select prod --latency-warn 2s
 ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
+ssherpa theme
 ssherpa --theme vivid
 ssherpa --theme-file ~/.config/ssherpa/theme.conf
 ssherpa --direct --select prod

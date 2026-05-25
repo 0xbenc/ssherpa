@@ -13,6 +13,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 const (
@@ -68,6 +69,8 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
+	assertContains(t, stdout.String(), "theme      Build and save")
+	assertContains(t, stdout.String(), "Theme Commands:")
 	assertContains(t, stdout.String(), "Phase 10:")
 }
 
@@ -392,6 +395,46 @@ func TestParseThemeFlags(t *testing.T) {
 				t.Fatalf("theme = %q, file = %q; want vivid and /tmp/theme.conf", theme, file)
 			}
 		})
+	}
+}
+
+func TestParseThemeCommandFlags(t *testing.T) {
+	var stderr bytes.Buffer
+	flags, ok := parseThemeFlags([]string{"--theme", "vivid", "--theme-file=/tmp/theme.conf", "--no-color"}, &stderr)
+	if !ok {
+		t.Fatalf("parseThemeFlags failed: %s", stderr.String())
+	}
+	if flags.ThemeName != "vivid" || flags.ThemeFile != "/tmp/theme.conf" || !flags.NoColor {
+		t.Fatalf("flags = %#v, want vivid theme file and no color", flags)
+	}
+}
+
+func TestFormatThemeConfig(t *testing.T) {
+	got := string(formatThemeConfig(termstyle.ThemeConfig{
+		BaseName: "terminal",
+		Specs: map[termstyle.Role]string{
+			termstyle.RolePrimary: "cyan",
+			termstyle.RolePill:    "bold reverse",
+		},
+	}))
+
+	assertContains(t, got, "theme = terminal")
+	assertContains(t, got, "primary = cyan")
+	assertContains(t, got, "pill = bold reverse")
+}
+
+func TestLoadThemeConfigInvalidCanBeReplaced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "theme.conf")
+	if err := os.WriteFile(path, []byte("primary = imaginary\n"), 0o600); err != nil {
+		t.Fatalf("write theme: %v", err)
+	}
+
+	cfg, warning, err := loadThemeConfig(path)
+	if err != nil {
+		t.Fatalf("loadThemeConfig returned error: %v", err)
+	}
+	if cfg.BaseName != "" || warning == "" {
+		t.Fatalf("cfg = %#v, warning = %q; want empty cfg with warning", cfg, warning)
 	}
 }
 

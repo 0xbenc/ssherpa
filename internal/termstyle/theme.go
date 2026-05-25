@@ -47,6 +47,7 @@ type ThemeOptions struct {
 type ThemeConfig struct {
 	BaseName string
 	Codes    map[Role]string
+	Specs    map[Role]string
 }
 
 func TerminalTheme() Theme {
@@ -60,7 +61,7 @@ func TerminalTheme() Theme {
 			RoleMuted:      "90",
 			RoleSubtle:     "2",
 			RoleForeground: "39",
-			RoleSelected:   "1;37",
+			RoleSelected:   "30",
 			RoleBorder:     "90",
 			RoleSuccess:    "32",
 			RoleWarning:    "33",
@@ -92,6 +93,26 @@ func VividTheme() Theme {
 			RoleSearch:     "1;38;2;255;255;255",
 			RolePill:       "1;38;2;25;30;38;48;2;96;221;255",
 		},
+	}
+}
+
+func Roles() []Role {
+	return []Role{
+		RoleTitle,
+		RolePrimary,
+		RoleSecondary,
+		RoleAccent,
+		RoleMuted,
+		RoleSubtle,
+		RoleForeground,
+		RoleSelected,
+		RoleBorder,
+		RoleSuccess,
+		RoleWarning,
+		RoleDanger,
+		RoleInfo,
+		RoleSearch,
+		RolePill,
 	}
 }
 
@@ -155,7 +176,10 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 }
 
 func ParseThemeConfig(data []byte) (ThemeConfig, error) {
-	cfg := ThemeConfig{Codes: make(map[Role]string)}
+	cfg := ThemeConfig{
+		Codes: make(map[Role]string),
+		Specs: make(map[Role]string),
+	}
 	lines := strings.Split(string(data), "\n")
 	for index, raw := range lines {
 		line := stripThemeComment(raw)
@@ -184,6 +208,7 @@ func ParseThemeConfig(data []byte) (ThemeConfig, error) {
 				return ThemeConfig{}, fmt.Errorf("line %d: %w", index+1, err)
 			}
 			cfg.Codes[role] = code
+			cfg.Specs[role] = value
 		}
 	}
 	return cfg, nil
@@ -281,6 +306,14 @@ func copyRoleCodes(codes map[Role]string) map[Role]string {
 		copied[role] = code
 	}
 	return copied
+}
+
+func ThemeConfigPath(file string, env []string) (string, error) {
+	path, _ := resolveThemeFile(file, themeEnv(env), false)
+	if path == "" {
+		return "", errors.New("could not resolve theme config path")
+	}
+	return path, nil
 }
 
 func resolveThemeFile(file string, env map[string]string, skipDefault bool) (string, bool) {

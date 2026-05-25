@@ -29,6 +29,7 @@ Available Commands:
   jump       Connect through one or more ProxyJump hops
   proxy      Start a local SOCKS proxy through an SSH alias
   authkeys   Manage authorized_keys on this device
+  theme      Build and save the terminal UI color schema
   session    Inspect supervised session records
   list       List SSH aliases from OpenSSH config
   show       Show one SSH alias from OpenSSH config
@@ -74,6 +75,9 @@ Route Commands:
   ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
   ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--direct]
 
+Theme Commands:
+  ssherpa theme [--theme terminal|vivid] [--theme-file PATH]
+
 Authorized Keys Commands:
   ssherpa authkeys list [--json]
   ssherpa authkeys add --key "ssh-ed25519 ..." [--yes]
@@ -93,11 +97,11 @@ Phase 10:
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
   management are available. Supervised PTY sessions, session maps, and
   upgraded picker UX are available. The TUI defaults to the terminal
-  palette, supports theme role overrides, and still honors --no-color.
-  In supervised sessions, Ctrl-] opens the local active-session map
-  overlay and Ctrl-G opens the local input composer. Opt-in sidecar
-  latency warnings and explicit latency disconnects are available with
-  supervised sessions.
+  palette, supports theme role overrides, includes a live theme editor,
+  and still honors --no-color. In supervised sessions, Ctrl-] opens
+  the local active-session map overlay and Ctrl-G opens the local input
+  composer. Opt-in sidecar latency warnings and explicit latency
+  disconnects are available with supervised sessions.
 `
 
 type BuildInfo struct {
@@ -137,6 +141,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runShow(args[1:], stdout, stderr)
 	case "authkeys":
 		return runAuthkeys(args[1:], stdout, stderr)
+	case "theme":
+		return runTheme(args[1:], stdout, stderr)
 	case "session":
 		return runSession(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
@@ -225,6 +231,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runAuthkeys(nil, stdout, stderr)
 	case ui.ItemSessions:
 		return runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
+	case ui.ItemTheme:
+		return runTheme(connectFlagsAsThemeArgs(flags), stdout, stderr)
 	}
 
 	base := resolveSSHCommand(flags)

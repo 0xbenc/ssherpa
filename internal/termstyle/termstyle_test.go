@@ -43,6 +43,9 @@ func TestTerminalThemeUsesPaletteCodes(t *testing.T) {
 	if strings.Contains(got, "38;2;") {
 		t.Fatalf("primary style = %q, want no truecolor in terminal theme", got)
 	}
+	if got := theme.Style(RoleSelected, "prod"); !strings.Contains(got, "\x1b[30m") {
+		t.Fatalf("selected style = %q, want terminal palette black", got)
+	}
 }
 
 func TestResolveThemeParsesConfigOverrides(t *testing.T) {
@@ -69,6 +72,14 @@ danger = 1;31
 	}
 	if got := theme.Style(RolePill, "mode"); !strings.Contains(got, "\x1b[1;7m") {
 		t.Fatalf("pill style = %q, want bold reverse", got)
+	}
+
+	cfg, err := ParseThemeConfig(data)
+	if err != nil {
+		t.Fatalf("ParseThemeConfig returned error: %v", err)
+	}
+	if got := cfg.Specs[RolePill]; got != "bold reverse" {
+		t.Fatalf("pill spec = %q, want bold reverse", got)
 	}
 }
 

@@ -11,18 +11,18 @@ import (
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 
-	if len(items) != 7 {
-		t.Fatalf("len(items) = %d, want 7", len(items))
+	if len(items) != 8 {
+		t.Fatalf("len(items) = %d, want 8", len(items))
 	}
 
-	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemAuthkeys, ItemSessions, ItemAlias}
+	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemAuthkeys, ItemSessions, ItemTheme, ItemAlias}
 	for i, kind := range want {
 		if items[i].Kind != kind {
 			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
 		}
 	}
-	if items[6].Token != "prod" || items[6].Description != "prod.example.com" || items[6].Group != "Hosts" {
-		t.Fatalf("alias item = %#v", items[6])
+	if items[7].Token != "prod" || items[7].Description != "prod.example.com" || items[7].Group != "Hosts" {
+		t.Fatalf("alias item = %#v", items[7])
 	}
 }
 
@@ -75,7 +75,7 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	view := model.View()
 	text := view.Content
 
-	for _, want := range []string{"SSHERPA", "EXEC MODE", "1 host  0 warnings", "FILTER", "ACTIONS", "Sessions and route map", "HOSTS", "prod"} {
+	for _, want := range []string{"SSHERPA", "EXEC MODE", "1 host  0 warnings", "FILTER", "ACTIONS", "Sessions and route map", "Theme and colors", "HOSTS", "prod"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view = %q, want substring %q", text, want)
 		}

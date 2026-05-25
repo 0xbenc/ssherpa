@@ -1,0 +1,186 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/0xbenc/ssherpa/internal/fsutil"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/ssherpa/internal/ui"
+)
+
+const themeUsage = `Usage:
+  ssherpa theme [--theme NAME] [--theme-file PATH] [--no-color]
+
+Open the interactive theme editor. The editor previews the picker and
+overlay palette live, then writes a theme config when you press s.
+
+Theme Flags:
+  --theme NAME       Start from terminal or vivid
+  --theme-file PATH  Edit this theme config path
+  --no-color         Disable color styling while editing
+`
+
+type themeFlags struct {
+	ThemeName string
+	ThemeFile string
+	NoColor   bool
+}
+
+func runTheme(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		fmt.Fprint(stdout, themeUsage)
+		return 0
+	}
+	flags, ok := parseThemeFlags(args, stderr)
+	if !ok {
+		return 1
+	}
+	if flags.ThemeName != "" {
+		if _, ok := termstyle.BuiltinTheme(flags.ThemeName); !ok {
+			fmt.Fprintf(stderr, "ssherpa: unknown theme %q; available themes: terminal, vivid\n", flags.ThemeName)
+			return 1
+		}
+	}
+
+	path, err := termstyle.ThemeConfigPath(flags.ThemeFile, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
+	cfg, warning, err := loadThemeConfig(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
+	result, ok, err := ui.EditTheme(context.Background(), ui.ThemeEditorOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		Config:      cfg,
+		ConfigPath:  path,
+		ThemeName:   flags.ThemeName,
+		Warning:     warning,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: theme editor failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] theme edit cancelled")
+		return 0
+	}
+
+	writeResult, err := fsutil.AtomicWriteFile(path, formatThemeConfig(result.Config), fsutil.WriteOptions{
+		Backup:       true,
+		BackupPrefix: "ssherpa-theme-backup",
+		Mode:         0o600,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: write theme config: %v\n", err)
+		return 1
+	}
+	if writeResult.Changed {
+		fmt.Fprintf(stdout, "[theme] wrote %s\n", writeResult.Path)
+		if writeResult.BackupPath != "" {
+			fmt.Fprintf(stdout, "[backup] %s\n", writeResult.BackupPath)
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "[theme] unchanged %s\n", writeResult.Path)
+	return 0
+}
+
+func parseThemeFlags(args []string, stderr io.Writer) (themeFlags, bool) {
+	var flags themeFlags
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--theme":
+			value, ok := nextArg(args, &i, stderr, "--theme")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeName = value
+		case strings.HasPrefix(arg, "--theme="):
+			flags.ThemeName = strings.TrimPrefix(arg, "--theme=")
+		case arg == "--theme-file":
+			value, ok := nextArg(args, &i, stderr, "--theme-file")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeFile = value
+		case strings.HasPrefix(arg, "--theme-file="):
+			flags.ThemeFile = strings.TrimPrefix(arg, "--theme-file=")
+		case arg == "--no-color":
+			flags.NoColor = true
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(stderr, "ssherpa: unknown theme flag %q\n", arg)
+			return flags, false
+		default:
+			fmt.Fprintf(stderr, "ssherpa: theme does not accept positional arguments: %s\n", arg)
+			return flags, false
+		}
+	}
+	return flags, true
+}
+
+func loadThemeConfig(path string) (termstyle.ThemeConfig, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return termstyle.ThemeConfig{}, "", nil
+		}
+		return termstyle.ThemeConfig{}, "", fmt.Errorf("read theme config %s: %w", path, err)
+	}
+	cfg, err := termstyle.ParseThemeConfig(data)
+	if err != nil {
+		return termstyle.ThemeConfig{}, "existing theme config did not parse; saving will replace it", nil
+	}
+	return cfg, "", nil
+}
+
+func formatThemeConfig(cfg termstyle.ThemeConfig) []byte {
+	var b strings.Builder
+	base := strings.TrimSpace(cfg.BaseName)
+	if base == "" {
+		base = "terminal"
+	}
+	b.WriteString("# ssherpa theme config\n")
+	b.WriteString("# Edit with: ssherpa theme\n\n")
+	b.WriteString("theme = ")
+	b.WriteString(base)
+	b.WriteString("\n")
+	for _, role := range termstyle.Roles() {
+		spec := strings.TrimSpace(cfg.Specs[role])
+		if spec == "" {
+			continue
+		}
+		b.WriteString(string(role))
+		b.WriteString(" = ")
+		b.WriteString(spec)
+		b.WriteString("\n")
+	}
+	return []byte(b.String())
+}
+
+func connectFlagsAsThemeArgs(flags connectFlags) []string {
+	var args []string
+	if flags.ThemeName != "" {
+		args = append(args, "--theme", flags.ThemeName)
+	}
+	if flags.ThemeFile != "" {
+		args = append(args, "--theme-file", flags.ThemeFile)
+	}
+	if flags.NoColor {
+		args = append(args, "--no-color")
+	}
+	return args
+}

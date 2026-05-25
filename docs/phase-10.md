@@ -45,6 +45,34 @@ default `terminal` theme uses normal ANSI palette slots so the user's
 terminal emulator supplies the actual colors. The previous RGB design
 remains available as `vivid`.
 
+The first screen includes a `Theme and colors` action. The same editor
+is available directly:
+
+```sh
+ssherpa theme
+ssherpa theme --theme vivid
+ssherpa theme --theme-file ~/.config/ssherpa/theme.conf
+```
+
+The editor shows the role list and a live picker/overlay preview side by
+side on wide terminals, and stacks them on narrow terminals. It supports
+preset cycling, raw role entry, inherit/reset behavior, and atomic save
+to the selected theme file. Existing invalid config files can still be
+opened with `ssherpa theme`; saving replaces the invalid file after
+creating a backup.
+
+Key flow:
+
+```text
+arrows / h l  change selection or value
+b             switch base theme
+e / enter     edit selected role as raw text
+d             clear a role override
+r             reset to terminal defaults
+s             save
+q / Esc       cancel
+```
+
 Theme selection and overrides:
 
 ```sh
@@ -83,6 +111,7 @@ row alignment. Tests cover:
 - colored picker output;
 - terminal-palette default styling;
 - custom theme role overrides;
+- live theme editor rendering and role editing;
 - wide preview rendering;
 - ANSI visible-width and padding behavior.
 
@@ -91,6 +120,7 @@ row alignment. Tests cover:
 ```sh
 SSHERPA_NO_ALT_SCREEN=1 ssherpa --no-color
 SSHERPA_NO_ALT_SCREEN=1 ssherpa
+SSHERPA_NO_ALT_SCREEN=1 ssherpa theme --theme-file /tmp/ssherpa-theme.conf
 SSHERPA_NO_ALT_SCREEN=1 ssherpa --theme vivid
 SSHERPA_NO_ALT_SCREEN=1 ssherpa --theme-file ~/.config/ssherpa/theme.conf
 ssherpa --select prod
