@@ -31,6 +31,20 @@ archives:
       - ssherpa
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
+nfpms:
+  - id: ssherpa
+    ids:
+      - ssherpa
+    package_name: ssherpa
+    vendor: 0xbenc
+    homepage: https://github.com/0xbenc/ssherpa
+    maintainer: Ben Chapman <info@offcourtcreations.com>
+    description: A terminal UI for the SSH config you already have, with supervised sessions.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+
 checksum:
   name_template: checksums.txt
 
@@ -38,7 +52,15 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
-  disable: true
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "Merge pull request"
+      - "Merge branch"
 
 release:
-  disable: true
+  draft: false
+  prerelease: auto
+  name_template: "ssherpa {{ .Tag }}"

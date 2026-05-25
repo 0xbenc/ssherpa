@@ -148,21 +148,41 @@ The CI workflow also cross-builds these release targets with
 - `darwin/amd64`
 - `darwin/arm64`
 
-## Release Draft
+## Releases
 
-`.goreleaser.yaml` is present as a draft release configuration. It
-builds Linux and macOS archives and injects version metadata with linker
-flags. Publishing is disabled with `release.disable: true`.
+Releases are cut by pushing a semver tag. The `Release` GitHub Actions
+workflow (`.github/workflows/release.yml`) runs GoReleaser on any `v*`
+tag and publishes a GitHub Release with:
 
-When GoReleaser is installed, validate the config with:
+- `tar.gz` archives for `linux/amd64`, `linux/arm64`, `darwin/amd64`,
+  and `darwin/arm64`,
+- `.deb` and `.rpm` packages for Linux (amd64 and arm64),
+- a `checksums.txt`,
+- version metadata injected via linker flags (`main.version`,
+  `main.commit`, `main.date`).
+
+To cut a release:
+
+```sh
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The tag must point at a commit that already contains the workflow, so
+push the branch first. The workflow uses the repo's `GITHUB_TOKEN`; no
+extra secrets are required.
+
+Validate the config and dry-run the whole pipeline locally before
+tagging:
 
 ```sh
 goreleaser check
-goreleaser release --snapshot --clean
+goreleaser release --snapshot --clean   # builds everything into ./dist
 ```
 
 The config uses GoReleaser v2 syntax and the public schema at
-https://goreleaser.com/static/schema.json.
+https://goreleaser.com/static/schema.json. SBOMs and a Homebrew tap are
+possible future additions (see `PORT_PLAN.md`).
 
 ## Compatibility Reference
 
