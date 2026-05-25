@@ -102,21 +102,39 @@ watchdog, or state.
 
 ## Installation
 
+### Prebuilt binaries
+
+Grab a build for your platform from the
+[latest release](https://github.com/0xbenc/ssherpa/releases/latest) —
+`tar.gz` archives for Linux and macOS (amd64 and arm64), plus `.deb` and
+`.rpm` packages for Linux. For the archives:
+
+```sh
+tar -xzf ssherpa_*_linux_amd64.tar.gz
+sudo install ssherpa /usr/local/bin/
+```
+
+On Debian/Ubuntu or Fedora/RHEL, install the package instead:
+
+```sh
+sudo dpkg -i ssherpa_*_linux_amd64.deb     # or: sudo rpm -i ssherpa_*_linux_amd64.rpm
+```
+
+### With Go
+
 Requires Go 1.26 or newer.
 
 ```sh
 go install github.com/0xbenc/ssherpa/cmd/ssherpa@latest
 ```
 
-Or build from source:
+### From source
 
 ```sh
 git clone https://github.com/0xbenc/ssherpa
 cd ssherpa
 go build -o ssherpa ./cmd/ssherpa
 ```
-
-Binaries are built for Linux and macOS (amd64 and arm64).
 
 ## Usage
 
