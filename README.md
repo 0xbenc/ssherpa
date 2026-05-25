@@ -4,15 +4,15 @@
 OpenSSH config as the source of truth while growing toward a safer,
 testable SSH workflow tool.
 
-Current status: Phase 8 latency watchdog. The repository has a Go module,
+Current status: Phase 9 queued input composer. The repository has a Go module,
 tested SSH config inventory, `ssherpa list`, `ssherpa show`, a Bubble Tea
 alias picker, print mode, direct SSH execution, safe add/edit/delete
 config mutations, jump routing, SOCKS proxy launching, safe
 `authorized_keys` management, supervised PTY sessions by default with
 local session records, a session route map, an upgraded first-screen
 picker, opt-in sidecar latency warnings, explicit latency disconnects,
-CI, contributor notes, and a draft GoReleaser config with publishing
-disabled.
+a local queued input composer, CI, contributor notes, and a draft
+GoReleaser config with publishing disabled.
 
 The implementation plan lives in [`PORT_PLAN.md`](PORT_PLAN.md).
 
@@ -58,7 +58,10 @@ supervised session, press `Ctrl-]` to open the local active-session map
 overlay; press `Ctrl-]`, `q`, or `Esc` to return to the remote session.
 `ssherpa session map` shows active sessions by default; use
 `ssherpa session map --all` only when you want historical exited records
-in the lineage view. Use
+in the lineage view. Press `Ctrl-G` to open the local queued-input
+composer; Enter sends the buffer plus a newline, `Ctrl-G` sends without
+a newline, and `Esc` cancels. Use `--no-composer` to disable it or
+`--composer-key KEY` to choose a different control-key hotkey. Use
 `--latency-warn DURATION` to enable the opt-in sidecar SSH health probe
 and record local warning events. Use `--latency-disconnect DURATION`
 only when you explicitly want ssherpa to terminate a session after
@@ -89,6 +92,8 @@ ssherpa authkeys merge --from-dir ./keys --dry-run
 ssherpa authkeys replace --from-dir ./keys --yes
 ssherpa authkeys delete --fingerprint SHA256:... --yes
 ssherpa --select prod
+ssherpa --select prod --composer-key ctrl-r
+ssherpa --select prod --no-composer
 ssherpa --select prod --latency-warn 2s
 ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
 ssherpa --direct --select prod

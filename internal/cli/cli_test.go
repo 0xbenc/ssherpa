@@ -67,7 +67,7 @@ func TestRunHelpCommand(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
-	assertContains(t, stdout.String(), "Phase 8:")
+	assertContains(t, stdout.String(), "Phase 9:")
 }
 
 func TestRunConnectPrint(t *testing.T) {
@@ -254,6 +254,51 @@ Host prod
 	}
 }
 
+func TestRunConnectRejectsUnsafeComposerFlagCombinations(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "no composer conflicts with key",
+			args: []string{"--select", "prod", "--config", config, "--no-composer", "--composer-key", "ctrl-r"},
+			want: "--composer-key cannot be used with --no-composer",
+		},
+		{
+			name: "direct mode cannot configure composer",
+			args: []string{"--direct", "--select", "prod", "--config", config, "--no-composer"},
+			want: "composer flags require supervised mode",
+		},
+		{
+			name: "reserved overlay key",
+			args: []string{"--select", "prod", "--config", config, "--composer-key", "ctrl-]"},
+			want: "reserved key Ctrl-]",
+		},
+		{
+			name: "invalid key",
+			args: []string{"--select", "prod", "--config", config, "--composer-key", "enter"},
+			want: "must be a control key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(tt.args, nil, &stderr, BuildInfo{})
+			if code != 1 {
+				t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+			}
+			assertContains(t, stderr.String(), tt.want)
+		})
+	}
+}
+
 func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
 	args := connectFlagsAsAddArgs(connectFlags{inventoryFlags: inventoryFlags{Config: "/tmp/config"}})
 
@@ -276,13 +321,15 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 		StateDir:          "/tmp/state",
 		LatencyWarn:       2 * time.Second,
 		LatencyDisconnect: 30 * time.Second,
+		ComposerKey:       0x12,
+		ComposerKeyName:   "Ctrl-R",
 		NoKitty:           true,
 		NoColor:           true,
 		SSHArgs:           []string{"-v"},
 	}
 
 	args := connectFlagsAsJumpArgs(flags)
-	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--no-kitty\x00--no-color\x00--\x00-v"
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--composer-key\x00Ctrl-R\x00--no-kitty\x00--no-color\x00--\x00-v"
 	if got := strings.Join(args, "\x00"); got != want {
 		t.Fatalf("jump args = %#v, want %q", args, want)
 	}

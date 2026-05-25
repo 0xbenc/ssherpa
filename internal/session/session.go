@@ -21,9 +21,13 @@ import (
 )
 
 const (
-	RunnerModeSupervised = "supervised"
-	OverlayHotkey        = byte(0x1d)
-	OverlayHotkeyName    = "Ctrl-]"
+	RunnerModeSupervised   = "supervised"
+	OverlayHotkey          = byte(0x1d)
+	OverlayHotkeyName      = "Ctrl-]"
+	ComposerHotkey         = byte(0x07)
+	ComposerHotkeyName     = "Ctrl-G"
+	ComposerSendHotkey     = byte(0x07)
+	ComposerSendHotkeyName = "Ctrl-G"
 )
 
 type Metadata struct {
@@ -40,6 +44,31 @@ type Options struct {
 	Env      []string
 	Now      func() time.Time
 	Watchdog WatchdogOptions
+	Composer ComposerOptions
+}
+
+type ComposerOptions struct {
+	Disabled   bool
+	Hotkey     byte
+	HotkeyName string
+}
+
+func (c ComposerOptions) enabled() bool {
+	return !c.Disabled
+}
+
+func (c ComposerOptions) hotkey() byte {
+	if c.Hotkey == 0 {
+		return ComposerHotkey
+	}
+	return c.Hotkey
+}
+
+func (c ComposerOptions) hotkeyName() string {
+	if c.HotkeyName == "" {
+		return ComposerHotkeyName
+	}
+	return c.HotkeyName
 }
 
 type WatchdogOptions struct {
@@ -120,7 +149,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	output := &lockedWriter{w: stdout}
 	done := make(chan struct{})
 	outputDone := make(chan struct{})
-	go copyInput(ptmx, stdin, output, stateDir, record.ID, done)
+	go copyInput(ptmx, stdin, output, stateDir, record.ID, opts.Composer, done)
 	go func() {
 		_, _ = io.Copy(output, ptmx)
 		close(outputDone)
@@ -245,7 +274,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, done <-chan struct{}) {
+func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -253,9 +282,12 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 	for {
 		n, err := stdin.Read(buf[:])
 		if n > 0 {
-			if buf[0] == OverlayHotkey {
+			switch {
+			case buf[0] == OverlayHotkey:
 				showSessionOverlay(stdin, output, stateDir, currentID)
-			} else {
+			case composer.enabled() && buf[0] == composer.hotkey():
+				showComposer(stdin, output, ptmx, composer)
+			default:
 				_, _ = ptmx.Write(buf[:n])
 			}
 		}
@@ -330,6 +362,116 @@ func clearSessionOverlay(w io.Writer, frame overlayFrame) {
 		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K", frame.startRow+i)
 	}
 	fmt.Fprint(w, "\x1b8\x1b[?25h")
+}
+
+func showComposer(stdin *os.File, output *lockedWriter, ptmx *os.File, composer ComposerOptions) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+
+	var buffer []byte
+	frame := drawComposer(output.w, stdin, buffer, composer)
+	sent := false
+	defer func() {
+		clearComposer(output.w, frame, sent)
+	}()
+
+	var buf [1]byte
+	for {
+		n, err := stdin.Read(buf[:])
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			continue
+		}
+
+		key := buf[0]
+		switch key {
+		case '\r', '\n':
+			_, _ = ptmx.Write(append(append([]byte(nil), buffer...), '\n'))
+			sent = true
+			return
+		case ComposerSendHotkey:
+			_, _ = ptmx.Write(buffer)
+			sent = true
+			return
+		case 0x1b, 0x03:
+			return
+		case 0x15:
+			buffer = buffer[:0]
+		case 0x7f, 0x08:
+			if len(buffer) > 0 {
+				buffer = buffer[:len(buffer)-1]
+			}
+		default:
+			if isComposerPrintable(key) {
+				buffer = append(buffer, key)
+			}
+		}
+
+		if frame.terminal {
+			clearTerminalFrame(output.w, frame)
+			frame = drawComposer(output.w, stdin, buffer, composer)
+		}
+	}
+}
+
+func drawComposer(w io.Writer, stdin *os.File, buffer []byte, composer ComposerOptions) overlayFrame {
+	width, height, terminalOutput := overlaySize(stdin)
+	display := string(buffer)
+	if display == "" {
+		display = "<empty>"
+	}
+	lines := []string{
+		"ssherpa composer (local)",
+		"buffer: " + display,
+		fmt.Sprintf("Enter send+newline   %s send   Esc cancel   Backspace edit   Ctrl-U clear", ComposerSendHotkeyName),
+	}
+	if composer.hotkeyName() != ComposerHotkeyName {
+		lines = append(lines, "hotkey: "+composer.hotkeyName())
+	}
+
+	if !terminalOutput {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "----- ssherpa composer -----")
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+		return overlayFrame{}
+	}
+
+	visibleLines := min(len(lines), max(3, height-2))
+	startRow := max(1, height-visibleLines+1)
+	fmt.Fprint(w, "\x1b7\x1b[?25l")
+	for i := 0; i < visibleLines; i++ {
+		row := startRow + i
+		line := truncateOverlayLine(lines[i], width)
+		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K%s", row, line)
+	}
+	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
+}
+
+func clearComposer(w io.Writer, frame overlayFrame, sent bool) {
+	if !frame.terminal {
+		if sent {
+			fmt.Fprintln(w, "----- ssherpa composer sent -----")
+		} else {
+			fmt.Fprintln(w, "----- ssherpa composer cancelled -----")
+		}
+		return
+	}
+	clearTerminalFrame(w, frame)
+}
+
+func clearTerminalFrame(w io.Writer, frame overlayFrame) {
+	for i := 0; i < frame.lines; i++ {
+		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K", frame.startRow+i)
+	}
+	fmt.Fprint(w, "\x1b8\x1b[?25h")
+}
+
+func isComposerPrintable(key byte) bool {
+	return key == '\t' || (key >= 0x20 && key <= 0x7e)
 }
 
 func sessionOverlayLines(stateDir string, currentID string) []string {

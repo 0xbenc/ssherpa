@@ -39,6 +39,7 @@ type connectOptions struct {
 	Supervise bool
 	StateDir  string
 	Watchdog  session.WatchdogOptions
+	Composer  session.ComposerOptions
 }
 
 func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
@@ -50,6 +51,11 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 			WarnThreshold:   flags.LatencyWarn,
 			DisconnectAfter: flags.LatencyDisconnect,
 			ProbeCommand:    probe,
+		},
+		Composer: session.ComposerOptions{
+			Disabled:   flags.NoComposer,
+			Hotkey:     flags.ComposerKey,
+			HotkeyName: flags.ComposerKeyName,
 		},
 	}
 }
@@ -65,6 +71,9 @@ func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if !validateLatencyFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if !validateComposerFlags(flags.connectFlags, stderr) {
 		return 1
 	}
 	if flags.JSON {
@@ -109,6 +118,9 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if !validateLatencyFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if !validateComposerFlags(flags.connectFlags, stderr) {
 		return 1
 	}
 	if flags.JSON {
@@ -244,6 +256,26 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 				return flags, false
 			}
 			flags.LatencyDisconnect = duration
+		case arg == "--composer-key":
+			value, ok := nextArg(args, &i, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case strings.HasPrefix(arg, "--composer-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--composer-key="), stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case arg == "--no-composer":
+			flags.NoComposer = true
 		case arg == "--dest" || arg == "--destination":
 			value, ok := nextArg(args, &i, stderr, arg)
 			if !ok {
@@ -385,6 +417,26 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 				return flags, false
 			}
 			flags.LatencyDisconnect = duration
+		case arg == "--composer-key":
+			value, ok := nextArg(args, &i, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case strings.HasPrefix(arg, "--composer-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--composer-key="), stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case arg == "--no-composer":
+			flags.NoComposer = true
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -661,6 +713,7 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			Stdout:   stdout,
 			Stderr:   stderr,
 			Watchdog: options.Watchdog,
+			Composer: options.Composer,
 		})
 	}
 
@@ -710,6 +763,12 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.LatencyDisconnect > 0 {
 		args = append(args, "--latency-disconnect", flags.LatencyDisconnect.String())
+	}
+	if flags.ComposerKey != 0 {
+		args = append(args, "--composer-key", flags.ComposerKeyName)
+	}
+	if flags.NoComposer {
+		args = append(args, "--no-composer")
 	}
 	if flags.NoKitty {
 		args = append(args, "--no-kitty")

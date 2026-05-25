@@ -82,7 +82,8 @@ Current repository state:
   mode the default, and adds a `Ctrl-]` in-session active route-map
   overlay. Phase 8 adds an opt-in sidecar latency watchdog, local
   warning events, and explicitly configured disconnects for sustained
-  unhealthy probes.
+  unhealthy probes. Phase 9 adds a local queued-input composer for
+  supervised sessions with configurable hotkey and disable controls.
 - Local `go version` was not available when this plan was written. The
   workspace is now bootstrapped with a user-local Go `1.26.3` install;
   see `docs/development.md`.
@@ -266,6 +267,8 @@ New flags:
 | `--direct`, `--no-supervise` | connect flows | Use the old unsupervised direct runner |
 | `--latency-warn DURATION` | supervised connect | Warning threshold |
 | `--latency-disconnect DURATION` | supervised connect | Opt-in disconnect threshold |
+| `--composer-key KEY` | supervised connect | Composer hotkey; default `ctrl-g` |
+| `--no-composer` | supervised connect | Disable queued input composer |
 | `--state-dir PATH` | supervised connect and session flows | Override state directory |
 
 ### Environment Contract
@@ -1359,17 +1362,17 @@ Acceptance:
 
 Deliverables:
 
-- Supervised-mode composer.
-- Toggle key.
-- Buffer editing.
-- Send/cancel behavior.
-- Configurable keybinding.
+- Supervised-mode composer. Done.
+- Toggle key. Done.
+- Buffer editing. Done.
+- Send/cancel behavior. Done.
+- Configurable keybinding. Done.
 
 Acceptance:
 
-- Composer can be toggled without corrupting normal input.
-- Full-screen remote app smoke tests pass.
-- Feature can be disabled completely.
+- Composer can be toggled without corrupting normal input. Done.
+- Full-screen remote app smoke tests pass. Done.
+- Feature can be disabled completely. Done.
 
 ### Phase X: Packaging and Bash Zoo Integration Prep
 

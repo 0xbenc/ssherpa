@@ -53,6 +53,9 @@ Connect Flags:
                      Enable sidecar probe and warn above threshold
   --latency-disconnect DURATION
                      Disconnect after sustained unhealthy probes; requires --latency-warn
+  --composer-key KEY
+                     Open local queued-input composer with KEY; default ctrl-g
+  --no-composer      Disable local queued-input composer
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
 
@@ -82,13 +85,14 @@ Session Commands:
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
   ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
 
-Phase 8:
+Phase 9:
   SSH config inventory, picker, supervised SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
   management are available. Supervised PTY sessions, session maps, and
   upgraded picker UX are available. In supervised sessions, Ctrl-] opens
-  the local active-session map overlay. Opt-in sidecar latency warnings
-  and explicit latency disconnects are available with supervised sessions.
+  the local active-session map overlay and Ctrl-G opens the local input
+  composer. Opt-in sidecar latency warnings and explicit latency
+  disconnects are available with supervised sessions.
 `
 
 type BuildInfo struct {
@@ -158,6 +162,9 @@ type connectFlags struct {
 	StateDir          string
 	LatencyWarn       time.Duration
 	LatencyDisconnect time.Duration
+	ComposerKey       byte
+	ComposerKeyName   string
+	NoComposer        bool
 	NoKitty           bool
 	NoColor           bool
 	Select            string
@@ -175,6 +182,9 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if !validateLatencyFlags(flags, stderr) {
+		return 1
+	}
+	if !validateComposerFlags(flags, stderr) {
 		return 1
 	}
 	if flags.JSON && !flags.Print {
@@ -324,6 +334,26 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 				return flags, false
 			}
 			flags.LatencyDisconnect = duration
+		case arg == "--composer-key":
+			value, ok := nextArg(args, &i, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case strings.HasPrefix(arg, "--composer-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--composer-key="), stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case arg == "--no-composer":
+			flags.NoComposer = true
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -360,6 +390,64 @@ func validateLatencyFlags(flags connectFlags, stderr io.Writer) bool {
 		return false
 	}
 	return true
+}
+
+func validateComposerFlags(flags connectFlags, stderr io.Writer) bool {
+	if flags.NoComposer && flags.ComposerKey != 0 {
+		fmt.Fprintln(stderr, "ssherpa: --composer-key cannot be used with --no-composer")
+		return false
+	}
+	if flags.Direct && (flags.NoComposer || flags.ComposerKey != 0) {
+		fmt.Fprintln(stderr, "ssherpa: composer flags require supervised mode; remove --direct")
+		return false
+	}
+	return true
+}
+
+func parseControlKey(value string, stderr io.Writer, flag string) (byte, string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.TrimPrefix(normalized, "^")
+	normalized = strings.TrimPrefix(normalized, "ctrl-")
+	normalized = strings.TrimPrefix(normalized, "ctrl+")
+	if normalized == "" {
+		fmt.Fprintf(stderr, "ssherpa: %s must be a control key like ctrl-g\n", flag)
+		return 0, "", false
+	}
+
+	var key byte
+	var label string
+	switch normalized {
+	case "space":
+		key = 0x00
+		label = "Ctrl-Space"
+	case "[":
+		key = 0x1b
+		label = "Esc"
+	case "\\":
+		key = 0x1c
+		label = "Ctrl-\\"
+	case "]":
+		key = 0x1d
+		label = "Ctrl-]"
+	case "^":
+		key = 0x1e
+		label = "Ctrl-^"
+	case "_":
+		key = 0x1f
+		label = "Ctrl-_"
+	default:
+		if len(normalized) != 1 || normalized[0] < 'a' || normalized[0] > 'z' {
+			fmt.Fprintf(stderr, "ssherpa: %s must be a control key like ctrl-g\n", flag)
+			return 0, "", false
+		}
+		key = normalized[0] - 'a' + 1
+		label = "Ctrl-" + strings.ToUpper(normalized)
+	}
+	if key == 0x00 || key == 0x03 || key == 0x04 || key == 0x0d || key == 0x0a || key == 0x1b || key == 0x7f || key == session.OverlayHotkey {
+		fmt.Fprintf(stderr, "ssherpa: %s cannot use reserved key %s\n", flag, label)
+		return 0, "", false
+	}
+	return key, label, true
 }
 
 func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, stderr io.Writer) (ui.Item, hostlist.Alias, bool, int) {
@@ -441,6 +529,11 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 	}
 	if flags.LatencyDisconnect > 0 {
 		scope = append(scope, "latency-disconnect="+flags.LatencyDisconnect.String())
+	}
+	if flags.NoComposer {
+		scope = append(scope, "composer=off")
+	} else if flags.ComposerKeyName != "" {
+		scope = append(scope, "composer="+flags.ComposerKeyName)
 	}
 	if activeSessions > 0 {
 		scope = append(scope, fmt.Sprintf("active-sessions=%d", activeSessions))

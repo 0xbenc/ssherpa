@@ -159,6 +159,170 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedComposerSendsBufferedLine(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{'a', ComposerHotkey, 'l', 's', '\r', 'b'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=5 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "als\nb" {
+		t.Fatalf("remote input = %q, want composed line between normal bytes", string(got))
+	}
+	if !strings.Contains(stdout.String(), "ssherpa composer") {
+		t.Fatalf("stdout = %q, want local composer", stdout.String())
+	}
+}
+
+func TestRunSupervisedComposerCancelDoesNotSendBuffer(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{ComposerHotkey, 'n', 'o', 0x1b, 'z'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=1 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "z" {
+		t.Fatalf("remote input = %q, want only post-cancel byte", string(got))
+	}
+}
+
+func TestRunSupervisedComposerCanBeDisabled(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{ComposerHotkey, 'x'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=2 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Composer: ComposerOptions{Disabled: true},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if !bytes.Equal(got, input) {
+		t.Fatalf("remote input = %#v, want raw composer hotkey and byte %#v", got, input)
+	}
+}
+
+func TestRunSupervisedComposerSupportsCustomHotkeyAndSendWithoutNewline(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	customHotkey := byte(0x12)
+	input := []byte{customHotkey, 'p', 'w', 'd', ComposerSendHotkey, 'q'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=4 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Composer: ComposerOptions{Hotkey: customHotkey, HotkeyName: "Ctrl-R"},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "pwdq" {
+		t.Fatalf("remote input = %q, want composed bytes without newline plus post-send byte", string(got))
+	}
+}
+
 func TestRunSupervisedLatencyWarningRecordsEventOutsideRemoteStream(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
