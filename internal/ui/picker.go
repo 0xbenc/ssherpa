@@ -321,14 +321,33 @@ func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
 		return []string{"", "  " + theme.empty("No matches")}
 	}
 
-	limit := visibleLimit(m.height, len(m.summary))
+	// Budget the list against the actual terminal height. Each candidate row is
+	// charged its own line plus any group header/separator it introduces, and a
+	// line is reserved for the "N more hidden" notice while items remain, so the
+	// list grows to fill a tall terminal instead of stopping at a fixed cap.
+	budget := listBudget(m.height, len(m.summary))
 	lines := []string{""}
 	lastGroup := ""
 	rendered := 0
-	for i := 0; i < len(m.filtered) && rendered < limit; i++ {
+	for i := 0; i < len(m.filtered); i++ {
 		index := m.filtered[i]
 		item := m.items[index]
-		if item.Group != "" && item.Group != lastGroup {
+		groupCost := 0
+		newGroup := item.Group != "" && item.Group != lastGroup
+		if newGroup {
+			groupCost = 1 // group header
+			if rendered > 0 {
+				groupCost++ // blank separator before the header
+			}
+		}
+		reserve := 0
+		if len(m.filtered)-i-1 > 0 {
+			reserve = 1 // room for the "N more hidden" notice
+		}
+		if len(lines)+groupCost+1+reserve > budget {
+			break
+		}
+		if newGroup {
 			if rendered > 0 {
 				lines = append(lines, "")
 			}
@@ -423,12 +442,20 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 	return termstyle.PadRight(line, width)
 }
 
-func visibleLimit(height int, summaryLines int) int {
+// listBudget returns how many lines the list column may occupy (including its
+// leading blank, group headers, rows, and the truncation notice). It reserves
+// the fixed chrome around the list: the header (logo + summary + rule + filter
+// + rule = 4 + summaryLines) and the footer (rule + help = 2), plus a one-line
+// safety margin so the view does not spill past the last terminal row.
+func listBudget(height int, summaryLines int) int {
 	if height <= 0 {
-		return 12
+		return 13
 	}
-	limit := height - summaryLines - 11
-	return clamp(limit, 7, 18)
+	budget := height - (4 + summaryLines) - 2 - 1
+	if budget < 8 {
+		budget = 8
+	}
+	return budget
 }
 
 type pickerTheme struct {
