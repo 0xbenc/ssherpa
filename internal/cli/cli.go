@@ -241,6 +241,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
 	case ui.ItemJump:
 		return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
+	case ui.ItemForward:
+		return runForwardBuilder(flags, inventory, stdout, stderr)
 	case ui.ItemAuthkeys:
 		return runAuthkeys(nil, stdout, stderr)
 	case ui.ItemSessions:

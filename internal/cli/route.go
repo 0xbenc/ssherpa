@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -1161,62 +1160,24 @@ func forwardReconnectOptions(flags forwardFlags) session.ReconnectOptions {
 	return opts
 }
 
-// parseForwardLocal accepts both the bare-port shorthand ("5432") and the
-// full host:port spelling, including bracketed IPv6 ("[::1]:5432"). It
-// expands the shorthand to defaultForwardBind so callers always receive
-// a fully-resolved (bind, port) pair.
+// parseForwardLocal wraps sshcmd.ParseForwardLocal with the CLI's
+// stderr-emitting error reporting style. The actual parse logic
+// lives in sshcmd so the TUI builder can validate input identically.
 func parseForwardLocal(value string, stderr io.Writer) (string, int, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		fmt.Fprintln(stderr, "ssherpa: --local cannot be empty")
-		return "", 0, false
-	}
-	if !strings.Contains(value, ":") {
-		port, err := strconv.Atoi(value)
-		if err != nil || port < 1 || port > 65535 {
-			fmt.Fprintf(stderr, "ssherpa: invalid --local port %q\n", value)
-			return "", 0, false
-		}
-		return defaultForwardBind, port, true
-	}
-	bind, portStr, err := net.SplitHostPort(value)
+	bind, port, err := sshcmd.ParseForwardLocal(value)
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: invalid --local %q: %v\n", value, err)
-		return "", 0, false
-	}
-	if strings.TrimSpace(bind) == "" {
-		bind = defaultForwardBind
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 {
-		fmt.Fprintf(stderr, "ssherpa: invalid --local port %q\n", portStr)
+		fmt.Fprintf(stderr, "ssherpa: %v\n", strings.Replace(err.Error(), "forward local", "--local", 1))
 		return "", 0, false
 	}
 	return bind, port, true
 }
 
-// parseForwardRemote accepts host:port (or "[ipv6]:port"). Unlike the
-// local side, the remote host is required — there is no analogue to the
-// "default to loopback" shorthand because the tunnel's whole point is to
-// reach something on the remote side.
+// parseForwardRemote wraps sshcmd.ParseForwardRemote with the CLI's
+// stderr-emitting error reporting style.
 func parseForwardRemote(value string, stderr io.Writer) (string, int, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		fmt.Fprintln(stderr, "ssherpa: --remote cannot be empty")
-		return "", 0, false
-	}
-	host, portStr, err := net.SplitHostPort(value)
+	host, port, err := sshcmd.ParseForwardRemote(value)
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: invalid --remote %q: %v\n", value, err)
-		return "", 0, false
-	}
-	if strings.TrimSpace(host) == "" {
-		fmt.Fprintf(stderr, "ssherpa: invalid --remote %q: missing host\n", value)
-		return "", 0, false
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 {
-		fmt.Fprintf(stderr, "ssherpa: invalid --remote port %q\n", portStr)
+		fmt.Fprintf(stderr, "ssherpa: %v\n", strings.Replace(err.Error(), "forward remote", "--remote", 1))
 		return "", 0, false
 	}
 	return host, port, true
@@ -1314,6 +1275,65 @@ func connectFlagsAsJumpArgs(flags connectFlags) []string {
 
 func connectFlagsAsProxyArgs(flags connectFlags) []string {
 	return connectFlagsAsRouteArgs(flags)
+}
+
+func connectFlagsAsForwardArgs(flags connectFlags) []string {
+	return connectFlagsAsRouteArgs(flags)
+}
+
+// runForwardBuilder is the home-page picker's Forward action: launches
+// the TUI wizard, translates the resulting ForwardResult into a
+// `ssherpa forward …` argv, and re-enters runForward. Centralizing
+// the translation here means the wizard's output flows through the
+// exact same parse + validate + execute path as a hand-typed forward
+// invocation — no second source of truth for what a forward does.
+func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) int {
+	aliases := make([]ui.ForwardAlias, 0, len(inventory.Aliases))
+	for _, a := range inventory.Aliases {
+		aliases = append(aliases, ui.ForwardAlias{
+			Name:        a.Name,
+			Description: displayAlias(a),
+		})
+	}
+	if len(aliases) == 0 {
+		fmt.Fprintln(stderr, "[skipped] no aliases available for forward")
+		return 0
+	}
+
+	result, ok, err := ui.BuildForward(context.Background(), ui.BuildForwardOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Aliases:     aliases,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: forward builder failed: %v\n", err)
+		return 1
+	}
+	if !ok || result.Action == ui.ForwardActionCancel {
+		fmt.Fprintln(stderr, "[skipped] forward builder cancelled")
+		return 0
+	}
+
+	args := []string{
+		"--select", result.Alias,
+		"--local", result.LocalSpec(),
+		"--remote", result.RemoteSpec(),
+	}
+	if result.Through != "" {
+		args = append(args, "--through", result.Through)
+	}
+	switch result.Action {
+	case ui.ForwardActionBackground:
+		args = append(args, "--background")
+	case ui.ForwardActionPrint:
+		args = append(args, "--print")
+	}
+	args = append(args, connectFlagsAsForwardArgs(flags)...)
+	return runForward(args, stdout, stderr)
 }
 
 func connectFlagsAsRouteArgs(flags connectFlags) []string {

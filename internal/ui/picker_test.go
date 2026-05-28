@@ -11,27 +11,27 @@ import (
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 
-	if len(items) != 8 {
-		t.Fatalf("len(items) = %d, want 8", len(items))
+	if len(items) != 9 {
+		t.Fatalf("len(items) = %d, want 9", len(items))
 	}
 
-	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemAuthkeys, ItemSessions, ItemTheme, ItemAlias}
+	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemAuthkeys, ItemSessions, ItemTheme, ItemAlias}
 	for i, kind := range want {
 		if items[i].Kind != kind {
 			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
 		}
 	}
-	if items[7].Token != "prod" || items[7].Description != "prod.example.com" || items[7].Group != "Hosts" {
-		t.Fatalf("alias item = %#v", items[7])
+	if items[8].Token != "prod" || items[8].Description != "prod.example.com" || items[8].Group != "Hosts" {
+		t.Fatalf("alias item = %#v", items[8])
 	}
 }
 
 func TestBuildItemsIncludesSessionCounts(t *testing.T) {
 	items := BuildItemsWithOptions(nil, BuildItemsOptions{SessionCount: 4, ActiveSessionCount: 2})
 
-	session := items[5]
+	session := items[6]
 	if session.Kind != ItemSessions {
-		t.Fatalf("items[5].Kind = %q, want sessions", session.Kind)
+		t.Fatalf("items[6].Kind = %q, want sessions", session.Kind)
 	}
 	if session.Description != "2 active sessions (4 recorded)" {
 		t.Fatalf("session description = %q", session.Description)

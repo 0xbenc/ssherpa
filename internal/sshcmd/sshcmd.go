@@ -5,10 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
+
+// DefaultForwardBind is the loopback address used when a `--local`
+// spec omits the bind address. The same value the CLI parser
+// substitutes when the user types `--local 5432` instead of
+// `--local 127.0.0.1:5432`.
+const DefaultForwardBind = "127.0.0.1"
 
 type Command struct {
 	Argv []string `json:"argv"`
@@ -185,6 +193,63 @@ func ValidateForward(alias string, localBind string, localPort int, remoteHost s
 		return fmt.Errorf("forward through hop %q cannot be the destination", through)
 	}
 	return nil
+}
+
+// ParseForwardLocal accepts both the bare-port shorthand ("5432") and
+// the full `[BIND:]PORT` spelling, including bracketed IPv6
+// ("[::1]:5432"). It expands the shorthand to DefaultForwardBind so
+// callers always receive a fully-resolved (bind, port) pair.
+//
+// Lives in sshcmd (not cli) so both the CLI flag parser and the TUI
+// builder (internal/ui/forward_builder.go) can validate user input
+// against the same rules without a cyclic import.
+func ParseForwardLocal(value string) (string, int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", 0, errors.New("forward local cannot be empty")
+	}
+	if !strings.Contains(value, ":") {
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return "", 0, fmt.Errorf("invalid forward local port %q", value)
+		}
+		return DefaultForwardBind, port, nil
+	}
+	bind, portStr, err := net.SplitHostPort(value)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid forward local %q: %w", value, err)
+	}
+	if strings.TrimSpace(bind) == "" {
+		bind = DefaultForwardBind
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid forward local port %q", portStr)
+	}
+	return bind, port, nil
+}
+
+// ParseForwardRemote accepts host:port (or `[ipv6]:port`). Unlike the
+// local side, the remote host is required — there is no analogue to the
+// "default to loopback" shorthand because the tunnel's whole point is
+// to reach something on the remote side.
+func ParseForwardRemote(value string) (string, int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", 0, errors.New("forward remote cannot be empty")
+	}
+	host, portStr, err := net.SplitHostPort(value)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid forward remote %q: %w", value, err)
+	}
+	if strings.TrimSpace(host) == "" {
+		return "", 0, fmt.Errorf("invalid forward remote %q: missing host", value)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid forward remote port %q", portStr)
+	}
+	return host, port, nil
 }
 
 func RunDirect(cmd Command, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {

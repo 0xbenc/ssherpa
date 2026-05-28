@@ -21,6 +21,7 @@ const (
 	ItemAuthkeys ItemKind = "authkeys"
 	ItemProxy    ItemKind = "proxy"
 	ItemJump     ItemKind = "jump"
+	ItemForward  ItemKind = "forward"
 	ItemSessions ItemKind = "sessions"
 	ItemTheme    ItemKind = "theme"
 )
@@ -64,6 +65,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries", Group: "Actions", Badge: "edit"},
 		{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "build a ProxyJump route", Group: "Actions", Badge: "jump"},
 		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port", Group: "Actions", Badge: "proxy"},
+		{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Description: "build an ssh -L tunnel through an alias", Group: "Actions", Badge: "forward"},
 		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Description: "add, merge, replace, or delete login keys", Group: "Actions", Badge: "keys"},
 		{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Description: sessionDescription(opts), Group: "Actions", Badge: "map"},
 		{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Description: "preview and save UI palette", Group: "Actions", Badge: "theme"},
@@ -531,6 +533,8 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleInfo
 	case ItemProxy:
 		role = termstyle.RoleDanger
+	case ItemForward:
+		role = termstyle.RoleAccent
 	case ItemAuthkeys:
 		role = termstyle.RoleSecondary
 	case ItemSessions:
@@ -577,6 +581,8 @@ func selectionHint(item Item) string {
 		return "Builds a ProxyJump route through selected hops."
 	case ItemProxy:
 		return "Starts a local SOCKS proxy through an SSH alias."
+	case ItemForward:
+		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemAuthkeys:
 		return "Manages authorized_keys on this device."
 	case ItemSessions:
