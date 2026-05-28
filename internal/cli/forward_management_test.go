@@ -402,6 +402,100 @@ Host pgbox
 	}
 }
 
+func TestPickerActiveTunnelsFiltersToLiveTunnels(t *testing.T) {
+	stateDir := t.TempDir()
+	exit := 0
+	endedAt := time.Now().Add(-1 * time.Minute)
+
+	// Live tunnel — should appear.
+	live := seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:          "live-tunnel-id",
+		TargetAlias: "pgbox",
+		LocalPID:    os.Getpid(),
+		StartedAt:   time.Now().Add(-3 * time.Minute),
+		Forward: &state.ForwardSpec{
+			LocalBind: "127.0.0.1", LocalPort: 5432,
+			RemoteHost: "127.0.0.1", RemotePort: 5432,
+			SavedAlias: "pngwin-pg-tunnel",
+		},
+	})
+
+	// Exited tunnel — should be filtered out (EndedAt != nil).
+	_ = seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:          "exited-tunnel-id",
+		TargetAlias: "redisbox",
+		LocalPID:    os.Getpid(),
+		EndedAt:     &endedAt,
+		ExitCode:    &exit,
+		Forward:     &state.ForwardSpec{LocalPort: 6379, RemoteHost: "127.0.0.1", RemotePort: 6379},
+	})
+
+	// Orphan tunnel — EndedAt nil but PID gone. Should be filtered
+	// out — the home page focuses on actionable items; orphans
+	// surface in `ssherpa forward list` instead.
+	_ = seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:          "orphan-tunnel-id",
+		TargetAlias: "stalebox",
+		LocalPID:    1 << 20, // very unlikely to be alive
+		Forward:     &state.ForwardSpec{LocalPort: 1234, RemoteHost: "127.0.0.1", RemotePort: 1234},
+	})
+
+	// Interactive session — should be filtered out (Kind != tunnel).
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:          "interactive-id",
+		Kind:        state.KindInteractive,
+		TargetAlias: "shell",
+		StartedAt:   time.Now().Add(-1 * time.Hour),
+		LocalPID:    os.Getpid(),
+		RunnerMode:  "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord interactive: %v", err)
+	}
+
+	got := pickerActiveTunnels(stateDir)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1; got=%+v", len(got), got)
+	}
+	if got[0].SessionID != live.ID {
+		t.Fatalf("got[0].SessionID = %q, want %q", got[0].SessionID, live.ID)
+	}
+	// Title prefers SavedAlias when set.
+	if got[0].Title != "pngwin-pg-tunnel" {
+		t.Fatalf("Title = %q, want 'pngwin-pg-tunnel' (saved alias preferred over TargetAlias)", got[0].Title)
+	}
+	// Description should include endpoints, uptime, and pid.
+	if !strings.Contains(got[0].Description, "127.0.0.1:5432 -> 127.0.0.1:5432") {
+		t.Fatalf("Description missing endpoints: %q", got[0].Description)
+	}
+	if !strings.Contains(got[0].Description, "pid ") {
+		t.Fatalf("Description missing pid: %q", got[0].Description)
+	}
+	if !strings.Contains(got[0].Description, "up ") {
+		t.Fatalf("Description missing uptime: %q", got[0].Description)
+	}
+}
+
+func TestPickerActiveTunnelsTitleFallsBackToTargetAlias(t *testing.T) {
+	stateDir := t.TempDir()
+	live := seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:          "ad-hoc-id",
+		TargetAlias: "ad-hoc-host",
+		LocalPID:    os.Getpid(),
+		Forward: &state.ForwardSpec{
+			LocalBind: "127.0.0.1", LocalPort: 5432,
+			RemoteHost: "127.0.0.1", RemotePort: 5432,
+			// No SavedAlias — this is an ad-hoc tunnel.
+		},
+	})
+	got := pickerActiveTunnels(stateDir)
+	if len(got) != 1 || got[0].SessionID != live.ID {
+		t.Fatalf("got = %+v, want one live entry", got)
+	}
+	if got[0].Title != "ad-hoc-host" {
+		t.Fatalf("Title = %q, want 'ad-hoc-host' (fallback to TargetAlias)", got[0].Title)
+	}
+}
+
 // TestRunForwardManagementLogPath verifies that a status query
 // surfaces the expected log file path even when the log file
 // doesn't exist yet (a status call against a freshly-seeded record).

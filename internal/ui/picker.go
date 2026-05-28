@@ -15,16 +15,17 @@ import (
 type ItemKind string
 
 const (
-	ItemAlias        ItemKind = "alias"
-	ItemAdd          ItemKind = "add"
-	ItemEdit         ItemKind = "edit"
-	ItemAuthkeys     ItemKind = "authkeys"
-	ItemProxy        ItemKind = "proxy"
-	ItemJump         ItemKind = "jump"
-	ItemForward      ItemKind = "forward"
-	ItemForwardSaved ItemKind = "forward_saved"
-	ItemSessions     ItemKind = "sessions"
-	ItemTheme        ItemKind = "theme"
+	ItemAlias         ItemKind = "alias"
+	ItemAdd           ItemKind = "add"
+	ItemEdit          ItemKind = "edit"
+	ItemAuthkeys      ItemKind = "authkeys"
+	ItemProxy         ItemKind = "proxy"
+	ItemJump          ItemKind = "jump"
+	ItemForward       ItemKind = "forward"
+	ItemForwardSaved  ItemKind = "forward_saved"
+	ItemForwardActive ItemKind = "forward_active"
+	ItemSessions      ItemKind = "sessions"
+	ItemTheme         ItemKind = "theme"
 )
 
 // SavedForwardItem is the picker-facing projection of a saved
@@ -34,6 +35,19 @@ const (
 type SavedForwardItem struct {
 	Name        string
 	Description string
+}
+
+// ActiveTunnelItem is the picker-facing projection of a live
+// background tunnel (KindTunnel session whose daemon PID is still
+// responding to signal 0). Selecting one on the home page calls
+// `ssherpa forward stop <SessionID>` — the picker is the operator's
+// one-tap "kill this tunnel" surface. The caller derives the
+// Title/Description and passes the canonical SessionID via Token so
+// the dispatcher knows exactly which record to signal.
+type ActiveTunnelItem struct {
+	SessionID   string // full session record ID; matched by `forward stop`
+	Title       string // short, recognizable label (saved alias / target / id tail)
+	Description string // local→remote · uptime · daemon pid
 }
 
 type Item struct {
@@ -63,15 +77,16 @@ type PickOptions struct {
 type BuildItemsOptions struct {
 	SessionCount       int
 	ActiveSessionCount int
-	// SavedForwards renders as a top-level "Saved Forwards" group
-	// above the standard action rows so daily-use one-tap launches
-	// get prominence — the decision recorded in
-	// docs/forward-phase-2.md (#3).
+	// SavedForwards renders as a "Saved Forwards" group above the
+	// standard action rows so daily-use one-tap launches get
+	// prominence — decision #3 in docs/forward-phase-2.md.
 	SavedForwards []SavedForwardItem
-	// ActiveTunnels is informational — surfaced in the picker
-	// subtitle/summary so an operator can tell at a glance how
-	// many tunnels are currently live.
-	ActiveTunnels int
+	// ActiveTunnels renders as an "Active Tunnels" group above
+	// Saved Forwards — they're more actionable (you want to stop
+	// them right now) than launches. Picker dispatch calls
+	// `ssherpa forward stop` when one is selected. The count
+	// shown in the subtitle is derived from len(ActiveTunnels).
+	ActiveTunnels []ActiveTunnelItem
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -81,10 +96,22 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []Item {
 	items := []Item{}
 
-	// Saved forwards lead — they're explicit "I set this up to
-	// reuse" entries, and grouping them above the action rows
-	// makes one-tap launches the dominant home-page UX. Decision
-	// #3 in docs/forward-phase-2.md.
+	// Active tunnels lead — they're the "kill this right now"
+	// surface. Selecting one calls `forward stop SESSION_ID`,
+	// signaling the daemon and finalizing the record.
+	for _, at := range opts.ActiveTunnels {
+		items = append(items, Item{
+			Kind:        ItemForwardActive,
+			Token:       at.SessionID,
+			Title:       at.Title,
+			Description: at.Description,
+			Group:       "Active Tunnels",
+			Badge:       "stop",
+		})
+	}
+
+	// Saved forwards next — explicit "I set this up to reuse"
+	// entries. Selecting one launches the saved spec.
 	for _, sf := range opts.SavedForwards {
 		items = append(items, Item{
 			Kind:        ItemForwardSaved,
@@ -573,6 +600,8 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleAccent
 	case ItemForwardSaved:
 		role = termstyle.RoleAccent
+	case ItemForwardActive:
+		role = termstyle.RoleWarning
 	case ItemAuthkeys:
 		role = termstyle.RoleSecondary
 	case ItemSessions:
@@ -623,6 +652,8 @@ func selectionHint(item Item) string {
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemForwardSaved:
 		return "Launches a saved port-forward tunnel from your ssherpa catalog."
+	case ItemForwardActive:
+		return "Stops this running tunnel — signals the daemon and finalizes the record."
 	case ItemAuthkeys:
 		return "Manages authorized_keys on this device."
 	case ItemSessions:

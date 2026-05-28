@@ -8,6 +8,42 @@ import (
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
+func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
+	items := BuildItemsWithOptions([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}, BuildItemsOptions{
+		ActiveTunnels: []ActiveTunnelItem{
+			{SessionID: "sess-1", Title: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432 · up 2m · pid 31337"},
+		},
+		SavedForwards: []SavedForwardItem{
+			{Name: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432  (alias pgbox)"},
+		},
+	})
+
+	// Expected order: Active Tunnels, Saved Forwards, Actions (8), Hosts.
+	if len(items) != 1+1+8+1 {
+		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+8+1)
+	}
+	want := []ItemKind{
+		ItemForwardActive, // active tunnel row
+		ItemForwardSaved,  // saved forward row
+		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemAuthkeys, ItemSessions, ItemTheme,
+		ItemAlias, // host
+	}
+	for i, kind := range want {
+		if items[i].Kind != kind {
+			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
+		}
+	}
+	if items[0].Token != "sess-1" {
+		t.Fatalf("active-tunnel token = %q, want session ID 'sess-1'", items[0].Token)
+	}
+	if items[0].Group != "Active Tunnels" {
+		t.Fatalf("active-tunnel group = %q", items[0].Group)
+	}
+	if items[1].Group != "Saved Forwards" {
+		t.Fatalf("saved-forward group = %q", items[1].Group)
+	}
+}
+
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 

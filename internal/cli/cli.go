@@ -250,6 +250,15 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		args := []string{"--select", item.Token}
 		args = append(args, connectFlagsAsForwardArgs(flags)...)
 		return runForward(args, stdout, stderr)
+	case ui.ItemForwardActive:
+		// One-tap stop: item.Token is the session ID; runForward
+		// dispatches to runForwardStop which SIGHUPs the daemon.
+		stopArgs := []string{"stop"}
+		if flags.StateDir != "" {
+			stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
+		}
+		stopArgs = append(stopArgs, item.Token)
+		return runForward(stopArgs, stdout, stderr)
 	case ui.ItemAuthkeys:
 		return runAuthkeys(nil, stdout, stderr)
 	case ui.ItemSessions:
@@ -534,8 +543,9 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		return ui.Item{Kind: ui.ItemAlias, Token: alias.Name, Title: alias.Name}, *alias, true, 0
 	}
 
-	sessionCount, activeSessions, activeTunnels := pickerSessionCounts(flags.StateDir)
+	sessionCount, activeSessions := pickerSessionCounts(flags.StateDir)
 	savedForwards := pickerSavedForwards(flags.StateDir)
+	activeTunnels := pickerActiveTunnels(flags.StateDir)
 	item, ok, err := ui.Pick(context.Background(), ui.BuildItemsWithOptions(inventory.Aliases, ui.BuildItemsOptions{
 		SessionCount:       sessionCount,
 		ActiveSessionCount: activeSessions,
@@ -550,7 +560,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		ThemeFile:   flags.ThemeFile,
 		Title:       "ssherpa",
 		Subtitle:    pickerMode(flags),
-		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, activeTunnels),
+		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -629,24 +639,125 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 	return summary
 }
 
-func pickerSessionCounts(stateDir string) (total int, active int, tunnels int) {
+func pickerSessionCounts(stateDir string) (total int, active int) {
 	dir, err := state.ResolveDir(stateDir)
 	if err != nil {
-		return 0, 0, 0
+		return 0, 0
 	}
 	records, err := state.ListRecords(dir)
 	if err != nil {
-		return 0, 0, 0
+		return 0, 0
 	}
 	for _, record := range records {
 		if record.Status() == "active" {
 			active++
-			if record.Kind == state.KindTunnel && state.ProcessAlive(record) {
-				tunnels++
-			}
 		}
 	}
-	return len(records), active, tunnels
+	return len(records), active
+}
+
+// pickerActiveTunnels flattens live KindTunnel records into the
+// picker's "Active Tunnels" projection. Only records whose daemon
+// process is still alive are surfaced — orphan records (daemon
+// crashed without writing EndedAt) stay invisible here to keep the
+// home page focused on actionable items. Use `ssherpa forward list`
+// to see orphans.
+func pickerActiveTunnels(stateDir string) []ui.ActiveTunnelItem {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	records, err := state.ListRecords(dir)
+	if err != nil {
+		return nil
+	}
+	var out []ui.ActiveTunnelItem
+	now := time.Now()
+	for _, r := range records {
+		if r.Kind != state.KindTunnel {
+			continue
+		}
+		if r.EndedAt != nil {
+			continue
+		}
+		if !state.ProcessAlive(r) {
+			continue
+		}
+		out = append(out, ui.ActiveTunnelItem{
+			SessionID:   r.ID,
+			Title:       activeTunnelTitle(r),
+			Description: activeTunnelDescription(r, now),
+		})
+	}
+	return out
+}
+
+// activeTunnelTitle picks the most recognizable label for a live
+// tunnel row: saved alias if the launch came from the catalog,
+// otherwise the SSH destination alias, falling back to a short
+// suffix of the session ID for truly anonymous tunnels.
+func activeTunnelTitle(r state.SessionRecord) string {
+	if r.Forward != nil && r.Forward.SavedAlias != "" {
+		return r.Forward.SavedAlias
+	}
+	if r.TargetAlias != "" {
+		return r.TargetAlias
+	}
+	if len(r.ID) > 12 {
+		return "session " + r.ID[len(r.ID)-12:]
+	}
+	return r.ID
+}
+
+// activeTunnelDescription renders the operator-facing one-liner:
+// `LOCAL -> REMOTE · up DURATION · pid PID`. Compact so the home page
+// row stays scannable.
+func activeTunnelDescription(r state.SessionRecord, now time.Time) string {
+	parts := []string{}
+	if r.Forward != nil {
+		parts = append(parts, formatEndpointBindOrLoopback(r.Forward.LocalBind, r.Forward.LocalPort)+" -> "+
+			fmt.Sprintf("%s:%d", r.Forward.RemoteHost, r.Forward.RemotePort))
+		if r.Forward.Through != "" {
+			parts = append(parts, "via "+r.Forward.Through)
+		}
+	}
+	uptime := now.Sub(r.StartedAt)
+	if uptime > 0 {
+		parts = append(parts, "up "+humanShortDuration(uptime))
+	}
+	if r.LocalPID > 0 {
+		parts = append(parts, fmt.Sprintf("pid %d", r.LocalPID))
+	}
+	if len(parts) == 0 {
+		return "running"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatEndpointBindOrLoopback(bind string, port int) string {
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	if strings.Contains(bind, ":") {
+		return fmt.Sprintf("[%s]:%d", bind, port)
+	}
+	return fmt.Sprintf("%s:%d", bind, port)
+}
+
+// humanShortDuration is the picker-row equivalent of
+// forward_management.humanDuration — kept private here so it can
+// stay short (no "Xd Yh" composite) for narrow home-page rows.
+func humanShortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours())/24)
+	}
 }
 
 // pickerSavedForwards flattens the StoredForward catalog into the
