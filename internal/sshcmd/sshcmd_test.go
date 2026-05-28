@@ -90,6 +90,49 @@ func TestBuildProbe(t *testing.T) {
 	}
 }
 
+func TestBuildForward(t *testing.T) {
+	tests := []struct {
+		name       string
+		alias      string
+		localBind  string
+		localPort  int
+		remoteHost string
+		remotePort int
+		through    string
+		extraArgs  []string
+		want       string
+	}{
+		{
+			name:       "loopback default",
+			alias:      "pgbox",
+			localBind:  "127.0.0.1",
+			localPort:  5432,
+			remoteHost: "127.0.0.1",
+			remotePort: 5432,
+			want:       "ssh\x00-L\x00127.0.0.1:5432:127.0.0.1:5432\x00-N\x00-o\x00ExitOnForwardFailure=yes\x00pgbox",
+		},
+		{
+			name:       "with through hop and passthrough",
+			alias:      "pgbox",
+			localBind:  "0.0.0.0",
+			localPort:  5433,
+			remoteHost: "db.internal",
+			remotePort: 5432,
+			through:    "bastion",
+			extraArgs:  []string{"-v"},
+			want:       "ssh\x00-J\x00bastion\x00-L\x000.0.0.0:5433:db.internal:5432\x00-N\x00-o\x00ExitOnForwardFailure=yes\x00pgbox\x00-v",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := BuildForward(Command{Argv: []string{"ssh"}}, tt.alias, tt.localBind, tt.localPort, tt.remoteHost, tt.remotePort, tt.through, tt.extraArgs)
+			if got := strings.Join(cmd.Argv, "\x00"); got != tt.want {
+				t.Fatalf("Argv = %#v, want %q", cmd.Argv, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateJumpRoute(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -145,6 +188,45 @@ func TestValidateProxy(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("ValidateProxy error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateForward(t *testing.T) {
+	tests := []struct {
+		name       string
+		alias      string
+		localBind  string
+		localPort  int
+		remoteHost string
+		remotePort int
+		through    string
+		wantErr    string
+	}{
+		{name: "valid", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 5432},
+		{name: "valid with through", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remoteHost: "db", remotePort: 5432, through: "bastion"},
+		{name: "missing alias", localBind: "127.0.0.1", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 5432, wantErr: "alias"},
+		{name: "missing local bind", alias: "prod", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 5432, wantErr: "bind"},
+		{name: "low local port", alias: "prod", localBind: "127.0.0.1", localPort: 0, remoteHost: "127.0.0.1", remotePort: 5432, wantErr: "local port"},
+		{name: "high local port", alias: "prod", localBind: "127.0.0.1", localPort: 70000, remoteHost: "127.0.0.1", remotePort: 5432, wantErr: "local port"},
+		{name: "missing remote host", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remotePort: 5432, wantErr: "remote host"},
+		{name: "low remote port", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 0, wantErr: "remote port"},
+		{name: "high remote port", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 70000, wantErr: "remote port"},
+		{name: "through equals alias", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 5432, through: "prod", wantErr: "destination"},
+		{name: "through has whitespace", alias: "prod", localBind: "127.0.0.1", localPort: 5432, remoteHost: "127.0.0.1", remotePort: 5432, through: " bastion ", wantErr: "whitespace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateForward(tt.alias, tt.localBind, tt.localPort, tt.remoteHost, tt.remotePort, tt.through)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateForward returned error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateForward error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
 	}

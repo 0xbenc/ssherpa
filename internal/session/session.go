@@ -46,6 +46,12 @@ type Metadata struct {
 	TargetAlias string
 	Hops        []string
 	Route       []string
+	// Kind tags the recorded session by its high-level shape (e.g.
+	// state.KindInteractive or state.KindTunnel). Leave empty for a
+	// default interactive session; the session-map renderer treats an
+	// empty Kind as interactive for backward compatibility with records
+	// written before this field existed.
+	Kind string
 }
 
 type Options struct {
@@ -282,6 +288,7 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		TargetAlias:  metadata.TargetAlias,
 		Hops:         append([]string(nil), metadata.Hops...),
 		SSHArgv:      append([]string(nil), command.Argv...),
+		Kind:         metadata.Kind,
 		StartedAt:    started.UTC(),
 		LocalPID:     os.Getpid(),
 		RunnerMode:   RunnerModeSupervised,

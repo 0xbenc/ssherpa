@@ -27,8 +27,9 @@ layer OpenSSH doesn't: visibility into, and control over, nested sessions.
   permissions preserved.
 - **`authorized_keys` management** — list, add, merge, replace, and delete keys
   by fingerprint, preserving key options and cert types.
-- **Jump and proxy** — build a `ProxyJump` route through one or more hops, or
-  start a local SOCKS proxy through any alias.
+- **Jump, proxy, and forward** — build a `ProxyJump` route through one or
+  more hops, start a local SOCKS proxy through any alias, or open a local
+  TCP port-forward (`-L`) tunnel for things like a remote Postgres.
 - **`--print` mode** — print the exact `ssh` command instead of running it, so
   you can see, copy, or script what ssherpa would do.
 - **Themeable** — inherits your terminal palette by default; tune every UI role
@@ -175,12 +176,19 @@ ssherpa edit delete prod --dry-run
 ssherpa edit delete-all --filter scratch --dry-run
 ```
 
-### Jump hosts and SOCKS proxy
+### Jump hosts, SOCKS proxy, and port-forward tunnels
 
 ```sh
 ssherpa jump --dest prod --hop bastion --hop edge --print   # ssh -J bastion,edge prod
 ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
+ssherpa forward --select pgbox --local 5432 --remote 127.0.0.1:5432 --print
+ssherpa forward --select pgbox --local 5433 --remote db.internal:5432 --through bastion
 ```
+
+`forward` opens a local TCP port-forward (the `ssh -L` flag) and runs it
+under the same supervised PTY as the other commands — so the tunnel
+shows up in `ssherpa session map` with a `[tunnel]` badge and the
+escape rope tears it down alongside any interactive sessions.
 
 ### Manage authorized_keys
 

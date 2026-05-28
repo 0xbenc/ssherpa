@@ -28,6 +28,7 @@ Available Commands:
   edit       Edit or delete SSH aliases
   jump       Connect through one or more ProxyJump hops
   proxy      Start a local SOCKS proxy through an SSH alias
+  forward    Open a local TCP port-forward (-L) tunnel through an SSH alias
   authkeys   Manage authorized_keys on this device
   theme      Build and save the terminal UI color schema
   session    Inspect supervised session records
@@ -74,6 +75,7 @@ Mutation Commands:
 Route Commands:
   ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
   ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--direct]
+  ssherpa forward --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--print] [--direct]
 
 Theme Commands:
   ssherpa theme [--theme terminal|vivid] [--theme-file PATH]
@@ -135,6 +137,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runJump(args[1:], stdout, stderr)
 	case "proxy":
 		return runProxy(args[1:], stdout, stderr)
+	case "forward":
+		return runForward(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
 	case "show":

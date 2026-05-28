@@ -617,6 +617,158 @@ Host prod
 	}
 }
 
+func TestRunForwardPrintLoopback(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+
+	code := Run([]string{"forward", "--select", "pgbox", "--local", "5432", "--remote", "127.0.0.1:5432", "--print", "--config", config}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+}
+
+func TestRunForwardPrintCustomBindThroughAndPassthrough(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+
+	code := Run([]string{"forward", "--select", "pgbox", "--local", "0.0.0.0:5433", "--remote", "db.internal:5432", "--through", "bastion", "--print", "--config", config, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
+}
+
+func TestRunForwardAcceptsPositionalAlias(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+
+	code := Run([]string{"forward", "pgbox", "--local", "5432", "--remote", "127.0.0.1:5432", "--print", "--config", config}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] ssh -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+}
+
+func TestRunForwardExecutesFakeSSH(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, logPath := writeFakeSSH(t, 0)
+
+	code := Run([]string{"forward", "--direct", "pgbox", "--local", "5433", "--remote", "127.0.0.1:5432", "--config", config, "--ssh-binary", fakeSSH, "--", "-v"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "[exec]")
+	assertContains(t, stdout.String(), "fake ssh stdout")
+	want := "-L 127.0.0.1:5433:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox -v"
+	if got := strings.TrimSpace(readFile(t, logPath)); got != want {
+		t.Fatalf("fake ssh argv log = %q, want %q", got, want)
+	}
+}
+
+func TestRunForwardSupervisedRecordsTunnelKind(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, _ := writeFakeSSH(t, 0)
+	stateDir := t.TempDir()
+
+	code := Run([]string{"forward", "--state-dir", stateDir, "--select", "pgbox", "--local", "5432", "--remote", "127.0.0.1:5432", "--config", config, "--ssh-binary", fakeSSH}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "[supervise]")
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.Kind != state.KindTunnel {
+		t.Fatalf("record.Kind = %q, want %q", record.Kind, state.KindTunnel)
+	}
+	if record.TargetAlias != "pgbox" || strings.Join(record.Route, " -> ") != "pgbox" {
+		t.Fatalf("record route = %#v", record)
+	}
+	if got := strings.Join(record.SSHArgv, " "); !strings.Contains(got, "-L 127.0.0.1:5432:127.0.0.1:5432 -N") {
+		t.Fatalf("record argv missing forward spec: %#v", record.SSHArgv)
+	}
+}
+
+func TestRunForwardRejectsInvalidInputs(t *testing.T) {
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+		code int
+	}{
+		{name: "missing local", args: []string{"forward", "--select", "pgbox", "--remote", "127.0.0.1:5432", "--config", config}, want: "--local", code: 1},
+		{name: "missing remote", args: []string{"forward", "--select", "pgbox", "--local", "5432", "--config", config}, want: "--remote", code: 1},
+		{name: "bad local port bare", args: []string{"forward", "--select", "pgbox", "--local", "70000", "--remote", "127.0.0.1:5432", "--config", config}, want: "--local port", code: 1},
+		{name: "bad local bind:port", args: []string{"forward", "--select", "pgbox", "--local", "0.0.0.0:abc", "--remote", "127.0.0.1:5432", "--config", config}, want: "--local port", code: 1},
+		{name: "malformed remote", args: []string{"forward", "--select", "pgbox", "--local", "5432", "--remote", "no-port", "--config", config}, want: "--remote", code: 1},
+		{name: "bad remote port", args: []string{"forward", "--select", "pgbox", "--local", "5432", "--remote", "host:abc", "--config", config}, want: "--remote port", code: 1},
+		{name: "remote missing host", args: []string{"forward", "--select", "pgbox", "--local", "5432", "--remote", ":5432", "--config", config}, want: "missing host", code: 1},
+		{name: "unknown alias", args: []string{"forward", "--select", "missing", "--local", "5432", "--remote", "127.0.0.1:5432", "--config", config}, want: "alias", code: 2},
+		{name: "unknown through", args: []string{"forward", "--select", "pgbox", "--local", "5432", "--remote", "127.0.0.1:5432", "--through", "nope", "--config", config}, want: "alias", code: 2},
+		{name: "through equals destination", args: []string{"forward", "--select", "pgbox", "--local", "5432", "--remote", "127.0.0.1:5432", "--through", "pgbox", "--config", config}, want: "destination", code: 1},
+		{name: "two positional aliases", args: []string{"forward", "pgbox", "bastion", "--local", "5432", "--remote", "127.0.0.1:5432", "--config", config}, want: "only one alias", code: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(tt.args, nil, &stderr, BuildInfo{})
+			if code != tt.code {
+				t.Fatalf("Run returned %d, want %d; stderr = %q", code, tt.code, stderr.String())
+			}
+			assertContains(t, stderr.String(), tt.want)
+		})
+	}
+}
+
 func TestRunSessionListShowAndPrune(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Now().UTC()

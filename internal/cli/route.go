@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -12,12 +13,14 @@ import (
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
+	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
 const (
-	defaultProxyBind = "127.0.0.1"
-	defaultProxyPort = 1080
+	defaultProxyBind   = "127.0.0.1"
+	defaultProxyPort   = 1080
+	defaultForwardBind = "127.0.0.1"
 )
 
 type jumpFlags struct {
@@ -32,6 +35,17 @@ type proxyFlags struct {
 	Bind    string
 	Port    int
 	PortSet bool
+}
+
+type forwardFlags struct {
+	connectFlags
+	LocalBind  string
+	LocalPort  int
+	LocalSet   bool
+	RemoteHost string
+	RemotePort int
+	RemoteSet  bool
+	Through    string
 }
 
 type connectOptions struct {
@@ -169,6 +183,77 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 	metadata := session.Metadata{
 		TargetAlias: alias.Name,
 		Route:       []string{alias.Name},
+	}
+	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
+}
+
+func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		printUsage(stdout)
+		return 0
+	}
+
+	flags, ok := parseForwardFlags(args, stderr)
+	if !ok {
+		return 1
+	}
+	if !validateLatencyFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if !validateComposerFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if !validateThemeFlags(flags.connectFlags, stderr) {
+		return 1
+	}
+	if flags.JSON {
+		fmt.Fprintln(stderr, "ssherpa: --json is not supported for forward")
+		return 1
+	}
+	if !flags.LocalSet {
+		fmt.Fprintln(stderr, "ssherpa: forward requires --local PORT or --local BIND:PORT")
+		return 1
+	}
+	if !flags.RemoteSet {
+		fmt.Fprintln(stderr, "ssherpa: forward requires --remote HOST:PORT")
+		return 1
+	}
+
+	_, inventory, err := loadInventory(flags.inventoryFlags)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 2
+	}
+
+	alias, ok, code := resolveForwardAlias(flags, inventory, stderr)
+	if !ok {
+		return code
+	}
+
+	if flags.Through != "" && findAlias(inventory.Aliases, flags.Through) == nil {
+		fmt.Fprintf(stderr, "ssherpa: alias %q not found\n", flags.Through)
+		return 2
+	}
+
+	if err := sshcmd.ValidateForward(alias.Name, flags.LocalBind, flags.LocalPort, flags.RemoteHost, flags.RemotePort, flags.Through); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
+	base := resolveSSHCommand(flags.connectFlags)
+	cmd := sshcmd.BuildForward(base, alias.Name, flags.LocalBind, flags.LocalPort, flags.RemoteHost, flags.RemotePort, flags.Through, flags.SSHArgs)
+
+	route := []string{alias.Name}
+	var hops []string
+	if flags.Through != "" {
+		hops = []string{flags.Through}
+		route = []string{flags.Through, alias.Name}
+	}
+	metadata := session.Metadata{
+		TargetAlias: alias.Name,
+		Hops:        hops,
+		Route:       route,
+		Kind:        state.KindTunnel,
 	}
 	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
 }
@@ -534,6 +619,212 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 	return flags, true
 }
 
+func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
+	flags := forwardFlags{}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			flags.SSHArgs = append(flags.SSHArgs, args[i+1:]...)
+			return flags, true
+		case arg == "--json":
+			flags.JSON = true
+		case arg == "--all":
+			flags.All = true
+		case arg == "--print":
+			flags.Print = true
+		case arg == "--exec":
+			flags.Print = false
+		case arg == "--filter":
+			value, ok := nextArg(args, &i, stderr, "--filter")
+			if !ok {
+				return flags, false
+			}
+			flags.Filter = value
+		case strings.HasPrefix(arg, "--filter="):
+			flags.Filter = strings.TrimPrefix(arg, "--filter=")
+		case arg == "--user":
+			value, ok := nextArg(args, &i, stderr, "--user")
+			if !ok {
+				return flags, false
+			}
+			flags.User = value
+		case strings.HasPrefix(arg, "--user="):
+			flags.User = strings.TrimPrefix(arg, "--user=")
+		case arg == "--config":
+			value, ok := nextArg(args, &i, stderr, "--config")
+			if !ok {
+				return flags, false
+			}
+			flags.Config = value
+		case strings.HasPrefix(arg, "--config="):
+			flags.Config = strings.TrimPrefix(arg, "--config=")
+		case arg == "--ssh-binary":
+			value, ok := nextArg(args, &i, stderr, "--ssh-binary")
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
+		case strings.HasPrefix(arg, "--ssh-binary="):
+			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+		case arg == "--supervise":
+			flags.Supervise = true
+			flags.Direct = false
+		case arg == "--direct" || arg == "--no-supervise":
+			flags.Direct = true
+			flags.Supervise = false
+		case arg == "--state-dir":
+			value, ok := nextArg(args, &i, stderr, "--state-dir")
+			if !ok {
+				return flags, false
+			}
+			flags.StateDir = value
+		case strings.HasPrefix(arg, "--state-dir="):
+			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case arg == "--latency-warn":
+			value, ok := nextArg(args, &i, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case strings.HasPrefix(arg, "--latency-warn="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-warn="), stderr, "--latency-warn")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyWarn = duration
+		case arg == "--latency-disconnect":
+			value, ok := nextArg(args, &i, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			duration, ok := parseDuration(value, stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
+		case strings.HasPrefix(arg, "--latency-disconnect="):
+			duration, ok := parseDuration(strings.TrimPrefix(arg, "--latency-disconnect="), stderr, "--latency-disconnect")
+			if !ok {
+				return flags, false
+			}
+			flags.LatencyDisconnect = duration
+		case arg == "--composer-key":
+			value, ok := nextArg(args, &i, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case strings.HasPrefix(arg, "--composer-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--composer-key="), stderr, "--composer-key")
+			if !ok {
+				return flags, false
+			}
+			flags.ComposerKey = key
+			flags.ComposerKeyName = name
+		case arg == "--no-composer":
+			flags.NoComposer = true
+		case arg == "--select":
+			value, ok := nextArg(args, &i, stderr, "--select")
+			if !ok {
+				return flags, false
+			}
+			flags.Select = value
+		case strings.HasPrefix(arg, "--select="):
+			flags.Select = strings.TrimPrefix(arg, "--select=")
+		case arg == "--local":
+			value, ok := nextArg(args, &i, stderr, "--local")
+			if !ok {
+				return flags, false
+			}
+			bind, port, ok := parseForwardLocal(value, stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.LocalBind = bind
+			flags.LocalPort = port
+			flags.LocalSet = true
+		case strings.HasPrefix(arg, "--local="):
+			bind, port, ok := parseForwardLocal(strings.TrimPrefix(arg, "--local="), stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.LocalBind = bind
+			flags.LocalPort = port
+			flags.LocalSet = true
+		case arg == "--remote":
+			value, ok := nextArg(args, &i, stderr, "--remote")
+			if !ok {
+				return flags, false
+			}
+			host, port, ok := parseForwardRemote(value, stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.RemoteHost = host
+			flags.RemotePort = port
+			flags.RemoteSet = true
+		case strings.HasPrefix(arg, "--remote="):
+			host, port, ok := parseForwardRemote(strings.TrimPrefix(arg, "--remote="), stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.RemoteHost = host
+			flags.RemotePort = port
+			flags.RemoteSet = true
+		case arg == "--through":
+			value, ok := nextArg(args, &i, stderr, "--through")
+			if !ok {
+				return flags, false
+			}
+			flags.Through = value
+		case strings.HasPrefix(arg, "--through="):
+			flags.Through = strings.TrimPrefix(arg, "--through=")
+		case arg == "--no-kitty":
+			flags.NoKitty = true
+		case arg == "--no-color":
+			flags.NoColor = true
+		case arg == "--theme":
+			value, ok := nextArg(args, &i, stderr, "--theme")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeName = value
+		case strings.HasPrefix(arg, "--theme="):
+			flags.ThemeName = strings.TrimPrefix(arg, "--theme=")
+		case arg == "--theme-file":
+			value, ok := nextArg(args, &i, stderr, "--theme-file")
+			if !ok {
+				return flags, false
+			}
+			flags.ThemeFile = value
+		case strings.HasPrefix(arg, "--theme-file="):
+			flags.ThemeFile = strings.TrimPrefix(arg, "--theme-file=")
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(stderr, "ssherpa: unknown forward flag %q\n", arg)
+			return flags, false
+		default:
+			if flags.Select != "" {
+				fmt.Fprintf(stderr, "ssherpa: forward accepts only one alias before --: %s\n", arg)
+				return flags, false
+			}
+			flags.Select = arg
+		}
+	}
+
+	return flags, true
+}
+
 func resolveJumpRoute(flags jumpFlags, inventory hostlist.Inventory, stderr io.Writer) (string, []string, bool, int) {
 	if flags.RouteProvided {
 		if flags.Destination == "" || len(flags.Hops) == 0 {
@@ -648,6 +939,28 @@ func resolveProxyAlias(flags proxyFlags, inventory hostlist.Inventory, stderr io
 	return alias, true, 0
 }
 
+func resolveForwardAlias(flags forwardFlags, inventory hostlist.Inventory, stderr io.Writer) (hostlist.Alias, bool, int) {
+	if flags.Select != "" {
+		alias := findAlias(inventory.Aliases, flags.Select)
+		if alias == nil {
+			fmt.Fprintf(stderr, "ssherpa: alias %q not found\n", flags.Select)
+			return hostlist.Alias{}, false, 2
+		}
+		return *alias, true, 0
+	}
+
+	alias, ok, err := pickAlias(inventory.Aliases, flags.NoColor, flags.ThemeName, flags.ThemeFile, "Forward: pick host", stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
+		return hostlist.Alias{}, false, 1
+	}
+	if !ok {
+		fmt.Fprintln(stderr, "[skipped] forward cancelled")
+		return hostlist.Alias{}, false, 0
+	}
+	return alias, true, 0
+}
+
 func pickAlias(aliases []hostlist.Alias, noColor bool, themeName string, themeFile string, title string, stderr io.Writer) (hostlist.Alias, bool, error) {
 	if len(aliases) == 0 {
 		return hostlist.Alias{}, false, nil
@@ -687,6 +1000,67 @@ func parseProxyPort(value string, stderr io.Writer) (int, bool) {
 		return 0, false
 	}
 	return port, true
+}
+
+// parseForwardLocal accepts both the bare-port shorthand ("5432") and the
+// full host:port spelling, including bracketed IPv6 ("[::1]:5432"). It
+// expands the shorthand to defaultForwardBind so callers always receive
+// a fully-resolved (bind, port) pair.
+func parseForwardLocal(value string, stderr io.Writer) (string, int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		fmt.Fprintln(stderr, "ssherpa: --local cannot be empty")
+		return "", 0, false
+	}
+	if !strings.Contains(value, ":") {
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			fmt.Fprintf(stderr, "ssherpa: invalid --local port %q\n", value)
+			return "", 0, false
+		}
+		return defaultForwardBind, port, true
+	}
+	bind, portStr, err := net.SplitHostPort(value)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: invalid --local %q: %v\n", value, err)
+		return "", 0, false
+	}
+	if strings.TrimSpace(bind) == "" {
+		bind = defaultForwardBind
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(stderr, "ssherpa: invalid --local port %q\n", portStr)
+		return "", 0, false
+	}
+	return bind, port, true
+}
+
+// parseForwardRemote accepts host:port (or "[ipv6]:port"). Unlike the
+// local side, the remote host is required — there is no analogue to the
+// "default to loopback" shorthand because the tunnel's whole point is to
+// reach something on the remote side.
+func parseForwardRemote(value string, stderr io.Writer) (string, int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		fmt.Fprintln(stderr, "ssherpa: --remote cannot be empty")
+		return "", 0, false
+	}
+	host, portStr, err := net.SplitHostPort(value)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: invalid --remote %q: %v\n", value, err)
+		return "", 0, false
+	}
+	if strings.TrimSpace(host) == "" {
+		fmt.Fprintf(stderr, "ssherpa: invalid --remote %q: missing host\n", value)
+		return "", 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(stderr, "ssherpa: invalid --remote port %q\n", portStr)
+		return "", 0, false
+	}
+	return host, port, true
 }
 
 func splitHopArg(value string) []string {

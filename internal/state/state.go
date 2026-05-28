@@ -19,6 +19,16 @@ import (
 const (
 	StateVersion = 1
 	DefaultPrune = 7 * 24 * time.Hour
+
+	// KindInteractive marks a normal interactive SSH session. It is the
+	// implicit kind for any record without a Kind field set, so existing
+	// records on disk continue to read correctly.
+	KindInteractive = "interactive"
+	// KindTunnel marks a non-interactive port-forward session (e.g. one
+	// started by `ssherpa forward`). The session-map overlay and list
+	// renderers tag these so an operator can tell a tunnel apart from a
+	// shell at a glance.
+	KindTunnel = "tunnel"
 )
 
 type SessionRecord struct {
@@ -29,6 +39,7 @@ type SessionRecord struct {
 	TargetAlias      string         `json:"target_alias,omitempty"`
 	Hops             []string       `json:"hops,omitempty"`
 	SSHArgv          []string       `json:"ssh_argv,omitempty"`
+	Kind             string         `json:"kind,omitempty"`
 	StartedAt        time.Time      `json:"started_at"`
 	EndedAt          *time.Time     `json:"ended_at,omitempty"`
 	LocalPID         int            `json:"local_pid"`

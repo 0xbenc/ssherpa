@@ -79,6 +79,28 @@ func BuildProxy(base Command, alias string, bind string, port int, extraArgs []s
 	return Command{Argv: argv}
 }
 
+// BuildForward assembles `ssh -L <localBind>:<localPort>:<remoteHost>:<remotePort>`
+// for a non-interactive local-port-forward tunnel. If through is non-empty
+// the route is prefixed with `-J through` so the forward terminates on
+// the alias's target rather than on the jump host. -N suppresses remote
+// command execution; ExitOnForwardFailure makes the SSH client fail
+// loudly when the forward can't be established (e.g. local port in use)
+// instead of silently leaving an unusable session.
+func BuildForward(base Command, alias string, localBind string, localPort int, remoteHost string, remotePort int, through string, extraArgs []string) Command {
+	argv := append([]string(nil), base.Argv...)
+	if through != "" {
+		argv = append(argv, "-J", through)
+	}
+	argv = append(argv,
+		"-L", fmt.Sprintf("%s:%d:%s:%d", localBind, localPort, remoteHost, remotePort),
+		"-N",
+		"-o", "ExitOnForwardFailure=yes",
+		alias,
+	)
+	argv = append(argv, extraArgs...)
+	return Command{Argv: argv}
+}
+
 func BuildProbe(base Command, alias string, hops []string) Command {
 	alias = strings.TrimSpace(alias)
 	if alias == "" || len(base.Argv) == 0 {
@@ -131,6 +153,36 @@ func ValidateProxy(alias string, bind string, port int) error {
 	}
 	if port < 1 || port > 65535 {
 		return errors.New("proxy port must be an integer from 1 to 65535")
+	}
+	return nil
+}
+
+// ValidateForward checks the pieces of a forward command before
+// BuildForward is called. The alias plus the through hop are not
+// cross-validated against the SSH inventory here — that's the caller's
+// job — but trim+range checks for ports and required strings live in one
+// place so callers don't repeat them.
+func ValidateForward(alias string, localBind string, localPort int, remoteHost string, remotePort int, through string) error {
+	if strings.TrimSpace(alias) == "" {
+		return errors.New("forward alias is required")
+	}
+	if strings.TrimSpace(localBind) == "" {
+		return errors.New("forward local bind address is required")
+	}
+	if localPort < 1 || localPort > 65535 {
+		return errors.New("forward local port must be an integer from 1 to 65535")
+	}
+	if strings.TrimSpace(remoteHost) == "" {
+		return errors.New("forward remote host is required")
+	}
+	if remotePort < 1 || remotePort > 65535 {
+		return errors.New("forward remote port must be an integer from 1 to 65535")
+	}
+	if strings.TrimSpace(through) != through {
+		return errors.New("forward through hop cannot have surrounding whitespace")
+	}
+	if through != "" && through == alias {
+		return fmt.Errorf("forward through hop %q cannot be the destination", through)
 	}
 	return nil
 }

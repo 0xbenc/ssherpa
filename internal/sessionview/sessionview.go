@@ -102,6 +102,19 @@ func StatusLabel(record state.SessionRecord) string {
 	return "exited"
 }
 
+// KindBadge returns a short bracketed tag distinguishing non-interactive
+// session kinds (e.g. "[tunnel]") so they stand out in list / map output.
+// Interactive sessions — the historical default and the value of any
+// record written before the Kind field existed — return "".
+func KindBadge(record state.SessionRecord) string {
+	switch record.Kind {
+	case state.KindTunnel:
+		return "[tunnel]"
+	default:
+		return ""
+	}
+}
+
 func Target(record state.SessionRecord) string {
 	if strings.TrimSpace(record.TargetAlias) != "" {
 		return record.TargetAlias
@@ -129,11 +142,15 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 			fmt.Fprintf(w, "\n%s\n", title)
 			first = false
 		}
+		target := Target(record)
+		if badge := KindBadge(record); badge != "" {
+			target = target + " " + badge
+		}
 		fmt.Fprintf(w, "%s\t%s\tdepth=%d\ttarget=%s\troute=%s\tstarted=%s\n",
 			record.ID,
 			StatusLabel(record),
 			record.Depth,
-			Target(record),
+			target,
 			FormatRoute(record.Route),
 			record.StartedAt.Local().Format(time.RFC3339),
 		)
@@ -154,10 +171,15 @@ func appendNodeLines(lines []string, node state.SessionNode, prefix string, last
 	if currentID != "" && record.ID == currentID {
 		current = "  current"
 	}
-	lines = append(lines, fmt.Sprintf("%s%s%s [%s] depth=%d id=%s%s",
+	kind := KindBadge(record)
+	if kind != "" {
+		kind = " " + kind
+	}
+	lines = append(lines, fmt.Sprintf("%s%s%s%s [%s] depth=%d id=%s%s",
 		prefix,
 		connector,
 		Target(record),
+		kind,
 		StatusLabel(record),
 		record.Depth,
 		record.ID,
