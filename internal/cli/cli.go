@@ -75,7 +75,7 @@ Mutation Commands:
 Route Commands:
   ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
   ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--direct]
-  ssherpa forward --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--print] [--direct]
+  ssherpa forward --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--print] [--direct] [--background] [--reconnect-max N] [--no-reconnect]
 
 Theme Commands:
   ssherpa theme [--theme terminal|vivid] [--theme-file PATH]
@@ -123,6 +123,13 @@ func (b BuildInfo) normalized() BuildInfo {
 func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
 	stdout = writerOrDiscard(stdout)
 	stderr = writerOrDiscard(stderr)
+
+	// Hidden supervisor dispatch: the parent process re-execs ssherpa
+	// with this flag set after `forward --background`. The child runs
+	// the same forward args (minus --background) in detached mode.
+	if len(args) > 0 && args[0] == supervisorFlag {
+		return runSupervisorChild(args[1:], stdout, stderr)
+	}
 
 	if len(args) == 0 {
 		return runConnect(args, stdout, stderr)

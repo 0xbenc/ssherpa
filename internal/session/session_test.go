@@ -115,6 +115,78 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	}
 }
 
+// TestRunSupervisedDetachedMode validates Phase 2b's daemon path at
+// the session level: with Options.Detached the supervisor skips PTY
+// raw mode, never starts copyInput, accepts a pre-assigned RecordID,
+// still writes the lifecycle record, and surfaces the child's exit
+// code. The Forward.Detached flag round-trips via Metadata.
+func TestRunSupervisedDetachedMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stateDir := t.TempDir()
+	preassignedID := "detached-test-id-0001"
+
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		// A trivially-fast child so the test runs in <100ms.
+		sshcmd.Command{Argv: []string{"sh", "-c", "printf 'detached output'; exit 0"}},
+		Metadata{
+			TargetAlias: "pgbox",
+			Route:       []string{"pgbox"},
+			Kind:        state.KindTunnel,
+			Forward: &state.ForwardSpec{
+				LocalBind:  "127.0.0.1",
+				LocalPort:  5432,
+				RemoteHost: "127.0.0.1",
+				RemotePort: 5432,
+				Detached:   true,
+			},
+		},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+			Detached: true,
+			RecordID: preassignedID,
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised(detached) returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	rec := records[0]
+	if rec.ID != preassignedID {
+		t.Fatalf("record.ID = %q, want pre-assigned %q", rec.ID, preassignedID)
+	}
+	if rec.Kind != state.KindTunnel {
+		t.Fatalf("record.Kind = %q, want tunnel", rec.Kind)
+	}
+	if rec.Forward == nil || !rec.Forward.Detached {
+		t.Fatalf("record.Forward.Detached not set: %+v", rec.Forward)
+	}
+	if rec.EndedAt == nil {
+		t.Fatalf("record.EndedAt not set; supervisor didn't finalize")
+	}
+	if rec.ExitCode == nil || *rec.ExitCode != 0 {
+		t.Fatalf("record.ExitCode = %v, want 0", rec.ExitCode)
+	}
+}
+
 func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

@@ -56,6 +56,14 @@ type forwardFlags struct {
 	ReconnectMaxAttemptsSet bool
 	ReconnectInitialBackoff time.Duration
 	ReconnectMaxBackoff     time.Duration
+
+	// Background (Phase 2b) detaches the supervisor: the parent
+	// process spawns a child via os.StartProcess with
+	// SysProcAttr.Setsid, prints the child PID + session ID, and
+	// exits. The child runs in detached mode (no PTY raw mode, no
+	// stdin loop) but otherwise uses the same RunSupervised retry
+	// loop.
+	Background bool
 }
 
 type connectOptions struct {
@@ -68,6 +76,11 @@ type connectOptions struct {
 	NoColor   bool
 	ThemeName string
 	ThemeFile string
+	// Detached and RecordID flow through to session.Options for the
+	// `forward --background` daemon path. Other commands leave these
+	// at their zero values and get the interactive supervisor.
+	Detached bool
+	RecordID string
 }
 
 func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
@@ -199,6 +212,15 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
+	return runForwardWith(args, false, "", stdout, stderr)
+}
+
+// runForwardWith is the shared body of `forward` invocations. The
+// foreground entry point (runForward) calls with detached=false; the
+// hidden --__supervisor child path (runSupervisorChild) calls with
+// detached=true and a pre-assigned recordID. The single body keeps
+// flag parsing and validation identical across both paths.
+func runForwardWith(args []string, detached bool, recordID string, stdout io.Writer, stderr io.Writer) int {
 	if hasHelpFlag(args) {
 		printUsage(stdout)
 		return 0
@@ -229,6 +251,14 @@ func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ssherpa: forward requires --remote HOST:PORT")
 		return 1
 	}
+	if flags.Background && flags.Print {
+		fmt.Fprintln(stderr, "ssherpa: --background and --print are mutually exclusive")
+		return 1
+	}
+	if flags.Background && flags.Direct {
+		fmt.Fprintln(stderr, "ssherpa: --background requires supervised mode; remove --direct")
+		return 1
+	}
 
 	_, inventory, err := loadInventory(flags.inventoryFlags)
 	if err != nil {
@@ -251,6 +281,13 @@ func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	// Parent process for --background: validation has passed, now fork
+	// the child supervisor and exit. The child invocation re-enters
+	// this function via the --__supervisor dispatch with detached=true.
+	if flags.Background && !detached {
+		return daemonizeForward(args, flags, stdout, stderr)
+	}
+
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildForward(base, alias.Name, flags.LocalBind, flags.LocalPort, flags.RemoteHost, flags.RemotePort, flags.Through, flags.SSHArgs)
 
@@ -271,10 +308,13 @@ func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
 			RemoteHost: flags.RemoteHost,
 			RemotePort: flags.RemotePort,
 			Through:    flags.Through,
+			Detached:   detached,
 		},
 	}
 	opts := flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops))
 	opts.Reconnect = forwardReconnectOptions(flags)
+	opts.Detached = detached
+	opts.RecordID = recordID
 	return printOrRunSSH(cmd, opts, metadata, stdout, stderr)
 }
 
@@ -810,6 +850,8 @@ func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
 			flags.Through = value
 		case strings.HasPrefix(arg, "--through="):
 			flags.Through = strings.TrimPrefix(arg, "--through=")
+		case arg == "--background":
+			flags.Background = true
 		case arg == "--no-reconnect":
 			flags.NoReconnect = true
 		case arg == "--reconnect-max":
@@ -1243,6 +1285,8 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			ThemeName: options.ThemeName,
 			ThemeFile: options.ThemeFile,
 			NoColor:   options.NoColor,
+			Detached:  options.Detached,
+			RecordID:  options.RecordID,
 		})
 	}
 

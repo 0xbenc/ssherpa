@@ -73,6 +73,18 @@ type Options struct {
 	ThemeName string
 	ThemeFile string
 	NoColor   bool
+	// Detached runs the supervisor in non-interactive daemon mode:
+	// no PTY raw mode, no copyInput goroutine, no overlay/composer.
+	// forwardSignals stays installed so `ssherpa forward stop` can
+	// SIGHUP the daemon and have it tear the ssh client down cleanly.
+	// Set by Phase 2b's `forward --background` flow.
+	Detached bool
+	// RecordID, when non-empty, overrides the auto-generated session
+	// ID. Used by the daemon parent process to pre-assign an ID
+	// before forking, so it can print the ID + open a log file at
+	// <stateDir>/sessions/<id>.log before the child writes its first
+	// record.
+	RecordID string
 }
 
 // ReconnectOptions controls the retry-with-backoff behavior used when a
@@ -202,15 +214,20 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
-	record := buildRecord(command, metadata, now(), env)
+	record := buildRecord(command, metadata, now(), env, opts.RecordID)
 	var recordMu sync.Mutex
 
-	restore, err := makeRawIfTerminal(stdin)
-	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
-		return 1
+	// Detached mode has no PTY consumer — skip raw mode entirely.
+	// makeRawIfTerminal handles a non-tty stdin gracefully too, but
+	// explicitly skipping makes the daemon's intent obvious.
+	if !opts.Detached {
+		restore, err := makeRawIfTerminal(stdin)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
+			return 1
+		}
+		defer restore()
 	}
-	defer restore()
 
 	// The supervisor swaps these per attempt as the reconnect loop
 	// rotates the ssh process. copyInput captures ptmxRef once at
@@ -275,6 +292,12 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			return
 		}
 		go copyInput(ptmxRefShared, stdin, output, stateDir, record.ID, opts.Composer, theme, pullRope, inputDone)
+	}
+	if opts.Detached {
+		// In detached mode there is no stdin to forward and no
+		// overlay to render. Replace startInput with a no-op so the
+		// onPtmxReady callback is harmless on every attempt.
+		startInput = func() {}
 	}
 
 	var lastWaitErr error
@@ -391,7 +414,7 @@ func resolveSessionTheme(opts Options, env []string) (termstyle.Theme, error) {
 	})
 }
 
-func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, env []string) state.SessionRecord {
+func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, env []string, recordIDOverride string) state.SessionRecord {
 	parentID, depth, inheritedRoute := state.InheritedMetadataFromEnv(env, "")
 	route := append([]string(nil), inheritedRoute...)
 	if len(metadata.Route) > 0 {
@@ -405,8 +428,12 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		copyFwd := *metadata.Forward
 		forward = &copyFwd
 	}
+	id := strings.TrimSpace(recordIDOverride)
+	if id == "" {
+		id = state.NewSessionID(started)
+	}
 	return state.SessionRecord{
-		ID:           state.NewSessionID(started),
+		ID:           id,
 		ParentID:     parentID,
 		Depth:        depth,
 		Route:        route,

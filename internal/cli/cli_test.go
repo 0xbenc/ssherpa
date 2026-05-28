@@ -925,6 +925,187 @@ Host pgbox
 	}
 }
 
+func TestRunForwardBackgroundSpawnsChildWithSupervisorArgs(t *testing.T) {
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+	stateDir := t.TempDir()
+
+	// Capture the would-be spawn instead of actually forking. The
+	// daemonStartProcess seam is package-private so tests can swap it
+	// without exposing the internal protocol publicly.
+	var capturedName string
+	var capturedArgs []string
+	var capturedAttr *os.ProcAttr
+	defer func(orig func(string, []string, *os.ProcAttr) (int, error)) {
+		daemonStartProcess = orig
+	}(daemonStartProcess)
+	daemonStartProcess = func(name string, argv []string, attr *os.ProcAttr) (int, error) {
+		capturedName = name
+		capturedArgs = append([]string(nil), argv...)
+		capturedAttr = attr
+		return 31337, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"forward", "--background",
+		"--state-dir", stateDir,
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--through", "bastion",
+		"--config", config,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if capturedName == "" {
+		t.Fatalf("daemonStartProcess not called")
+	}
+	if capturedAttr == nil {
+		t.Fatalf("daemonStartProcess ProcAttr is nil")
+	}
+	if capturedAttr.Sys == nil {
+		t.Fatalf("ProcAttr.Sys is nil; expected SysProcAttr.Setsid=true")
+	}
+	if !capturedAttr.Sys.Setsid {
+		t.Fatalf("ProcAttr.Sys.Setsid = false, want true")
+	}
+
+	// Validate the child argv: hidden supervisor flags first, then
+	// 'forward' subcommand, then the original forward args minus
+	// --background.
+	if len(capturedArgs) < 2 || capturedArgs[1] != "--__supervisor" {
+		t.Fatalf("child argv[1] = %q, want %q; full=%v", capturedArgs[1], "--__supervisor", capturedArgs)
+	}
+	if !containsAdjacent(capturedArgs, "--__detached-id") {
+		t.Fatalf("child argv missing --__detached-id pair; full=%v", capturedArgs)
+	}
+	if !containsAdjacent(capturedArgs, "--__detached-state-dir") {
+		t.Fatalf("child argv missing --__detached-state-dir pair; full=%v", capturedArgs)
+	}
+	if !contains(capturedArgs, "forward") {
+		t.Fatalf("child argv missing 'forward' subcommand; full=%v", capturedArgs)
+	}
+	for _, arg := range capturedArgs {
+		if arg == "--background" {
+			t.Fatalf("--background leaked into child argv; full=%v", capturedArgs)
+		}
+	}
+
+	// Parent stdout should include the detach summary lines.
+	assertContains(t, stdout.String(), "ssherpa: forward detached")
+	assertContains(t, stdout.String(), "daemon pid: 31337")
+	assertContains(t, stdout.String(), "session id:")
+	assertContains(t, stdout.String(), "log file:")
+}
+
+func TestRunForwardBackgroundRejectsPrint(t *testing.T) {
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	var stderr bytes.Buffer
+	code := Run([]string{
+		"forward", "--background", "--print",
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--config", config,
+	}, nil, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "mutually exclusive")
+}
+
+func TestRunForwardBackgroundRejectsDirect(t *testing.T) {
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	var stderr bytes.Buffer
+	code := Run([]string{
+		"forward", "--background", "--direct",
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--config", config,
+	}, nil, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "supervised mode")
+}
+
+func TestRunSupervisorChildRoutesToDetachedForward(t *testing.T) {
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{0})
+	stateDir := t.TempDir()
+	const recordID = "child-routes-test-id"
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"--__supervisor",
+		"--__detached-id", recordID,
+		"--__detached-state-dir", stateDir,
+		"forward",
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := countLines(readFile(t, logPath)); got != 1 {
+		t.Fatalf("fake-ssh invoked %d times, want 1", got)
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	rec := records[0]
+	if rec.ID != recordID {
+		t.Fatalf("record.ID = %q, want pre-assigned %q", rec.ID, recordID)
+	}
+	if rec.Forward == nil || !rec.Forward.Detached {
+		t.Fatalf("record.Forward.Detached not set: %+v", rec.Forward)
+	}
+}
+
+// contains reports whether s appears in slice.
+func contains(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAdjacent reports whether name appears in slice followed by
+// at least one more element — i.e. name is used as a "flag VALUE"
+// pair somewhere in the argv. Doesn't validate the value.
+func containsAdjacent(slice []string, name string) bool {
+	for i, item := range slice {
+		if item == name && i+1 < len(slice) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunSessionListShowAndPrune(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Now().UTC()
