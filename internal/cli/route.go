@@ -63,6 +63,14 @@ type forwardFlags struct {
 	// stdin loop) but otherwise uses the same RunSupervised retry
 	// loop.
 	Background bool
+
+	// savedFromCatalog is set internally when the catalog lookup
+	// (Phase 2e) populated --local/--remote/--through defaults from
+	// a StoredForward of this name. It is NOT a user-settable flag;
+	// runForwardWith uses it to stamp Forward.SavedAlias on the
+	// resulting session record so `forward list` can show which
+	// named tunnel the row belongs to.
+	savedFromCatalog string
 }
 
 type connectOptions struct {
@@ -256,6 +264,23 @@ func runForwardWith(args []string, detached bool, recordID string, stdout io.Wri
 		fmt.Fprintln(stderr, "ssherpa: --json is not supported for forward")
 		return 1
 	}
+	// Phase 2e: if --select matches a saved-forward name AND neither
+	// --local nor --remote is set on the CLI, populate the forward
+	// spec from the catalog. CLI args always win — explicit local /
+	// remote / through values override the catalog defaults — and an
+	// unmatched name silently falls through to the standard "alias
+	// not found" path below.
+	if flags.Select != "" && !flags.LocalSet && !flags.RemoteSet {
+		if stateDir, err := state.ResolveDir(flags.StateDir); err == nil {
+			if saved, err := state.ReadForward(stateDir, flags.Select); err == nil {
+				applyCatalogDefaults(&flags, saved)
+				// Record that this launch came from the catalog so the
+				// session record's Forward.SavedAlias reflects it.
+				flags.savedFromCatalog = saved.Name
+				touchForwardLastLaunched(stateDir, saved)
+			}
+		}
+	}
 	if !flags.LocalSet {
 		fmt.Fprintln(stderr, "ssherpa: forward requires --local PORT or --local BIND:PORT")
 		return 1
@@ -321,6 +346,7 @@ func runForwardWith(args []string, detached bool, recordID string, stdout io.Wri
 			RemoteHost: flags.RemoteHost,
 			RemotePort: flags.RemotePort,
 			Through:    flags.Through,
+			SavedAlias: flags.savedFromCatalog,
 			Detached:   detached,
 		},
 	}
@@ -1283,10 +1309,11 @@ func connectFlagsAsForwardArgs(flags connectFlags) []string {
 
 // runForwardBuilder is the home-page picker's Forward action: launches
 // the TUI wizard, translates the resulting ForwardResult into a
-// `ssherpa forward …` argv, and re-enters runForward. Centralizing
-// the translation here means the wizard's output flows through the
-// exact same parse + validate + execute path as a hand-typed forward
-// invocation — no second source of truth for what a forward does.
+// `ssherpa forward …` argv (or, for Save, writes the catalog entry
+// directly), and re-enters runForward. Centralizing the translation
+// here means the wizard's output flows through the exact same parse
+// + validate + execute path as a hand-typed forward invocation — no
+// second source of truth for what a forward does.
 func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) int {
 	aliases := make([]ui.ForwardAlias, 0, len(inventory.Aliases))
 	for _, a := range inventory.Aliases {
@@ -1318,6 +1345,10 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 		return 0
 	}
 
+	if result.Action == ui.ForwardActionSave {
+		return saveForwardFromBuilder(flags, result, stdout, stderr)
+	}
+
 	args := []string{
 		"--select", result.Alias,
 		"--local", result.LocalSpec(),
@@ -1334,6 +1365,71 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	}
 	args = append(args, connectFlagsAsForwardArgs(flags)...)
 	return runForward(args, stdout, stderr)
+}
+
+// saveForwardFromBuilder writes the wizard's Save action into the
+// state catalog. The destination alias and ProxyJump live in
+// ~/.ssh/config under the alias the user picked — we don't write a
+// new Host block (that conflict caused the LocalForward-in-alias
+// bug Phase 2e's two-layer split exists to avoid). The catalog
+// entry just references the existing SSH alias by name.
+func saveForwardFromBuilder(flags connectFlags, result ui.ForwardResult, stdout io.Writer, stderr io.Writer) int {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	spec := state.StoredForward{
+		Name:       result.SavedName,
+		SSHAlias:   result.Alias,
+		LocalBind:  result.LocalBind,
+		LocalPort:  result.LocalPort,
+		RemoteHost: result.RemoteHost,
+		RemotePort: result.RemotePort,
+		Through:    result.Through,
+	}
+	if err := state.WriteForward(stateDir, spec); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: save forward: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "ssherpa: forward saved as %q\n", spec.Name)
+	fmt.Fprintf(stdout, "  ssh alias:  %s\n", spec.SSHAlias)
+	fmt.Fprintf(stdout, "  local:      %s\n", result.LocalSpec())
+	fmt.Fprintf(stdout, "  remote:     %s\n", result.RemoteSpec())
+	if spec.Through != "" {
+		fmt.Fprintf(stdout, "  through:    %s\n", spec.Through)
+	}
+	fmt.Fprintf(stdout, "  launch:     ssherpa forward --select %s\n", spec.Name)
+	fmt.Fprintf(stdout, "  daemonize:  ssherpa forward --select %s --background\n", spec.Name)
+	return 0
+}
+
+// applyCatalogDefaults overlays a saved forward's spec onto flags
+// when --local/--remote weren't set on the CLI. The user's explicit
+// --through still wins if they passed one.
+func applyCatalogDefaults(flags *forwardFlags, saved state.StoredForward) {
+	flags.LocalBind = saved.LocalBind
+	if flags.LocalBind == "" {
+		flags.LocalBind = sshcmd.DefaultForwardBind
+	}
+	flags.LocalPort = saved.LocalPort
+	flags.LocalSet = true
+	flags.RemoteHost = saved.RemoteHost
+	flags.RemotePort = saved.RemotePort
+	flags.RemoteSet = true
+	if flags.Through == "" {
+		flags.Through = saved.Through
+	}
+	flags.Select = saved.SSHAlias
+}
+
+// touchForwardLastLaunched bumps the catalog entry's LastLaunchedAt
+// timestamp. Best-effort — a failure here doesn't affect launching
+// the tunnel, just leaves the catalog freshness stamp stale.
+func touchForwardLastLaunched(stateDir string, saved state.StoredForward) {
+	now := time.Now().UTC()
+	saved.LastLaunchedAt = &now
+	_ = state.WriteForward(stateDir, saved)
 }
 
 func connectFlagsAsRouteArgs(flags connectFlags) []string {

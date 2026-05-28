@@ -238,6 +238,7 @@ func TestExistingAliasSpecReadsManagedFields(t *testing.T) {
   Port 2222
   IdentityFile "~/.ssh/prod key"
   IdentitiesOnly yes
+  ProxyJump bastion
 `)
 
 	spec, ok, err := ExistingAliasSpec(path, "prod")
@@ -254,9 +255,35 @@ func TestExistingAliasSpecReadsManagedFields(t *testing.T) {
 		Port:           "2222",
 		IdentityFile:   "~/.ssh/prod key",
 		IdentitiesOnly: true,
+		ProxyJump:      "bastion",
 	}
 	if spec != want {
 		t.Fatalf("spec = %#v, want %#v", spec, want)
+	}
+}
+
+func TestPlanAddOrUpdateRendersProxyJump(t *testing.T) {
+	path := writeTempConfig(t, "")
+
+	plan, err := PlanAddOrUpdate(path, AliasSpec{
+		Alias:     "pngwin-pg-tunnel",
+		HostName:  "192.168.1.78",
+		User:      "farmer",
+		ProxyJump: "mdw0-vms-tailscale",
+	})
+	if err != nil {
+		t.Fatalf("PlanAddOrUpdate: %v", err)
+	}
+	got := string(plan.NewData)
+	for _, want := range []string{
+		"Host pngwin-pg-tunnel",
+		"HostName 192.168.1.78",
+		"User farmer",
+		"ProxyJump mdw0-vms-tailscale",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("planned config missing %q; got:\n%s", want, got)
+		}
 	}
 }
 

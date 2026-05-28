@@ -17,6 +17,12 @@ type AliasSpec struct {
 	Port           string
 	IdentityFile   string
 	IdentitiesOnly bool
+	// ProxyJump is the ssh ProxyJump option (chain of hosts to relay
+	// through). Added in Phase 2e of the `forward` feature so the
+	// builder's "Save as alias" action can persist a destination-only
+	// Host block whose ProxyJump captures the jump-hop choice.
+	// Existing alias specs leave this empty and behave as before.
+	ProxyJump string
 }
 
 type DeleteOptions struct {
@@ -220,6 +226,7 @@ func ValidateAliasSpec(spec AliasSpec, allowPattern bool) error {
 		"User":         spec.User,
 		"Port":         spec.Port,
 		"IdentityFile": spec.IdentityFile,
+		"ProxyJump":    spec.ProxyJump,
 	} {
 		if strings.ContainsAny(value, "\r\n") {
 			return fmt.Errorf("%s cannot contain a newline", name)
@@ -256,6 +263,7 @@ func normalizeAliasSpec(spec AliasSpec) AliasSpec {
 	spec.User = strings.TrimSpace(spec.User)
 	spec.Port = strings.TrimSpace(spec.Port)
 	spec.IdentityFile = strings.TrimSpace(spec.IdentityFile)
+	spec.ProxyJump = strings.TrimSpace(spec.ProxyJump)
 	return spec
 }
 
@@ -440,6 +448,10 @@ func (d *Document) specFromBlock(block DocumentBlock, alias string) AliasSpec {
 			if strings.EqualFold(value, "yes") || strings.EqualFold(value, "true") {
 				spec.IdentitiesOnly = true
 			}
+		case "proxyjump":
+			if spec.ProxyJump == "" {
+				spec.ProxyJump = value
+			}
 		}
 	}
 	return spec
@@ -533,6 +545,9 @@ func renderManagedLines(spec AliasSpec, indent string) []string {
 	if spec.IdentitiesOnly {
 		lines = append(lines, indent+"IdentitiesOnly yes")
 	}
+	if spec.ProxyJump != "" {
+		lines = append(lines, indent+"ProxyJump "+renderValue(spec.ProxyJump))
+	}
 	return lines
 }
 
@@ -587,7 +602,7 @@ func renderValue(value string) string {
 
 func isManagedOption(keyword string) bool {
 	switch keyword {
-	case "hostname", "user", "port", "identityfile", "identitiesonly":
+	case "hostname", "user", "port", "identityfile", "identitiesonly", "proxyjump":
 		return true
 	default:
 		return false

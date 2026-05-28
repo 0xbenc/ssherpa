@@ -282,6 +282,126 @@ func TestRunForwardStatusRequiresTarget(t *testing.T) {
 	assertContains(t, stderr.String(), "requires exactly one")
 }
 
+func TestRunForwardSelectFromCatalog(t *testing.T) {
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{0})
+
+	saved := state.StoredForward{
+		Name:       "pngwin-pg-tunnel",
+		SSHAlias:   "pgbox",
+		LocalBind:  "127.0.0.1",
+		LocalPort:  5433,
+		RemoteHost: "127.0.0.1",
+		RemotePort: 5432,
+	}
+	if err := state.WriteForward(stateDir, saved); err != nil {
+		t.Fatalf("seed forward: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"forward",
+		"--state-dir", stateDir,
+		"--select", "pngwin-pg-tunnel", // catalog name, not an SSH alias
+		"--config", config,
+		"--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got := strings.TrimSpace(readFile(t, logPath))
+	want := "-L 127.0.0.1:5433:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox"
+	if got != want {
+		t.Fatalf("fake-ssh argv = %q, want %q", got, want)
+	}
+
+	// The session record's Forward.SavedAlias should reflect the
+	// catalog name so `forward list` can show which named tunnel
+	// the row belongs to.
+	records, _ := state.ListRecords(stateDir)
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	if records[0].Forward == nil || records[0].Forward.SavedAlias != "pngwin-pg-tunnel" {
+		t.Fatalf("record.Forward.SavedAlias = %v, want pngwin-pg-tunnel", records[0].Forward)
+	}
+}
+
+func TestRunForwardSelectFromCatalogCLIOverrides(t *testing.T) {
+	// When --local AND --remote are explicit, the catalog is NOT
+	// consulted — the user can override saved defaults ad-hoc.
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{0})
+
+	saved := state.StoredForward{
+		Name: "pngwin-pg-tunnel", SSHAlias: "pgbox",
+		LocalBind: "127.0.0.1", LocalPort: 5433,
+		RemoteHost: "127.0.0.1", RemotePort: 5432,
+	}
+	_ = state.WriteForward(stateDir, saved)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"forward",
+		"--state-dir", stateDir,
+		"--select", "pgbox", // SSH alias, not catalog name
+		"--local", "9999", "--remote", "127.0.0.1:5432",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d; stderr=%q", code, stderr.String())
+	}
+	got := strings.TrimSpace(readFile(t, logPath))
+	if !strings.Contains(got, "127.0.0.1:9999:127.0.0.1:5432") {
+		t.Fatalf("CLI args did not override catalog: %q", got)
+	}
+}
+
+func TestRunForwardSelectCatalogUpdatesLastLaunched(t *testing.T) {
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, _ := writeFakeSSHFlaky(t, []int{0})
+
+	saved := state.StoredForward{
+		Name: "pngwin-pg-tunnel", SSHAlias: "pgbox",
+		LocalBind: "127.0.0.1", LocalPort: 5433,
+		RemoteHost: "127.0.0.1", RemotePort: 5432,
+	}
+	_ = state.WriteForward(stateDir, saved)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"forward",
+		"--state-dir", stateDir,
+		"--select", "pngwin-pg-tunnel",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run returned %d; stderr=%q", code, stderr.String())
+	}
+
+	after, err := state.ReadForward(stateDir, "pngwin-pg-tunnel")
+	if err != nil {
+		t.Fatalf("ReadForward after launch: %v", err)
+	}
+	if after.LastLaunchedAt == nil {
+		t.Fatalf("LastLaunchedAt not bumped after launch: %+v", after)
+	}
+}
+
 // TestRunForwardManagementLogPath verifies that a status query
 // surfaces the expected log file path even when the log file
 // doesn't exist yet (a status call against a freshly-seeded record).

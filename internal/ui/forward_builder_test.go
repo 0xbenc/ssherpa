@@ -169,6 +169,69 @@ func TestForwardBuilderCancelCtrlC(t *testing.T) {
 	}
 }
 
+func TestForwardBuilderSaveActionEntersSaveNameStep(t *testing.T) {
+	m := newTestBuilder(t)
+	// destination + defaults
+	m = updateBuilder(m, append(typeText("pg"), keyPress(tea.KeyEnter, ""))...)
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	// Summary: cursor on Run; need to move down 3× to reach "Save"
+	// (order is Run / Background / Print / Save / Cancel).
+	m = updateBuilder(m, keyPress(tea.KeyDown, ""))
+	m = updateBuilder(m, keyPress(tea.KeyDown, ""))
+	m = updateBuilder(m, keyPress(tea.KeyDown, ""))
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+
+	if m.step != builderStepSaveName {
+		t.Fatalf("step = %d, want save-name", m.step)
+	}
+	if m.saveNameBuf == "" {
+		t.Fatalf("expected default save name to be pre-filled, got empty")
+	}
+	if !strings.HasSuffix(m.saveNameBuf, "-tunnel") {
+		t.Fatalf("default save name = %q, want -tunnel suffix", m.saveNameBuf)
+	}
+
+	// Hit Enter on the default name to save.
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	if m.canceled {
+		t.Fatalf("canceled unexpectedly")
+	}
+	if m.result.Action != ForwardActionSave {
+		t.Fatalf("action = %q, want save", m.result.Action)
+	}
+	if m.result.SavedName == "" || !strings.HasSuffix(m.result.SavedName, "-tunnel") {
+		t.Fatalf("SavedName = %q, want non-empty with -tunnel suffix", m.result.SavedName)
+	}
+}
+
+func TestForwardBuilderSaveNameRejectsInvalid(t *testing.T) {
+	m := newTestBuilder(t)
+	m = updateBuilder(m, append(typeText("pg"), keyPress(tea.KeyEnter, ""))...)
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	// Move to Save action and enter.
+	m = updateBuilder(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyDown, ""), keyPress(tea.KeyDown, ""))
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	if m.step != builderStepSaveName {
+		t.Fatalf("step setup: %d, want save-name", m.step)
+	}
+	// Clear default and type something with a slash (invalid).
+	for i := 0; i < 20; i++ {
+		m = updateBuilder(m, keyPress(tea.KeyBackspace, ""))
+	}
+	m = updateBuilder(m, typeText("bad/name")...)
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))
+	if m.step != builderStepSaveName {
+		t.Fatalf("step advanced despite invalid name; got %d", m.step)
+	}
+	if m.saveNameError == "" {
+		t.Fatalf("expected error to be set")
+	}
+}
+
 func TestForwardResultSpecRendering(t *testing.T) {
 	cases := []struct {
 		name       string

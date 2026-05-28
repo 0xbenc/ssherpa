@@ -15,16 +15,26 @@ import (
 type ItemKind string
 
 const (
-	ItemAlias    ItemKind = "alias"
-	ItemAdd      ItemKind = "add"
-	ItemEdit     ItemKind = "edit"
-	ItemAuthkeys ItemKind = "authkeys"
-	ItemProxy    ItemKind = "proxy"
-	ItemJump     ItemKind = "jump"
-	ItemForward  ItemKind = "forward"
-	ItemSessions ItemKind = "sessions"
-	ItemTheme    ItemKind = "theme"
+	ItemAlias        ItemKind = "alias"
+	ItemAdd          ItemKind = "add"
+	ItemEdit         ItemKind = "edit"
+	ItemAuthkeys     ItemKind = "authkeys"
+	ItemProxy        ItemKind = "proxy"
+	ItemJump         ItemKind = "jump"
+	ItemForward      ItemKind = "forward"
+	ItemForwardSaved ItemKind = "forward_saved"
+	ItemSessions     ItemKind = "sessions"
+	ItemTheme        ItemKind = "theme"
 )
+
+// SavedForwardItem is the picker-facing projection of a saved
+// forward catalog entry. The caller (cli.runConnect) flattens
+// state.StoredForward records into this so the ui package stays
+// free of internal/state.
+type SavedForwardItem struct {
+	Name        string
+	Description string
+}
 
 type Item struct {
 	Kind        ItemKind
@@ -53,6 +63,15 @@ type PickOptions struct {
 type BuildItemsOptions struct {
 	SessionCount       int
 	ActiveSessionCount int
+	// SavedForwards renders as a top-level "Saved Forwards" group
+	// above the standard action rows so daily-use one-tap launches
+	// get prominence — the decision recorded in
+	// docs/forward-phase-2.md (#3).
+	SavedForwards []SavedForwardItem
+	// ActiveTunnels is informational — surfaced in the picker
+	// subtitle/summary so an operator can tell at a glance how
+	// many tunnels are currently live.
+	ActiveTunnels int
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -60,16 +79,33 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 }
 
 func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []Item {
-	items := []Item{
-		{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "write a safe Host stanza", Group: "Actions", Badge: "add"},
-		{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries", Group: "Actions", Badge: "edit"},
-		{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "build a ProxyJump route", Group: "Actions", Badge: "jump"},
-		{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port", Group: "Actions", Badge: "proxy"},
-		{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Description: "build an ssh -L tunnel through an alias", Group: "Actions", Badge: "forward"},
-		{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Description: "add, merge, replace, or delete login keys", Group: "Actions", Badge: "keys"},
-		{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Description: sessionDescription(opts), Group: "Actions", Badge: "map"},
-		{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Description: "preview and save UI palette", Group: "Actions", Badge: "theme"},
+	items := []Item{}
+
+	// Saved forwards lead — they're explicit "I set this up to
+	// reuse" entries, and grouping them above the action rows
+	// makes one-tap launches the dominant home-page UX. Decision
+	// #3 in docs/forward-phase-2.md.
+	for _, sf := range opts.SavedForwards {
+		items = append(items, Item{
+			Kind:        ItemForwardSaved,
+			Token:       sf.Name,
+			Title:       sf.Name,
+			Description: sf.Description,
+			Group:       "Saved Forwards",
+			Badge:       "forward",
+		})
 	}
+
+	items = append(items,
+		Item{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "write a safe Host stanza", Group: "Actions", Badge: "add"},
+		Item{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries", Group: "Actions", Badge: "edit"},
+		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "build a ProxyJump route", Group: "Actions", Badge: "jump"},
+		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port", Group: "Actions", Badge: "proxy"},
+		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Description: "build an ssh -L tunnel through an alias", Group: "Actions", Badge: "forward"},
+		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Description: "add, merge, replace, or delete login keys", Group: "Actions", Badge: "keys"},
+		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Description: sessionDescription(opts), Group: "Actions", Badge: "map"},
+		Item{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Description: "preview and save UI palette", Group: "Actions", Badge: "theme"},
+	)
 
 	for _, alias := range aliases {
 		items = append(items, Item{
@@ -535,6 +571,8 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleDanger
 	case ItemForward:
 		role = termstyle.RoleAccent
+	case ItemForwardSaved:
+		role = termstyle.RoleAccent
 	case ItemAuthkeys:
 		role = termstyle.RoleSecondary
 	case ItemSessions:
@@ -583,6 +621,8 @@ func selectionHint(item Item) string {
 		return "Starts a local SOCKS proxy through an SSH alias."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
+	case ItemForwardSaved:
+		return "Launches a saved port-forward tunnel from your ssherpa catalog."
 	case ItemAuthkeys:
 		return "Manages authorized_keys on this device."
 	case ItemSessions:

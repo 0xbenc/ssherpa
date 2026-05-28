@@ -32,6 +32,7 @@ const (
 	ForwardActionRun        ForwardAction = "run"
 	ForwardActionBackground ForwardAction = "background"
 	ForwardActionPrint      ForwardAction = "print"
+	ForwardActionSave       ForwardAction = "save"
 	ForwardActionCancel     ForwardAction = "cancel"
 )
 
@@ -47,6 +48,10 @@ type ForwardResult struct {
 	RemotePort int
 	Through    string
 	Action     ForwardAction
+	// SavedName is populated when Action == ForwardActionSave —
+	// the kebab-case identifier the user chose for the saved
+	// forward in stepSaveName. Empty for any other action.
+	SavedName string
 }
 
 // LocalSpec renders the local side as a "[bind:]port" string ready for
@@ -131,6 +136,11 @@ const (
 	builderStepRemote
 	builderStepThrough
 	builderStepSummary
+	// builderStepSaveName collects the kebab-case name for the
+	// saved forward. Entered only when the user picks "Save as
+	// alias…" on the summary screen; Enter finalizes the result
+	// with Action=ForwardActionSave and SavedName=<value>.
+	builderStepSaveName
 )
 
 // summaryAction is one row on the final action-pick screen. The Label
@@ -140,13 +150,15 @@ type summaryAction struct {
 	Label  string
 }
 
-// builderSummaryActions is the Phase 2d action set. Phase 2e adds a
-// "Save as alias…" entry above Cancel that funnels into a separate
-// step for naming the saved entry.
+// builderSummaryActions is the Phase 2e action set. Save as alias
+// transitions to stepSaveName to collect the name; the other
+// actions quit the program with the action recorded on
+// ForwardResult.Action.
 var builderSummaryActions = []summaryAction{
 	{ForwardActionRun, "Run (foreground supervised)"},
 	{ForwardActionBackground, "Run in background (detached, auto-reconnect)"},
 	{ForwardActionPrint, "Print command and exit"},
+	{ForwardActionSave, "Save as alias…"},
 	{ForwardActionCancel, "Cancel"},
 }
 
@@ -186,6 +198,13 @@ type forwardBuilderModel struct {
 
 	// Summary action picker.
 	summaryCursor int
+
+	// Save-name step (only entered from the summary's "Save as
+	// alias…" action). Default suggestion is derived from the
+	// destination alias in finalizeBeforeSummary.
+	saveNameBuf    string
+	saveNameCursor int
+	saveNameError  string
 
 	// End-state.
 	canceled bool
@@ -246,6 +265,8 @@ func (m forwardBuilderModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateThrough(msg)
 		case builderStepSummary:
 			return m.updateSummary(msg)
+		case builderStepSaveName:
+			return m.updateSaveName(msg)
 		}
 	}
 	return m, nil
@@ -543,10 +564,75 @@ func (m forwardBuilderModel) updateSummary(msg tea.KeyPressMsg) (tea.Model, tea.
 			m.canceled = true
 			return m, tea.Quit
 		}
+		if action == ForwardActionSave {
+			// Transition to the save-name step; pre-fill a sensible
+			// default kebab-name derived from the destination so a
+			// single Enter accepts it. The user can edit before Enter.
+			if m.saveNameBuf == "" {
+				m.saveNameBuf = defaultSaveName(m.destination.Name)
+				m.saveNameCursor = len([]rune(m.saveNameBuf))
+			}
+			m.step = builderStepSaveName
+			return m, nil
+		}
 		m.result.Action = action
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m forwardBuilderModel) updateSaveName(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	action, buf, cursor, errStr := updateTextInputState(msg, m.saveNameBuf, m.saveNameCursor, m.saveNameError, validateSaveName)
+	m.saveNameBuf = buf
+	m.saveNameCursor = cursor
+	m.saveNameError = errStr
+	switch action {
+	case textInputCancel:
+		m.canceled = true
+		return m, tea.Quit
+	case textInputBack:
+		m.step = builderStepSummary
+	case textInputAdvance:
+		m.result.Action = ForwardActionSave
+		m.result.SavedName = strings.TrimSpace(buf)
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// defaultSaveName turns an SSH alias into a sensible default catalog
+// name. We don't bother with sophisticated kebab-casing — the alias
+// itself is usually already a valid identifier; just append "-tunnel"
+// if it isn't an obvious tunnel name already.
+func defaultSaveName(alias string) string {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return "tunnel"
+	}
+	if strings.HasSuffix(alias, "-tunnel") || strings.HasSuffix(alias, "_tunnel") {
+		return alias
+	}
+	return alias + "-tunnel"
+}
+
+// validateSaveName mirrors the file-system rules state.ValidateForwardName
+// applies on the persistence side. Duplicated (not imported) to keep
+// the ui package free of internal/state.
+func validateSaveName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("name is required")
+	}
+	if name != trimmed {
+		return fmt.Errorf("no leading or trailing whitespace")
+	}
+	if strings.ContainsAny(name, " \t\r\n\x00/\\") {
+		return fmt.Errorf("no whitespace, slashes, or NUL")
+	}
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("cannot start with a dot")
+	}
+	return nil
 }
 
 func (m forwardBuilderModel) View() tea.View {
@@ -572,6 +658,8 @@ func (m forwardBuilderModel) View() tea.View {
 		m.viewThrough(&b, theme, width)
 	case builderStepSummary:
 		m.viewSummary(&b, theme, width)
+	case builderStepSaveName:
+		m.viewSaveName(&b, theme, width)
 	}
 
 	b.WriteByte('\n')
@@ -767,6 +855,9 @@ func buildForwardPreview(r ForwardResult) string {
 
 func stepBreadcrumb(step builderStep) string {
 	steps := []string{"destination", "local", "remote", "through", "summary"}
+	if step == builderStepSaveName {
+		steps = append(steps, "save name")
+	}
 	highlighted := []string{}
 	for i, s := range steps {
 		if i == int(step) {
@@ -788,9 +879,22 @@ func stepFooter(step builderStep) string {
 		return "enter select  /  up/down move  /  type to filter  /  shift+tab back  /  esc cancel"
 	case builderStepSummary:
 		return "enter fire  /  up/down move  /  shift+tab back  /  esc cancel"
+	case builderStepSaveName:
+		return "enter save  /  shift+tab back to summary  /  type to edit  /  esc cancel"
 	default:
 		return ""
 	}
+}
+
+func (m forwardBuilderModel) viewSaveName(b *strings.Builder, theme pickerTheme, width int) {
+	b.WriteString("  ")
+	b.WriteString(theme.summary("Save this forward to ssherpa's catalog under what name?"))
+	b.WriteByte('\n')
+	b.WriteString("  ")
+	b.WriteString(theme.muted("(kebab-case; this becomes the handle for `ssherpa forward stop NAME`)"))
+	b.WriteByte('\n')
+	b.WriteByte('\n')
+	renderInput(b, theme, "name", m.saveNameBuf, m.saveNameCursor, m.saveNameError, width)
 }
 
 // windowRange picks a viewport range [from, to) that keeps the cursor

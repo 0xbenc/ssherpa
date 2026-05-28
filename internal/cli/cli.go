@@ -243,6 +243,13 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
 	case ui.ItemForward:
 		return runForwardBuilder(flags, inventory, stdout, stderr)
+	case ui.ItemForwardSaved:
+		// One-tap launch: the catalog lookup precedence in
+		// runForwardWith fills in --local/--remote/--through from
+		// the saved spec when only --select is provided.
+		args := []string{"--select", item.Token}
+		args = append(args, connectFlagsAsForwardArgs(flags)...)
+		return runForward(args, stdout, stderr)
 	case ui.ItemAuthkeys:
 		return runAuthkeys(nil, stdout, stderr)
 	case ui.ItemSessions:
@@ -527,10 +534,13 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		return ui.Item{Kind: ui.ItemAlias, Token: alias.Name, Title: alias.Name}, *alias, true, 0
 	}
 
-	sessionCount, activeSessions := pickerSessionCounts(flags.StateDir)
+	sessionCount, activeSessions, activeTunnels := pickerSessionCounts(flags.StateDir)
+	savedForwards := pickerSavedForwards(flags.StateDir)
 	item, ok, err := ui.Pick(context.Background(), ui.BuildItemsWithOptions(inventory.Aliases, ui.BuildItemsOptions{
 		SessionCount:       sessionCount,
 		ActiveSessionCount: activeSessions,
+		SavedForwards:      savedForwards,
+		ActiveTunnels:      activeTunnels,
 	}), ui.PickOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
@@ -540,7 +550,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		ThemeFile:   flags.ThemeFile,
 		Title:       "ssherpa",
 		Subtitle:    pickerMode(flags),
-		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions),
+		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, activeTunnels),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -573,13 +583,13 @@ func pickerMode(flags connectFlags) string {
 	}
 }
 
-func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, sessionCount int, activeSessions int) []string {
+func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, sessionCount int, activeSessions int, activeTunnels int) []string {
 	var summary []string
 	warnings := len(inventory.Diagnostics)
 	for _, alias := range inventory.Aliases {
 		warnings += len(alias.Warnings)
 	}
-	summary = append(summary, fmt.Sprintf("%d hosts  %d warning(s)  %d active session(s)", len(inventory.Aliases), warnings, activeSessions))
+	summary = append(summary, fmt.Sprintf("%d hosts  %d warning(s)  %d active session(s)  %d active tunnel(s)", len(inventory.Aliases), warnings, activeSessions, activeTunnels))
 	if graph != nil && graph.RootPath != "" {
 		summary = append(summary, "config  "+graph.RootPath)
 	}
@@ -619,21 +629,59 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 	return summary
 }
 
-func pickerSessionCounts(stateDir string) (total int, active int) {
+func pickerSessionCounts(stateDir string) (total int, active int, tunnels int) {
 	dir, err := state.ResolveDir(stateDir)
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	records, err := state.ListRecords(dir)
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	for _, record := range records {
 		if record.Status() == "active" {
 			active++
+			if record.Kind == state.KindTunnel && state.ProcessAlive(record) {
+				tunnels++
+			}
 		}
 	}
-	return len(records), active
+	return len(records), active, tunnels
+}
+
+// pickerSavedForwards flattens the StoredForward catalog into the
+// picker's lightweight projection. Failures are silent — the home
+// page should always render, even if the forwards directory is
+// missing or unreadable.
+func pickerSavedForwards(stateDir string) []ui.SavedForwardItem {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	forwards, err := state.ListForwards(dir)
+	if err != nil || len(forwards) == 0 {
+		return nil
+	}
+	out := make([]ui.SavedForwardItem, 0, len(forwards))
+	for _, f := range forwards {
+		desc := fmt.Sprintf("%s:%d -> %s:%d", endpointBindOrLoopback(f.LocalBind), f.LocalPort, f.RemoteHost, f.RemotePort)
+		if f.Through != "" {
+			desc += " via " + f.Through
+		}
+		desc += "  (alias " + f.SSHAlias + ")"
+		out = append(out, ui.SavedForwardItem{
+			Name:        f.Name,
+			Description: desc,
+		})
+	}
+	return out
+}
+
+func endpointBindOrLoopback(bind string) string {
+	if bind == "" {
+		return "127.0.0.1"
+	}
+	return bind
 }
 
 type inventoryFlags struct {
