@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -184,6 +186,55 @@ func TestRunSupervisedDetachedMode(t *testing.T) {
 	}
 	if rec.ExitCode == nil || *rec.ExitCode != 0 {
 		t.Fatalf("record.ExitCode = %v, want 0", rec.ExitCode)
+	}
+}
+
+// TestForwardSignalsCallsPullRopeOnExternalTerminate is the regression
+// guard for the bug where `ssherpa forward stop` would SIGHUP the
+// daemon but the daemon would respawn ssh anyway. Root cause: ssh
+// catches SIGHUP and exits cleanly with code 255, which shouldRetry
+// (correctly, for a real network drop) treated as transient — so the
+// retry loop kept going without the supervisor knowing the human asked
+// for a stop. The fix routes SIGHUP/SIGTERM/SIGQUIT through pullRope
+// so the retry loop's ropePulled check breaks out.
+//
+// The test sends SIGHUP to its own process (forwardSignals subscribes
+// process-wide via signal.Notify, so the signal reaches its handler),
+// then asserts the supplied pullRope callback was invoked.
+func TestForwardSignalsCallsPullRopeOnExternalTerminate(t *testing.T) {
+	cmd := exec.Command("sleep", "5")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_, _ = cmd.Process.Wait()
+	})
+
+	pulled := make(chan struct{}, 1)
+	pullRope := func() {
+		select {
+		case pulled <- struct{}{}:
+		default:
+		}
+	}
+
+	stop := forwardSignals(nil, nil, cmd, pullRope)
+	defer stop()
+
+	// Send SIGHUP to our own pid; signal.Notify subscribed in
+	// forwardSignals routes it to the handler goroutine.
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("self SIGHUP: %v", err)
+	}
+
+	select {
+	case <-pulled:
+		// expected — fix works
+	case <-time.After(2 * time.Second):
+		t.Fatalf("pullRope was not invoked within 2s after SIGHUP — daemon would have respawned ssh")
 	}
 }
 

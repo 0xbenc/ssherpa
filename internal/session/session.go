@@ -319,6 +319,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			stderr:      stderr,
 			now:         now,
 			onPtmxReady: startInput,
+			pullRope:    pullRope,
 		}
 		waitErr := attemptOnce(ac)
 		lastWaitErr = waitErr
@@ -1069,7 +1070,7 @@ func truncateOverlayLine(value string, width int) string {
 	return string(runes[:width-1]) + "~"
 }
 
-func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd) func() {
+func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd, pullRope func()) func() {
 	resizePTY(stdin, ptmx)
 
 	sigCh := make(chan os.Signal, 8)
@@ -1090,11 +1091,20 @@ func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd) func() {
 						_ = proc.Process.Signal(sig)
 					}
 				case syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT:
-					// The supervisor was asked to terminate. Tear down the whole
-					// child process group and guarantee we exit so the deferred
-					// terminal restore actually runs — SIGQUIT in particular would
-					// otherwise terminate ssherpa with the tty stuck in raw mode.
-					if proc.Process != nil {
+					// External termination request — for foreground
+					// supervisors this is the user's terminal driver, for
+					// the daemon it's `ssherpa forward stop` calling
+					// syscall.Kill. Route through pullRope so the
+					// supervisor marks ropePulled and the retry loop
+					// breaks out *without* respawning ssh. Without this,
+					// ssh's own signal handler catches SIGHUP and exits
+					// cleanly with code 255, which shouldRetry would
+					// (correctly, for a real network drop) treat as
+					// transient — so the daemon would just keep spawning
+					// new ssh processes against the user's wishes.
+					if pullRope != nil {
+						pullRope()
+					} else if proc.Process != nil {
 						signalSessionGroup(proc.Process, syscall.SIGHUP)
 						go func() {
 							timer := time.NewTimer(escapeRopeKillGrace)
@@ -1232,6 +1242,11 @@ type attemptContext struct {
 	// test's stdin bytes could race ahead of the first set and get
 	// dropped by ptmxRef.write's nil fallback.
 	onPtmxReady func()
+	// pullRope, if non-nil, is the supervisor's escape-rope handle.
+	// forwardSignals invokes it on external SIGTERM/SIGHUP/SIGQUIT
+	// so the retry loop's ropePulled check trips and the daemon
+	// doesn't immediately respawn ssh after the kill.
+	pullRope func()
 }
 
 // attemptOnce spawns the SSH process once under a fresh PTY, swaps the
@@ -1283,7 +1298,7 @@ func attemptOnce(ac attemptContext) error {
 		Process:  proc.Process,
 		Now:      ac.now,
 	})
-	stopSignals := forwardSignals(ac.stdin, ptmx, proc)
+	stopSignals := forwardSignals(ac.stdin, ptmx, proc, ac.pullRope)
 
 	waitErr := proc.Wait()
 	stopWatchdog()
