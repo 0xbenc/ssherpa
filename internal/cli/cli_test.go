@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -766,6 +767,161 @@ Host bastion
 			}
 			assertContains(t, stderr.String(), tt.want)
 		})
+	}
+}
+
+func TestRunForwardReconnectsOnTransientExit(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	// Two attempts exit 255 (transient network error), third succeeds.
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{255, 255, 0})
+	stateDir := t.TempDir()
+
+	code := Run([]string{
+		"forward", "--state-dir", stateDir,
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--reconnect-backoff", "1ms", "--reconnect-max-backoff", "1ms",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := countLines(readFile(t, logPath)); got != 3 {
+		t.Fatalf("fake-ssh invoked %d times, want 3 (two transient retries + one success); log=%q", got, readFile(t, logPath))
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1; want the same SessionRecord.ID across retries", len(records))
+	}
+	rec := records[0]
+	if rec.Forward == nil {
+		t.Fatalf("record.Forward is nil")
+	}
+	if rec.Forward.RetryCount < 2 {
+		t.Fatalf("record.Forward.RetryCount = %d, want >= 2", rec.Forward.RetryCount)
+	}
+	var schedCount, attemptCount int
+	for _, ev := range rec.Events {
+		switch ev.Type {
+		case "reconnect_scheduled":
+			schedCount++
+		case "reconnect_gave_up":
+			t.Fatalf("got reconnect_gave_up event despite eventual success: %+v", ev)
+		}
+		_ = attemptCount
+	}
+	if schedCount != 2 {
+		t.Fatalf("reconnect_scheduled events = %d, want 2; events=%+v", schedCount, rec.Events)
+	}
+}
+
+func TestRunForwardGivesUpOnBindFailure(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	// exit 1 mimics ExitOnForwardFailure (local port in use).
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{1})
+	stateDir := t.TempDir()
+
+	code := Run([]string{
+		"forward", "--state-dir", stateDir,
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--reconnect-backoff", "1ms",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1 (give-up on bind failure); stderr=%q", code, stderr.String())
+	}
+	if got := countLines(readFile(t, logPath)); got != 1 {
+		t.Fatalf("fake-ssh invoked %d times, want 1 (no retry on bind failure)", got)
+	}
+}
+
+func TestRunForwardRespectsNoReconnect(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	// exit 255 would normally retry, but --no-reconnect overrides.
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{255})
+	stateDir := t.TempDir()
+
+	code := Run([]string{
+		"forward", "--state-dir", stateDir,
+		"--no-reconnect",
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 255 {
+		t.Fatalf("Run returned %d, want 255; stderr=%q", code, stderr.String())
+	}
+	if got := countLines(readFile(t, logPath)); got != 1 {
+		t.Fatalf("fake-ssh invoked %d times, want 1 (--no-reconnect)", got)
+	}
+}
+
+func TestRunForwardRespectsReconnectMaxCap(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	// Every attempt fails with 255 (transient); cap at 2 attempts.
+	fakeSSH, logPath := writeFakeSSHFlaky(t, []int{255})
+	stateDir := t.TempDir()
+
+	code := Run([]string{
+		"forward", "--state-dir", stateDir,
+		"--reconnect-max", "2",
+		"--reconnect-backoff", "1ms", "--reconnect-max-backoff", "1ms",
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--config", config, "--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 255 {
+		t.Fatalf("Run returned %d, want 255; stderr=%q", code, stderr.String())
+	}
+	if got := countLines(readFile(t, logPath)); got != 2 {
+		t.Fatalf("fake-ssh invoked %d times, want exactly 2 (capped); log=%q", got, readFile(t, logPath))
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	var gaveUp bool
+	for _, ev := range records[0].Events {
+		if ev.Type == "reconnect_gave_up" {
+			gaveUp = true
+			break
+		}
+	}
+	if !gaveUp {
+		t.Fatalf("expected reconnect_gave_up event after hitting cap; events=%+v", records[0].Events)
 	}
 }
 
@@ -1621,6 +1777,56 @@ func writeFakeSSH(t *testing.T, exitCode int) (string, string) {
 		t.Fatalf("os.WriteFile returned error: %v", err)
 	}
 	return path, logPath
+}
+
+// writeFakeSSHFlaky drops a shell script whose Nth invocation exits
+// with exitCodes[N-1]. Once the slice is exhausted, every subsequent
+// invocation uses the final element. It also appends each invocation's
+// argv (space-separated) to argv.log so reconnect tests can count
+// attempts. Useful for reconnect scenarios where the first few attempts
+// should fail (e.g. 255, 255) and a later one should succeed (0).
+func writeFakeSSHFlaky(t *testing.T, exitCodes []int) (string, string) {
+	t.Helper()
+	if len(exitCodes) == 0 {
+		t.Fatalf("writeFakeSSHFlaky needs at least one exit code")
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "argv.log")
+	countPath := filepath.Join(dir, "invocation-count")
+	path := filepath.Join(dir, "fake-ssh")
+
+	var caseBranches strings.Builder
+	for i, code := range exitCodes {
+		fmt.Fprintf(&caseBranches, "  %d) exit %d ;;\n", i+1, code)
+	}
+	// Final fallback: anything past the explicit cases uses the last
+	// exit code so a flaky-then-stable script reads naturally.
+	fmt.Fprintf(&caseBranches, "  *) exit %d ;;\n", exitCodes[len(exitCodes)-1])
+
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"N=$(cat " + shellQuote(countPath) + " 2>/dev/null || echo 0)\n" +
+		"N=$((N + 1))\n" +
+		"printf '%s' \"$N\" > " + shellQuote(countPath) + "\n" +
+		"printf '%s\\n' 'fake ssh stdout'\n" +
+		"case \"$N\" in\n" +
+		caseBranches.String() +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+	return path, logPath
+}
+
+// countLines returns the number of newline-terminated lines in s.
+// Used by reconnect tests to count attempt invocations recorded in
+// the fake-ssh argv log.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n")
 }
 
 func readFile(t *testing.T, path string) string {

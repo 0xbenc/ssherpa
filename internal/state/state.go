@@ -40,6 +40,7 @@ type SessionRecord struct {
 	Hops             []string       `json:"hops,omitempty"`
 	SSHArgv          []string       `json:"ssh_argv,omitempty"`
 	Kind             string         `json:"kind,omitempty"`
+	Forward          *ForwardSpec   `json:"forward,omitempty"`
 	StartedAt        time.Time      `json:"started_at"`
 	EndedAt          *time.Time     `json:"ended_at,omitempty"`
 	LocalPID         int            `json:"local_pid"`
@@ -49,6 +50,34 @@ type SessionRecord struct {
 	Events           []SessionEvent `json:"events,omitempty"`
 	DisconnectReason string         `json:"disconnect_reason,omitempty"`
 	StateVersion     int            `json:"state_version"`
+}
+
+// ForwardSpec captures the runtime shape of a port-forward tunnel
+// session. It is set on SessionRecord.Forward when Kind == KindTunnel
+// so the management commands (`ssherpa forward list/status/stop`) and
+// the session-map overlay can show the tunnel's endpoints without
+// re-parsing SSHArgv. The struct is intentionally additive — the
+// json omitempty on every field keeps backward compatibility with
+// records written before the field existed.
+type ForwardSpec struct {
+	LocalBind  string `json:"local_bind,omitempty"`
+	LocalPort  int    `json:"local_port,omitempty"`
+	RemoteHost string `json:"remote_host,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"`
+	Through    string `json:"through,omitempty"`
+	// SavedAlias is the catalog name when the forward was launched
+	// from a persisted "saved forward" rather than ad-hoc CLI args.
+	// Phase 2e populates this; earlier phases leave it empty.
+	SavedAlias string `json:"saved_alias,omitempty"`
+	// Detached is true when the session is running under the
+	// background daemon supervisor (Phase 2b) rather than the
+	// foreground supervised PTY.
+	Detached bool `json:"detached,omitempty"`
+	// RetryCount is incremented each time the underlying ssh
+	// process is restarted by the reconnect loop. 0 means the
+	// initial spawn is still running (or the session exited
+	// without a restart).
+	RetryCount int `json:"retry_count,omitempty"`
 }
 
 func (r SessionRecord) Status() string {

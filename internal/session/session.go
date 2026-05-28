@@ -52,6 +52,11 @@ type Metadata struct {
 	// empty Kind as interactive for backward compatibility with records
 	// written before this field existed.
 	Kind string
+	// Forward, when non-nil, captures the runtime port-forward spec
+	// for a tunnel-kind session. It is copied onto the session record
+	// so the management commands (`ssherpa forward list/status/stop`)
+	// can read local/remote/through without re-parsing SSHArgv.
+	Forward *state.ForwardSpec
 }
 
 type Options struct {
@@ -63,10 +68,62 @@ type Options struct {
 	Now       func() time.Time
 	Watchdog  WatchdogOptions
 	Composer  ComposerOptions
+	Reconnect ReconnectOptions
 	Theme     termstyle.Theme
 	ThemeName string
 	ThemeFile string
 	NoColor   bool
+}
+
+// ReconnectOptions controls the retry-with-backoff behavior used when a
+// supervised tunnel session (Kind == state.KindTunnel) loses its
+// underlying SSH process. Interactive sessions ignore these — they are
+// one-shot regardless of Reconnect settings.
+//
+// Default policy (DefaultReconnect()):
+//   - 100 attempts cap (safety belt against a misconfigured tunnel
+//     churning forever; pass MaxAttempts == 0 explicitly to opt into
+//     unlimited).
+//   - Capped exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s, 60s, …
+//   - Give up immediately on ssh exit code 1 (bind failure /
+//     ExitOnForwardFailure trigger) and on spawn failures — these are
+//     not transient.
+type ReconnectOptions struct {
+	// Enabled gates the retry loop entirely. False = single attempt
+	// regardless of failure mode. True = retry per the policy below.
+	Enabled bool
+	// MaxAttempts caps the number of spawn attempts. 0 means
+	// unlimited; any positive value bounds the loop.
+	MaxAttempts int
+	// InitialBackoff is the wait between attempt 1 and attempt 2.
+	// Each subsequent retry doubles the wait, capped at MaxBackoff.
+	InitialBackoff time.Duration
+	// MaxBackoff caps the exponentially-grown wait.
+	MaxBackoff time.Duration
+	// Multiplier is the per-attempt growth factor. Defaults to 2.0
+	// when zero.
+	Multiplier float64
+}
+
+const (
+	DefaultReconnectMaxAttempts    = 100
+	DefaultReconnectInitialBackoff = 1 * time.Second
+	DefaultReconnectMaxBackoff     = 60 * time.Second
+	DefaultReconnectMultiplier     = 2.0
+)
+
+// DefaultReconnect returns a ReconnectOptions populated with the
+// Phase 2a defaults. Disabled by default — callers must opt in (the
+// `forward` runner does this automatically when Metadata.Kind ==
+// state.KindTunnel).
+func DefaultReconnect() ReconnectOptions {
+	return ReconnectOptions{
+		Enabled:        false,
+		MaxAttempts:    DefaultReconnectMaxAttempts,
+		InitialBackoff: DefaultReconnectInitialBackoff,
+		MaxBackoff:     DefaultReconnectMaxBackoff,
+		Multiplier:     DefaultReconnectMultiplier,
+	}
 }
 
 type ComposerOptions struct {
@@ -148,9 +205,6 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	record := buildRecord(command, metadata, now(), env)
 	var recordMu sync.Mutex
 
-	proc := exec.Command(command.Argv[0], command.Argv[1:]...)
-	proc.Env = sessionEnv(env, record)
-
 	restore, err := makeRawIfTerminal(stdin)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
@@ -158,32 +212,27 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	}
 	defer restore()
 
-	ptmx, err := pty.Start(proc)
-	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: run %s: %v\n", sshcmd.QuoteArgv(command.Argv), err)
-		return 1
-	}
-	defer ptmx.Close()
+	// The supervisor swaps these per attempt as the reconnect loop
+	// rotates the ssh process. copyInput captures ptmxRef once at
+	// start and writes through whichever ptmx is current.
+	ptmxRefShared := newPtmxRef()
+	procRefShared := newProcRef()
 
-	record.SSHPID = proc.Process.Pid
-	if err := writeRecordLocked(stateDir, &record, &recordMu); err != nil {
-		_ = proc.Process.Kill()
-		_ = proc.Wait()
-		fmt.Fprintf(stderr, "ssherpa: write session record: %v\n", err)
-		return 1
-	}
-
-	// pullRope tears down this (outermost) supervised session and, by killing
-	// the ssh client, drops its connection so the remote sshd HUPs the next
-	// layer down — collapsing every nested session from the top. See
-	// docs/escape-rope.md.
+	// pullRope tears down this (outermost) supervised session by
+	// signaling the current ssh client; the remote sshd then HUPs the
+	// next layer down, collapsing every nested session from the top.
+	// With the reconnect loop, pullRope reads procRefShared to reach
+	// whichever attempt is live — and ropePulledCh wakes the loop out
+	// of a mid-backoff sleep. See docs/escape-rope.md.
 	ropeCtx, ropeCancel := context.WithCancel(context.Background())
 	defer ropeCancel()
 	var ropePulled atomic.Bool
+	ropePulledCh := make(chan struct{})
 	pullRope := func() {
 		if !ropePulled.CompareAndSwap(false, true) {
 			return
 		}
+		close(ropePulledCh)
 		recordMu.Lock()
 		record.DisconnectReason = EscapeRopeReason
 		record.Events = append(record.Events, state.SessionEvent{
@@ -193,53 +242,112 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		})
 		_ = state.WriteRecord(stateDir, record)
 		recordMu.Unlock()
-		if proc.Process == nil {
+		proc := procRefShared.get()
+		if proc == nil {
+			// Mid-backoff: no live process. The retry loop wakes on
+			// ropePulledCh below and exits without restarting.
 			return
 		}
-		// SIGHUP the whole process group, not just the ssh client PID: under a
-		// PTY the child is a session leader (pgid == pid), so a wrapper such as
-		// `kitten ssh` and the ssh it forks share the group and both must die or
-		// we leak an orphaned connection. Force-kill the group after a short
-		// grace; cancel that timer once the child has actually exited.
-		signalSessionGroup(proc.Process, syscall.SIGHUP)
-		go func() {
+		// SIGHUP the whole process group, not just the ssh client PID:
+		// under a PTY the child is a session leader (pgid == pid), so
+		// a wrapper such as `kitten ssh` and the ssh it forks share
+		// the group and both must die or we leak an orphaned
+		// connection. Force-kill the group after a short grace;
+		// cancel that timer once the supervisor has actually returned.
+		signalSessionGroup(proc, syscall.SIGHUP)
+		go func(p *os.Process) {
 			timer := time.NewTimer(escapeRopeKillGrace)
 			defer timer.Stop()
 			select {
 			case <-ropeCtx.Done():
 			case <-timer.C:
-				signalSessionGroup(proc.Process, syscall.SIGKILL)
+				signalSessionGroup(p, syscall.SIGKILL)
 			}
-		}()
+		}(proc)
 	}
 
 	output := &lockedWriter{w: stdout}
-	done := make(chan struct{})
-	outputDone := make(chan struct{})
-	go copyInput(ptmx, stdin, output, stateDir, record.ID, opts.Composer, theme, pullRope, done)
-	go func() {
-		_, _ = io.Copy(output, ptmx)
-		close(outputDone)
-	}()
-	stopWatchdog := startLatencyWatchdog(latencyWatchdogConfig{
-		Options:  opts.Watchdog,
-		StateDir: stateDir,
-		Record:   &record,
-		RecordMu: &recordMu,
-		Stderr:   stderr,
-		Process:  proc.Process,
-		Now:      now,
-	})
+	inputDone := make(chan struct{})
+	defer close(inputDone)
+	var inputStarted atomic.Bool
+	startInput := func() {
+		if !inputStarted.CompareAndSwap(false, true) {
+			return
+		}
+		go copyInput(ptmxRefShared, stdin, output, stateDir, record.ID, opts.Composer, theme, pullRope, inputDone)
+	}
 
-	stopSignals := forwardSignals(stdin, ptmx, proc)
-	waitErr := proc.Wait()
-	close(done)
-	stopWatchdog()
-	stopSignals()
-	_ = ptmx.Close()
-	<-outputDone
+	var lastWaitErr error
+	for attempt := 1; ; attempt++ {
+		if ropePulled.Load() {
+			break
+		}
+		ac := attemptContext{
+			command:     command,
+			stateDir:    stateDir,
+			record:      &record,
+			recordMu:    &recordMu,
+			env:         env,
+			stdin:       stdin,
+			ptmxRef:     ptmxRefShared,
+			procRef:     procRefShared,
+			output:      output,
+			watchdog:    opts.Watchdog,
+			stderr:      stderr,
+			now:         now,
+			onPtmxReady: startInput,
+		}
+		waitErr := attemptOnce(ac)
+		lastWaitErr = waitErr
+		if attempt == 1 && isSpawnFailure(waitErr) {
+			// Couldn't even start the first SSH process — surface the
+			// raw spawn error like the pre-reconnect supervisor did.
+			fmt.Fprintf(stderr, "ssherpa: run %s: %v\n", sshcmd.QuoteArgv(command.Argv), waitErr)
+			return 1
+		}
+		if ropePulled.Load() {
+			break
+		}
+		if waitErr == nil {
+			// Clean exit — the reconnect retry loop is for *failed*
+			// attempts; a successful one ends the supervisor.
+			break
+		}
+		if !shouldRetry(metadata.Kind, opts.Reconnect, waitErr, attempt) {
+			if attempt > 1 {
+				recordMu.Lock()
+				record.Events = append(record.Events, state.SessionEvent{
+					Time:    now().UTC(),
+					Type:    "reconnect_gave_up",
+					Message: fmt.Sprintf("attempt %d: %v", attempt, waitErr),
+				})
+				_ = state.WriteRecord(stateDir, record)
+				recordMu.Unlock()
+			}
+			break
+		}
+		backoff := computeBackoff(attempt, opts.Reconnect)
+		recordMu.Lock()
+		record.Events = append(record.Events, state.SessionEvent{
+			Time:    now().UTC(),
+			Type:    "reconnect_scheduled",
+			Message: fmt.Sprintf("attempt %d failed: %v; retrying in %s", attempt, waitErr, backoff),
+		})
+		if record.Forward != nil {
+			record.Forward.RetryCount = attempt
+		}
+		_ = state.WriteRecord(stateDir, record)
+		recordMu.Unlock()
+		fmt.Fprintf(stderr, "\r\nssherpa: tunnel attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ropePulledCh:
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
 
-	exitCode := exitCodeFromError(waitErr)
+	exitCode := exitCodeFromError(lastWaitErr)
 	if ropePulled.Load() {
 		exitCode = EscapeRopeExitCode
 		fmt.Fprint(stderr, "\r\nssherpa: escape rope pulled — disconnecting all downstream sessions\r\n")
@@ -257,6 +365,18 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 	}
 	return exitCode
+}
+
+// isSpawnFailure reports whether an error from attemptOnce came from
+// the process never starting (pty.Start failed) rather than from a
+// completed Wait. Wait failures wrap *exec.ExitError; spawn failures
+// surface the underlying os/exec error directly.
+func isSpawnFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	return !errors.As(err, &exitErr)
 }
 
 func resolveSessionTheme(opts Options, env []string) (termstyle.Theme, error) {
@@ -280,6 +400,11 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		route = append(route, metadata.TargetAlias)
 	}
 
+	var forward *state.ForwardSpec
+	if metadata.Forward != nil {
+		copyFwd := *metadata.Forward
+		forward = &copyFwd
+	}
 	return state.SessionRecord{
 		ID:           state.NewSessionID(started),
 		ParentID:     parentID,
@@ -289,17 +414,12 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		Hops:         append([]string(nil), metadata.Hops...),
 		SSHArgv:      append([]string(nil), command.Argv...),
 		Kind:         metadata.Kind,
+		Forward:      forward,
 		StartedAt:    started.UTC(),
 		LocalPID:     os.Getpid(),
 		RunnerMode:   RunnerModeSupervised,
 		StateVersion: state.StateVersion,
 	}
-}
-
-func writeRecordLocked(stateDir string, record *state.SessionRecord, mu *sync.Mutex) error {
-	mu.Lock()
-	defer mu.Unlock()
-	return state.WriteRecord(stateDir, *record)
 }
 
 func sessionEnv(env []string, record state.SessionRecord) []string {
@@ -358,7 +478,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, pullRope func(), done <-chan struct{}) {
+func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, pullRope func(), done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -370,9 +490,11 @@ func copyInput(ptmx *os.File, stdin *os.File, output *lockedWriter, stateDir str
 			case buf[0] == OverlayHotkey:
 				showSessionOverlay(stdin, output, stateDir, currentID, theme, pullRope, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
-				showComposer(stdin, output, ptmx, composer, theme)
+				if ptmx := ptmxRef.get(); ptmx != nil {
+					showComposer(stdin, output, ptmx, composer, theme)
+				}
 			default:
-				_, _ = ptmx.Write(buf[:n])
+				_, _ = ptmxRef.write(buf[:n])
 			}
 		}
 		if err != nil {
@@ -997,4 +1119,216 @@ func writerOrDiscard(w io.Writer) io.Writer {
 		return io.Discard
 	}
 	return w
+}
+
+// ptmxRef is a mutex-protected pointer to the current PTY master.
+// copyInput captures the ref once at supervisor start, then each retry
+// attempt swaps the underlying ptmx via set(). Writes during the
+// reconnect transition (when ref is nil) silently no-op so the input
+// loop never blocks.
+type ptmxRef struct {
+	mu sync.RWMutex
+	f  *os.File
+}
+
+func newPtmxRef() *ptmxRef { return &ptmxRef{} }
+
+func (r *ptmxRef) set(f *os.File) {
+	r.mu.Lock()
+	r.f = f
+	r.mu.Unlock()
+}
+
+func (r *ptmxRef) get() *os.File {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.f
+}
+
+func (r *ptmxRef) write(p []byte) (int, error) {
+	r.mu.RLock()
+	f := r.f
+	r.mu.RUnlock()
+	if f == nil {
+		// Mid-reconnect: drop the bytes rather than block. A tunnel
+		// session has nothing to type at anyway (-N suppresses the
+		// remote shell); an interactive session would only see this
+		// if the supervisor were retrying, which we don't do today.
+		return len(p), nil
+	}
+	return f.Write(p)
+}
+
+// procRef holds the current attempt's *os.Process so that signal-aware
+// callers (pullRope) can reach the live ssh client even after the
+// reconnect loop has swapped it.
+type procRef struct {
+	mu sync.RWMutex
+	p  *os.Process
+}
+
+func newProcRef() *procRef { return &procRef{} }
+
+func (r *procRef) set(p *os.Process) {
+	r.mu.Lock()
+	r.p = p
+	r.mu.Unlock()
+}
+
+func (r *procRef) get() *os.Process {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.p
+}
+
+// attemptContext is the per-attempt parameter bundle handed to
+// attemptOnce by the supervisor loop. Everything in here is either
+// per-attempt scratch (proc, ptmx) or a long-lived pointer that the
+// shared state (record, refs) writes through.
+type attemptContext struct {
+	command  sshcmd.Command
+	stateDir string
+	record   *state.SessionRecord
+	recordMu *sync.Mutex
+	env      []string
+	stdin    *os.File
+	ptmxRef  *ptmxRef
+	procRef  *procRef
+	output   *lockedWriter
+	watchdog WatchdogOptions
+	stderr   io.Writer
+	now      func() time.Time
+	// onPtmxReady, if non-nil, is invoked once per attempt right
+	// after ptmxRef has been set to the freshly-started PTY. The
+	// supervisor uses this to start the long-lived copyInput
+	// goroutine on the first attempt — before then a fixture-driven
+	// test's stdin bytes could race ahead of the first set and get
+	// dropped by ptmxRef.write's nil fallback.
+	onPtmxReady func()
+}
+
+// attemptOnce spawns the SSH process once under a fresh PTY, swaps the
+// shared refs so the input loop and escape rope can reach it, waits
+// for the process to exit, and tears down its per-attempt goroutines
+// (watchdog, signal forwarder, output reader). Returns proc.Wait()'s
+// error verbatim — the caller decides whether to retry.
+func attemptOnce(ac attemptContext) error {
+	proc := exec.Command(ac.command.Argv[0], ac.command.Argv[1:]...)
+	proc.Env = sessionEnv(ac.env, *ac.record)
+
+	ptmx, err := pty.Start(proc)
+	if err != nil {
+		return err
+	}
+	ac.ptmxRef.set(ptmx)
+	ac.procRef.set(proc.Process)
+	defer func() {
+		ac.procRef.set(nil)
+		ac.ptmxRef.set(nil)
+	}()
+	if ac.onPtmxReady != nil {
+		ac.onPtmxReady()
+	}
+
+	ac.recordMu.Lock()
+	ac.record.SSHPID = proc.Process.Pid
+	writeErr := state.WriteRecord(ac.stateDir, *ac.record)
+	ac.recordMu.Unlock()
+	if writeErr != nil {
+		_ = proc.Process.Kill()
+		_ = proc.Wait()
+		_ = ptmx.Close()
+		return fmt.Errorf("write session record: %w", writeErr)
+	}
+
+	outputDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(ac.output, ptmx)
+		close(outputDone)
+	}()
+
+	stopWatchdog := startLatencyWatchdog(latencyWatchdogConfig{
+		Options:  ac.watchdog,
+		StateDir: ac.stateDir,
+		Record:   ac.record,
+		RecordMu: ac.recordMu,
+		Stderr:   ac.stderr,
+		Process:  proc.Process,
+		Now:      ac.now,
+	})
+	stopSignals := forwardSignals(ac.stdin, ptmx, proc)
+
+	waitErr := proc.Wait()
+	stopWatchdog()
+	stopSignals()
+	// Close ptmx explicitly before waiting for the output-copy goroutine
+	// to drain — io.Copy(ac.output, ptmx) only returns when its source
+	// hits EOF, and a still-open ptmx never does.
+	_ = ptmx.Close()
+	<-outputDone
+	return waitErr
+}
+
+// shouldRetry decides whether the supervisor's reconnect loop should
+// run another attempt. Only tunnel-kind sessions retry; interactive
+// sessions are always one-shot. Spawn failures and signaled deaths
+// (escape rope, external SIGTERM) never retry. ssh exit code 1 — the
+// signal for ExitOnForwardFailure (port in use locally) and host
+// resolution failures — never retries because the next attempt will
+// hit the same wall. Everything else (clean disconnect == 0, network
+// error == 255, unknown codes) is treated as transient.
+func shouldRetry(kind string, opts ReconnectOptions, waitErr error, attempt int) bool {
+	if kind != state.KindTunnel {
+		return false
+	}
+	if !opts.Enabled {
+		return false
+	}
+	if opts.MaxAttempts > 0 && attempt >= opts.MaxAttempts {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		return false
+	}
+	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return false
+	}
+	switch exitErr.ExitCode() {
+	case 1:
+		return false
+	default:
+		return true
+	}
+}
+
+// computeBackoff returns the wait between attempt N and attempt N+1.
+// Capped exponential growth starting at InitialBackoff, multiplied by
+// Multiplier (default 2.0) per attempt, clamped at MaxBackoff. The loop
+// stops growing once it would exceed the cap to avoid float overflow on
+// very large attempt counts.
+func computeBackoff(attempt int, opts ReconnectOptions) time.Duration {
+	initial := opts.InitialBackoff
+	if initial <= 0 {
+		initial = DefaultReconnectInitialBackoff
+	}
+	maxBackoff := opts.MaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = DefaultReconnectMaxBackoff
+	}
+	mul := opts.Multiplier
+	if mul <= 0 {
+		mul = DefaultReconnectMultiplier
+	}
+	if attempt <= 1 {
+		return initial
+	}
+	backoff := float64(initial)
+	for i := 1; i < attempt; i++ {
+		backoff *= mul
+		if backoff >= float64(maxBackoff) {
+			return maxBackoff
+		}
+	}
+	return time.Duration(backoff)
 }

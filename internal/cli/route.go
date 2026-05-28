@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/session"
@@ -46,6 +47,15 @@ type forwardFlags struct {
 	RemotePort int
 	RemoteSet  bool
 	Through    string
+
+	// Reconnect knobs (Phase 2a). All are optional — DefaultReconnect()
+	// supplies sensible values, and the tunnel-kind gate inside the
+	// supervisor decides whether reconnect runs at all.
+	NoReconnect             bool
+	ReconnectMaxAttempts    int
+	ReconnectMaxAttemptsSet bool
+	ReconnectInitialBackoff time.Duration
+	ReconnectMaxBackoff     time.Duration
 }
 
 type connectOptions struct {
@@ -54,6 +64,7 @@ type connectOptions struct {
 	StateDir  string
 	Watchdog  session.WatchdogOptions
 	Composer  session.ComposerOptions
+	Reconnect session.ReconnectOptions
 	NoColor   bool
 	ThemeName string
 	ThemeFile string
@@ -254,8 +265,17 @@ func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
 		Hops:        hops,
 		Route:       route,
 		Kind:        state.KindTunnel,
+		Forward: &state.ForwardSpec{
+			LocalBind:  flags.LocalBind,
+			LocalPort:  flags.LocalPort,
+			RemoteHost: flags.RemoteHost,
+			RemotePort: flags.RemotePort,
+			Through:    flags.Through,
+		},
 	}
-	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
+	opts := flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops))
+	opts.Reconnect = forwardReconnectOptions(flags)
+	return printOrRunSSH(cmd, opts, metadata, stdout, stderr)
 }
 
 func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
@@ -790,6 +810,58 @@ func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
 			flags.Through = value
 		case strings.HasPrefix(arg, "--through="):
 			flags.Through = strings.TrimPrefix(arg, "--through=")
+		case arg == "--no-reconnect":
+			flags.NoReconnect = true
+		case arg == "--reconnect-max":
+			value, ok := nextArg(args, &i, stderr, "--reconnect-max")
+			if !ok {
+				return flags, false
+			}
+			n, ok := parseReconnectMax(value, stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.ReconnectMaxAttempts = n
+			flags.ReconnectMaxAttemptsSet = true
+		case strings.HasPrefix(arg, "--reconnect-max="):
+			n, ok := parseReconnectMax(strings.TrimPrefix(arg, "--reconnect-max="), stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.ReconnectMaxAttempts = n
+			flags.ReconnectMaxAttemptsSet = true
+		case arg == "--reconnect-backoff":
+			value, ok := nextArg(args, &i, stderr, "--reconnect-backoff")
+			if !ok {
+				return flags, false
+			}
+			d, ok := parseDuration(value, stderr, "--reconnect-backoff")
+			if !ok {
+				return flags, false
+			}
+			flags.ReconnectInitialBackoff = d
+		case strings.HasPrefix(arg, "--reconnect-backoff="):
+			d, ok := parseDuration(strings.TrimPrefix(arg, "--reconnect-backoff="), stderr, "--reconnect-backoff")
+			if !ok {
+				return flags, false
+			}
+			flags.ReconnectInitialBackoff = d
+		case arg == "--reconnect-max-backoff":
+			value, ok := nextArg(args, &i, stderr, "--reconnect-max-backoff")
+			if !ok {
+				return flags, false
+			}
+			d, ok := parseDuration(value, stderr, "--reconnect-max-backoff")
+			if !ok {
+				return flags, false
+			}
+			flags.ReconnectMaxBackoff = d
+		case strings.HasPrefix(arg, "--reconnect-max-backoff="):
+			d, ok := parseDuration(strings.TrimPrefix(arg, "--reconnect-max-backoff="), stderr, "--reconnect-max-backoff")
+			if !ok {
+				return flags, false
+			}
+			flags.ReconnectMaxBackoff = d
 		case arg == "--no-kitty":
 			flags.NoKitty = true
 		case arg == "--no-color":
@@ -1002,6 +1074,37 @@ func parseProxyPort(value string, stderr io.Writer) (int, bool) {
 	return port, true
 }
 
+// parseReconnectMax accepts a non-negative integer. 0 means unlimited
+// attempts; positive N caps at N attempts. Negative values are
+// rejected — they don't have a meaningful interpretation.
+func parseReconnectMax(value string, stderr io.Writer) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 {
+		fmt.Fprintln(stderr, "ssherpa: --reconnect-max must be a non-negative integer (0 = unlimited)")
+		return 0, false
+	}
+	return n, true
+}
+
+// forwardReconnectOptions builds the ReconnectOptions for a `forward`
+// invocation by starting from session.DefaultReconnect() (100 attempts,
+// 1s→60s capped exponential) and overlaying any CLI-set knobs.
+// Enabled defaults to true for tunnels; --no-reconnect flips it off.
+func forwardReconnectOptions(flags forwardFlags) session.ReconnectOptions {
+	opts := session.DefaultReconnect()
+	opts.Enabled = !flags.NoReconnect
+	if flags.ReconnectMaxAttemptsSet {
+		opts.MaxAttempts = flags.ReconnectMaxAttempts
+	}
+	if flags.ReconnectInitialBackoff > 0 {
+		opts.InitialBackoff = flags.ReconnectInitialBackoff
+	}
+	if flags.ReconnectMaxBackoff > 0 {
+		opts.MaxBackoff = flags.ReconnectMaxBackoff
+	}
+	return opts
+}
+
 // parseForwardLocal accepts both the bare-port shorthand ("5432") and the
 // full host:port spelling, including bracketed IPv6 ("[::1]:5432"). It
 // expands the shorthand to defaultForwardBind so callers always receive
@@ -1136,6 +1239,7 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			Stderr:    stderr,
 			Watchdog:  options.Watchdog,
 			Composer:  options.Composer,
+			Reconnect: options.Reconnect,
 			ThemeName: options.ThemeName,
 			ThemeFile: options.ThemeFile,
 			NoColor:   options.NoColor,
