@@ -76,6 +76,9 @@ Route Commands:
   ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
   ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--direct]
   ssherpa forward --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--print] [--direct] [--background] [--reconnect-max N] [--no-reconnect]
+  ssherpa forward list [--json] [--state-dir PATH]
+  ssherpa forward status SESSION_ID_OR_NAME [--json] [--state-dir PATH]
+  ssherpa forward stop SESSION_ID_OR_NAME [--state-dir PATH]
 
 Theme Commands:
   ssherpa theme [--theme terminal|vivid] [--theme-file PATH]

@@ -77,6 +77,50 @@ func TestWriteReadAndListRecords(t *testing.T) {
 	}
 }
 
+func TestProcessAlive(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  SessionRecord
+		want bool
+	}{
+		{
+			name: "ended record never alive",
+			rec:  SessionRecord{LocalPID: os.Getpid(), EndedAt: ptrTime(time.Now())},
+			want: false,
+		},
+		{
+			name: "zero local pid never alive",
+			rec:  SessionRecord{LocalPID: 0},
+			want: false,
+		},
+		{
+			name: "negative local pid never alive",
+			rec:  SessionRecord{LocalPID: -1},
+			want: false,
+		},
+		{
+			name: "current process is alive",
+			rec:  SessionRecord{LocalPID: os.Getpid()},
+			want: true,
+		},
+		{
+			name: "obviously-dead pid is not alive",
+			rec:  SessionRecord{LocalPID: 1 << 20}, // very unlikely to exist
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ProcessAlive(c.rec)
+			if got != c.want {
+				t.Fatalf("ProcessAlive(%+v) = %v, want %v", c.rec, got, c.want)
+			}
+		})
+	}
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }
+
 func TestListRecordsMissingDirIsEmpty(t *testing.T) {
 	records, err := ListRecords(filepath.Join(t.TempDir(), "missing"))
 	if err != nil {

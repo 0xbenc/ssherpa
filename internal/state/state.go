@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/fsutil"
@@ -85,6 +86,24 @@ func (r SessionRecord) Status() string {
 		return "active"
 	}
 	return "exited"
+}
+
+// ProcessAlive reports whether the LocalPID in this record still
+// names a live process. Used by the forward-management commands to
+// distinguish "active" (record open AND daemon PID responds to
+// signal 0) from "orphan" (record open but PID gone — the daemon
+// crashed without writing EndedAt). syscall.Kill with signal 0
+// performs an existence check without delivering a signal; it
+// returns nil iff the process exists and the caller can signal it.
+// Records with EndedAt set or LocalPID == 0 always return false.
+func ProcessAlive(record SessionRecord) bool {
+	if record.EndedAt != nil {
+		return false
+	}
+	if record.LocalPID <= 0 {
+		return false
+	}
+	return syscall.Kill(record.LocalPID, syscall.Signal(0)) == nil
 }
 
 type SessionEvent struct {

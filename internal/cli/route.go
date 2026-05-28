@@ -212,6 +212,20 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
+	// Management subcommands (Phase 2c) take precedence over the
+	// alias/launch path. `ssherpa forward list/status/stop ...` route
+	// here. A user who has an SSH alias literally named "list" can
+	// disambiguate with `ssherpa forward --select list ...`.
+	if len(args) > 0 {
+		switch args[0] {
+		case "list":
+			return runForwardList(args[1:], stdout, stderr)
+		case "status":
+			return runForwardStatus(args[1:], stdout, stderr)
+		case "stop":
+			return runForwardStop(args[1:], stdout, stderr)
+		}
+	}
 	return runForwardWith(args, false, "", stdout, stderr)
 }
 
