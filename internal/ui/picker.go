@@ -69,9 +69,14 @@ type PickOptions struct {
 	ThemeName   string
 	ThemeFile   string
 	Title       string
-	Subtitle    string
-	Summary     []string
-	Footer      string
+	// Version, when set, renders as a muted tag immediately after
+	// the title logo (e.g. "SSHERPA v1.1.0  [SUPERVISED MODE]"). Set
+	// only for the home-page picker; sub-pickers (jump, proxy,
+	// through-hop, etc.) leave it empty.
+	Version  string
+	Subtitle string
+	Summary  []string
+	Footer   string
 }
 
 type BuildItemsOptions struct {
@@ -191,6 +196,7 @@ type pickerModel struct {
 	noAltScreen bool
 	theme       termstyle.Theme
 	title       string
+	version     string
 	subtitle    string
 	summary     []string
 	footer      string
@@ -213,6 +219,7 @@ func newPickerModelWithTheme(items []Item, opts PickOptions, theme termstyle.The
 		noAltScreen: opts.NoAltScreen,
 		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),
 		title:       opts.Title,
+		version:     opts.Version,
 		subtitle:    opts.Subtitle,
 		summary:     append([]string(nil), opts.Summary...),
 		footer:      opts.Footer,
@@ -314,6 +321,9 @@ func (m pickerModel) renderHeader(width int, theme pickerTheme) string {
 		title = "ssherpa"
 	}
 	header := theme.logo(strings.ToUpper(title))
+	if v := strings.TrimSpace(m.version); v != "" {
+		header += " " + theme.versionTag(v)
+	}
 	if m.subtitle != "" {
 		header += " " + theme.pill(strings.ToUpper(m.subtitle))
 	}
@@ -610,6 +620,13 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleInfo
 	}
 	return t.theme.Style(role, value)
+}
+
+// versionTag renders the build version (e.g. "v1.1.0" / "dev") in a
+// muted accent style so it sits visibly next to the SSHERPA logo
+// without competing with the prominent subtitle pill.
+func (t pickerTheme) versionTag(value string) string {
+	return t.theme.Style(termstyle.RoleAccent, value)
 }
 
 func (t pickerTheme) rowTitle(value string, selected bool) string {

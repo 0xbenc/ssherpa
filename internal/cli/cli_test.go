@@ -86,6 +86,28 @@ func TestRunHelpCommand(t *testing.T) {
 	assertContains(t, stdout.String(), "Phase 10:")
 }
 
+func TestPickerVersionLabel(t *testing.T) {
+	cases := []struct {
+		build BuildInfo
+		want  string
+	}{
+		{BuildInfo{}, "dev"},
+		{BuildInfo{Version: ""}, "dev"},
+		{BuildInfo{Version: "dev"}, "dev"},
+		{BuildInfo{Version: "1.1.0"}, "v1.1.0"},
+		{BuildInfo{Version: "v1.1.0"}, "v1.1.0"},
+		{BuildInfo{Version: "  v1.1.0  "}, "v1.1.0"},
+		{BuildInfo{Version: "1.2.3-rc.1"}, "v1.2.3-rc.1"},
+	}
+	for _, c := range cases {
+		t.Run(c.build.Version, func(t *testing.T) {
+			if got := pickerVersionLabel(c.build); got != c.want {
+				t.Fatalf("pickerVersionLabel(%q) = %q, want %q", c.build.Version, got, c.want)
+			}
+		})
+	}
+}
+
 func TestRunConnectPrint(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

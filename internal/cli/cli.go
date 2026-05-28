@@ -135,7 +135,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 	}
 
 	if len(args) == 0 {
-		return runConnect(args, stdout, stderr)
+		return runConnect(args, stdout, stderr, build)
 	}
 
 	switch args[0] {
@@ -174,7 +174,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		printUsage(stdout)
 		return 0
 	default:
-		return runConnect(args, stdout, stderr)
+		return runConnect(args, stdout, stderr, build)
 	}
 }
 
@@ -198,7 +198,7 @@ type connectFlags struct {
 	SSHArgs           []string
 }
 
-func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
+func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
 	if hasHelpFlag(args) {
 		printUsage(stdout)
 		return 0
@@ -228,7 +228,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	item, alias, ok, code := selectConnectItem(flags, graph, inventory, stderr)
+	item, alias, ok, code := selectConnectItem(flags, graph, inventory, stderr, build)
 	if !ok {
 		return code
 	}
@@ -533,7 +533,7 @@ func parseControlKey(value string, stderr io.Writer, flag string) (byte, string,
 	return key, label, true
 }
 
-func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, stderr io.Writer) (ui.Item, hostlist.Alias, bool, int) {
+func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, stderr io.Writer, build BuildInfo) (ui.Item, hostlist.Alias, bool, int) {
 	if flags.Select != "" {
 		alias := findAlias(inventory.Aliases, flags.Select)
 		if alias == nil {
@@ -559,6 +559,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "ssherpa",
+		Version:     pickerVersionLabel(build),
 		Subtitle:    pickerMode(flags),
 		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)),
 	})
@@ -580,6 +581,22 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		return ui.Item{}, hostlist.Alias{}, false, 2
 	}
 	return item, *alias, true, 0
+}
+
+// pickerVersionLabel renders the build version (or "dev" when ldflags
+// didn't inject one — go run / go build without -X) for the
+// home-page header. Leading "v" is added for tagged builds so the
+// label reads "v1.1.0" rather than "1.1.0"; "dev" passes through
+// unchanged so a developer build is obvious at a glance.
+func pickerVersionLabel(build BuildInfo) string {
+	v := strings.TrimSpace(build.Version)
+	if v == "" || v == "dev" {
+		return "dev"
+	}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	return v
 }
 
 func pickerMode(flags connectFlags) string {

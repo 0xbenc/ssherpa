@@ -121,6 +121,50 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	}
 }
 
+func TestPickerViewRendersVersionTagInHeader(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		Title:       "ssherpa",
+		Version:     "v1.1.0",
+		Subtitle:    "supervised mode",
+	})
+	text := model.View().Content
+
+	if !strings.Contains(text, "SSHERPA") {
+		t.Fatalf("missing SSHERPA logo: %q", text)
+	}
+	if !strings.Contains(text, "v1.1.0") {
+		t.Fatalf("version tag not rendered: %q", text)
+	}
+	if !strings.Contains(text, "SUPERVISED MODE") {
+		t.Fatalf("subtitle missing: %q", text)
+	}
+	// The version sits between the logo and the subtitle pill.
+	logoIdx := strings.Index(text, "SSHERPA")
+	versionIdx := strings.Index(text, "v1.1.0")
+	subtitleIdx := strings.Index(text, "SUPERVISED MODE")
+	if !(logoIdx < versionIdx && versionIdx < subtitleIdx) {
+		t.Fatalf("header order wrong: SSHERPA(%d) v1.1.0(%d) SUPERVISED MODE(%d)", logoIdx, versionIdx, subtitleIdx)
+	}
+}
+
+func TestPickerViewOmitsVersionTagWhenEmpty(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		Title:       "ssherpa",
+		Subtitle:    "supervised mode",
+		// Version empty — header should not include a stray "v" tag.
+	})
+	text := model.View().Content
+	// A bare "v" surrounded by spaces would be the regression
+	// signature if versionTag rendered on empty input.
+	if strings.Contains(text, " v ") {
+		t.Fatalf("stray version tag rendered: %q", text)
+	}
+}
+
 func TestPickerViewUsesColorWhenEnabled(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
