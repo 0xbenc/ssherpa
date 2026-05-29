@@ -116,6 +116,7 @@ Session Commands:
   ssherpa session list [--json] [--state-dir PATH]
   ssherpa session map [--json] [--all] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
+  ssherpa session stop-all [--json] [--state-dir PATH]
   ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
 
 Phase 10:
@@ -326,6 +327,16 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			stopArgs = append(stopArgs, item.Token)
 			code := runProxy(stopArgs, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemStopAllActive:
+			stopArgs := []string{"stop-all"}
+			if flags.StateDir != "" {
+				stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
+			}
+			code := runSession(stopArgs, stdout, stderr)
 			if code == 0 && flags.Select == "" {
 				continue
 			}
@@ -636,6 +647,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 	sessionCount, activeSessions := pickerSessionCounts(flags.StateDir)
 	activeTunnels := pickerActiveTunnels(flags.StateDir)
 	activeProxies := pickerActiveProxies(flags.StateDir)
+	stoppableSessions := pickerStoppableSessionCount(flags.StateDir)
 	savedForwards := pickerSavedForwards(flags.StateDir, activeSavedNames(activeTunnels))
 	savedProxies := pickerSavedProxies(flags.StateDir, activeSavedNames(activeProxies))
 	item, ok, err := ui.Pick(context.Background(), ui.BuildItemsWithOptions(inventory.Aliases, ui.BuildItemsOptions{
@@ -645,6 +657,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		SavedProxies:       savedProxies,
 		ActiveTunnels:      activeTunnels,
 		ActiveProxies:      activeProxies,
+		StopAllActiveCount: stoppableSessions,
 	}), ui.PickOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
@@ -772,6 +785,24 @@ func pickerSessionCounts(stateDir string) (total int, active int) {
 		}
 	}
 	return len(records), active
+}
+
+func pickerStoppableSessionCount(stateDir string) int {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return 0
+	}
+	records, err := state.ListRecords(dir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, record := range records {
+		if state.ProcessAlive(record) {
+			count++
+		}
+	}
+	return count
 }
 
 // pickerActiveTunnels flattens live KindTunnel records into the

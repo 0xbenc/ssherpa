@@ -26,6 +26,7 @@ const (
 	ItemForwardActive ItemKind = "forward_active"
 	ItemProxySaved    ItemKind = "proxy_saved"
 	ItemProxyActive   ItemKind = "proxy_active"
+	ItemStopAllActive ItemKind = "stop_all_active"
 	ItemCheck         ItemKind = "check"
 	ItemSessions      ItemKind = "sessions"
 	ItemTheme         ItemKind = "theme"
@@ -100,6 +101,9 @@ type BuildItemsOptions struct {
 	// shown in the subtitle is derived from len(ActiveTunnels).
 	ActiveTunnels []ActiveTunnelItem
 	ActiveProxies []ActiveTunnelItem
+	// StopAllActiveCount renders the global kill action when at least one
+	// live tracked session exists, including interactive jump/direct sessions.
+	StopAllActiveCount int
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -108,6 +112,17 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 
 func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []Item {
 	items := []Item{}
+
+	if opts.StopAllActiveCount > 0 {
+		items = append(items, Item{
+			Kind:        ItemStopAllActive,
+			Token:       "STOP_ALL",
+			Title:       "Stop all active sessions",
+			Description: fmt.Sprintf("%d tracked session(s)", opts.StopAllActiveCount),
+			Group:       "Active",
+			Badge:       "stop all",
+		})
+	}
 
 	// Active tunnels lead — they're the "kill this right now"
 	// surface. Selecting one calls `forward stop SESSION_ID`,
@@ -688,7 +703,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RolePrimary
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
-	case ItemForwardActive, ItemProxyActive:
+	case ItemForwardActive, ItemProxyActive, ItemStopAllActive:
 		role = termstyle.RoleDanger
 	case ItemCheck:
 		role = termstyle.RoleInfo
@@ -810,6 +825,8 @@ func selectionHint(item Item) string {
 		return "Launches a saved SOCKS proxy preset."
 	case ItemProxyActive:
 		return "Stops this running SOCKS proxy."
+	case ItemStopAllActive:
+		return "Stops every live tracked session: tunnels, proxies, jumps, and supervised direct SSH."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemForwardSaved:

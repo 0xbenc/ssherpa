@@ -51,7 +51,7 @@ Manage authorized_keys on this device.
 Build and save the terminal UI color schema.
 .TP
 .B session
-Inspect supervised session records and route maps.
+Inspect supervised session records and route maps, or stop every live tracked session.
 .SH CHECK EXAMPLES
 .EX
 ssherpa check prod
@@ -75,6 +75,13 @@ ssherpa proxy --select corp --background
 ssherpa proxy list
 ssherpa proxy status corp
 ssherpa proxy stop corp
+.EE
+.SH SESSION EXAMPLES
+.EX
+ssherpa session map
+ssherpa session show 20260529T090238.208041000Z-c8eb1976
+ssherpa session stop-all
+ssherpa session stop-all --json
 .EE
 .SH FILES
 .TP

@@ -93,6 +93,15 @@ _ssherpa() {
             '--saved-forward[check saved forward]:name' \
             '--saved-forwards[check all saved forwards]'
           ;;
+        session)
+          _arguments \
+            '2:subcommand:(list map show stop-all prune)' \
+            '--json[emit JSON]' \
+            '--all[include exited sessions]' \
+            '--state-dir[override state directory]:path:_files' \
+            '--older-than[prune records older than duration]:duration' \
+            '--dry-run[preview prune]'
+          ;;
         *)
           _arguments '--help[show help]'
           ;;

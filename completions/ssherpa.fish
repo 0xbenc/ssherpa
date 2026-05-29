@@ -40,3 +40,10 @@ complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l bind -r -d 'Listen
 complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l port -r -d 'Listener port'
 complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l background -d 'Run detached'
 complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l state-dir -r -d 'Override state directory'
+
+complete -c ssherpa -n '__fish_seen_subcommand_from session' -a 'list map show stop-all prune'
+complete -c ssherpa -n '__fish_seen_subcommand_from session' -l json -d 'Emit JSON'
+complete -c ssherpa -n '__fish_seen_subcommand_from session' -l all -d 'Include exited sessions'
+complete -c ssherpa -n '__fish_seen_subcommand_from session' -l state-dir -r -d 'Override state directory'
+complete -c ssherpa -n '__fish_seen_subcommand_from session' -l older-than -r -d 'Prune records older than duration'
+complete -c ssherpa -n '__fish_seen_subcommand_from session' -l dry-run -d 'Preview prune'

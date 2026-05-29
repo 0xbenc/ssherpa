@@ -97,6 +97,7 @@ ssherpa session map            # active sessions as a tree, with their routes
 ssherpa session map --all      # include exited sessions
 ssherpa session list           # flat list
 ssherpa session show <id>      # one record in detail
+ssherpa session stop-all       # stop every live tracked session
 ssherpa session prune --older-than 168h --dry-run
 ```
 

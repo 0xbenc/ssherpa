@@ -74,7 +74,7 @@ _ssherpa()
             return
             ;;
         session)
-            COMPREPLY=( $(compgen -W "list map show prune --json --all --state-dir --older-than --dry-run" -- "$cur") )
+            COMPREPLY=( $(compgen -W "list map show stop-all prune --json --all --state-dir --older-than --dry-run" -- "$cur") )
             return
             ;;
         *)

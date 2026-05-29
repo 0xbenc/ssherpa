@@ -44,6 +44,19 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 	}
 }
 
+func TestBuildItemsIncludesStopAllActiveAction(t *testing.T) {
+	items := BuildItemsWithOptions(nil, BuildItemsOptions{StopAllActiveCount: 3})
+	if len(items) == 0 {
+		t.Fatalf("BuildItemsWithOptions returned no items")
+	}
+	if items[0].Kind != ItemStopAllActive || items[0].Badge != "stop all" {
+		t.Fatalf("items[0] = %#v, want stop-all action first", items[0])
+	}
+	if !strings.Contains(items[0].Description, "3 tracked") {
+		t.Fatalf("stop-all description = %q", items[0].Description)
+	}
+}
+
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 
@@ -300,6 +313,7 @@ func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
 		{ItemForwardSaved, "\x1b[36m"},  // tunnel launch
 		{ItemForwardActive, "\x1b[31m"}, // stop running tunnel
 		{ItemProxyActive, "\x1b[31m"},   // stop running proxy
+		{ItemStopAllActive, "\x1b[31m"}, // stop all running sessions
 		{ItemAuthkeys, "\x1b[33m"},      // security-sensitive
 		{ItemSessions, "\x1b[34m"},      // inspection
 		{ItemTheme, "\x1b[33m"},         // appearance/config

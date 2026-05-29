@@ -305,6 +305,60 @@ func TestRunForwardStopSignalsLiveProcess(t *testing.T) {
 	}
 }
 
+func TestRunSessionStopAllSignalsTrackedSessionKinds(t *testing.T) {
+	stateDir := t.TempDir()
+	tunnelProc := startSleepProcess(t)
+	proxyProc := startSleepProcess(t)
+	interactiveProc := startSleepProcess(t)
+
+	_ = seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:       "live-tunnel",
+		LocalPID: tunnelProc.Process.Pid,
+		Forward:  &state.ForwardSpec{Detached: true, LocalPort: 5432, RemotePort: 5432, RemoteHost: "127.0.0.1"},
+	})
+	_ = seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:          "live-proxy",
+		Kind:        state.KindProxy,
+		TargetAlias: "bastion",
+		LocalPID:    proxyProc.Process.Pid,
+		Proxy:       &state.ProxySpec{Detached: true, Port: 1080},
+	})
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:          "live-interactive",
+		Kind:        state.KindInteractive,
+		TargetAlias: "jumpbox",
+		StartedAt:   time.Now().Add(-time.Minute),
+		LocalPID:    interactiveProc.Process.Pid,
+		RunnerMode:  "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord interactive: %v", err)
+	}
+	ended := time.Now().Add(-time.Minute)
+	_ = seedTunnelRecord(t, stateDir, state.SessionRecord{
+		ID:       "exited-tunnel",
+		EndedAt:  &ended,
+		LocalPID: tunnelProc.Process.Pid,
+		Forward:  &state.ForwardSpec{Detached: true, LocalPort: 15432, RemotePort: 5432, RemoteHost: "127.0.0.1"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"session", "stop-all", "--json", "--state-dir", stateDir}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run returned %d; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	var result sessionStopAllResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v\n%s", err, stdout.String())
+	}
+	if result.Matched != 3 || result.Signaled != 3 || result.Errors != 0 {
+		t.Fatalf("result = %+v, want three live tracked sessions signaled", result)
+	}
+
+	waitForProcessExit(t, tunnelProc, "tunnel")
+	waitForProcessExit(t, proxyProc, "proxy")
+	waitForProcessExit(t, interactiveProc, "interactive")
+}
+
 func TestRunForwardStopUnknownTarget(t *testing.T) {
 	stateDir := t.TempDir()
 	var stderr bytes.Buffer
@@ -313,6 +367,31 @@ func TestRunForwardStopUnknownTarget(t *testing.T) {
 		t.Fatalf("Run returned %d, want 2; stderr=%q", code, stderr.String())
 	}
 	assertContains(t, stderr.String(), "no tunnel session matches")
+}
+
+func startSleepProcess(t *testing.T) *exec.Cmd {
+	t.Helper()
+	sleep := exec.Command("sleep", "30")
+	if err := sleep.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	t.Cleanup(func() {
+		if sleep.Process != nil {
+			_ = sleep.Process.Kill()
+		}
+	})
+	return sleep
+}
+
+func waitForProcessExit(t *testing.T, cmd *exec.Cmd, label string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s subprocess did not exit within 3s after stop-all", label)
+	}
 }
 
 func TestRunForwardListRejectsPositionalArgs(t *testing.T) {
