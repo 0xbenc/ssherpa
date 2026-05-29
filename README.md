@@ -103,6 +103,19 @@ watchdog, or state.
 
 ## Installation
 
+### Homebrew
+
+```sh
+brew tap 0xbenc/tap
+brew install ssherpa
+```
+
+Or install directly:
+
+```sh
+brew install 0xbenc/tap/ssherpa
+```
+
 ### Prebuilt binaries
 
 Grab a build for your platform from the
