@@ -327,9 +327,20 @@ func (m pickerModel) renderHeader(width int, theme pickerTheme) string {
 	if m.subtitle != "" {
 		header += " " + theme.pill(strings.ToUpper(m.subtitle))
 	}
-	b.WriteString(termstyle.PadRight(header, width))
-	b.WriteByte('\n')
-	for _, line := range m.summary {
+
+	summary := m.summary
+	if len(summary) > 0 && termstyle.VisibleWidth(header)+2+termstyle.VisibleWidth(summary[0]) <= width {
+		gap := width - termstyle.VisibleWidth(header) - termstyle.VisibleWidth(summary[0])
+		b.WriteString(header)
+		b.WriteString(strings.Repeat(" ", gap))
+		b.WriteString(theme.summary(summary[0]))
+		b.WriteByte('\n')
+		summary = summary[1:]
+	} else {
+		b.WriteString(termstyle.PadRight(header, width))
+		b.WriteByte('\n')
+	}
+	for _, line := range summary {
 		b.WriteString("  ")
 		b.WriteString(theme.summary(termstyle.Truncate(line, width-4)))
 		b.WriteByte('\n')
@@ -533,7 +544,12 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 	descWidth := max(10, width-len(cursor)-badgeWidth-titleWidth-3)
 	title := termstyle.Truncate(item.Title, titleWidth)
 	desc := termstyle.Truncate(item.Description, descWidth)
-	if item.Detail != "" && descWidth > 24 {
+	if item.Kind == ItemAlias {
+		titleWidth = max(10, width-len(cursor)-badgeWidth-3)
+		title = termstyle.Truncate(item.Title, titleWidth)
+		desc = ""
+	}
+	if item.Kind != ItemAlias && item.Detail != "" && descWidth > 24 {
 		detailWidth := min(18, descWidth/3)
 		desc = termstyle.Truncate(item.Description, descWidth-detailWidth-3) + "  " + termstyle.Truncate(item.Detail, detailWidth)
 	}

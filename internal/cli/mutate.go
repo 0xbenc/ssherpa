@@ -72,7 +72,6 @@ func runAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	reader := bufio.NewReader(os.Stdin)
 	spec := sshconfig.AliasSpec{
 		Alias:          flags.Alias,
 		HostName:       flags.HostName,
@@ -83,11 +82,33 @@ func runAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	var err error
+	confirmedByForm := false
 	promptOptional := flags.Alias == "" || flags.HostName == ""
-	spec, err = promptMissingAddFields(spec, reader, stderr, promptOptional)
-	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
-		return 1
+	if promptOptional {
+		result, ok, err := ui.AddAliasForm(context.Background(), ui.AddAliasOptions{
+			Input:         os.Stdin,
+			Output:        stderr,
+			NoAltScreen:   envBool("SSHERPA_NO_ALT_SCREEN"),
+			Initial:       addAliasResultFromSpec(spec),
+			IdentityFiles: discoverIdentityFiles(),
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: add form failed: %v\n", err)
+			return 1
+		}
+		if !ok {
+			fmt.Fprintln(stdout, "[skipped] add cancelled")
+			return 0
+		}
+		spec = aliasSpecFromAddResult(result)
+		confirmedByForm = true
+	} else {
+		reader := bufio.NewReader(os.Stdin)
+		spec, err = promptMissingAddFields(spec, reader, stderr, promptOptional)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
 	}
 	if err := sshconfig.ValidateAliasSpec(spec, false); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
@@ -107,12 +128,34 @@ func runAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	if !flags.DryRun && !flags.Yes && !confirm(reader, stderr, fmt.Sprintf("Write alias %q to %s?", spec.Alias, target)) {
+	if !flags.DryRun && !flags.Yes && !confirmedByForm && !confirm(bufio.NewReader(os.Stdin), stderr, fmt.Sprintf("Write alias %q to %s?", spec.Alias, target)) {
 		fmt.Fprintln(stdout, "[skipped] cancelled")
 		return 0
 	}
 
 	return applyMutationPlans([]sshconfig.MutationPlan{plan}, flags.mutationFlags, stdout, stderr)
+}
+
+func addAliasResultFromSpec(spec sshconfig.AliasSpec) ui.AddAliasResult {
+	return ui.AddAliasResult{
+		Alias:          spec.Alias,
+		HostName:       spec.HostName,
+		User:           spec.User,
+		Port:           spec.Port,
+		IdentityFile:   spec.IdentityFile,
+		IdentitiesOnly: spec.IdentitiesOnly,
+	}
+}
+
+func aliasSpecFromAddResult(result ui.AddAliasResult) sshconfig.AliasSpec {
+	return sshconfig.AliasSpec{
+		Alias:          result.Alias,
+		HostName:       result.HostName,
+		User:           result.User,
+		Port:           result.Port,
+		IdentityFile:   result.IdentityFile,
+		IdentitiesOnly: result.IdentitiesOnly,
+	}
 }
 
 func runEdit(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -721,6 +764,37 @@ func chooseAddTarget(configPath string, alias string) (string, error) {
 	default:
 		return "", fmt.Errorf("alias %q appears in multiple config files; pass --config PATH to choose one: %s", alias, strings.Join(paths, ", "))
 	}
+}
+
+func discoverIdentityFiles() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	entries, err := os.ReadDir(sshDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		switch {
+		case strings.HasSuffix(lower, ".pub"):
+			continue
+		case lower == "config" || lower == "authorized_keys" || strings.HasPrefix(lower, "known_hosts"):
+			continue
+		}
+		if strings.HasPrefix(name, "id_") || strings.Contains(lower, "key") || strings.Contains(lower, "rsa") || strings.Contains(lower, "ed25519") || strings.Contains(lower, "ecdsa") {
+			out = append(out, "~/.ssh/"+name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func chooseExistingTargets(configPath string, alias string, allSources bool) ([]string, error) {

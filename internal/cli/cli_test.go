@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
+	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -352,6 +353,17 @@ func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
 
 	if strings.Join(args, "\x00") != "--config\x00/tmp/config" {
 		t.Fatalf("args = %#v, want config passthrough", args)
+	}
+}
+
+func TestPickerSummaryUsesPluralizedCompactCounts(t *testing.T) {
+	inventory := hostlist.Inventory{
+		Aliases: []hostlist.Alias{{Name: "prod", Warnings: []string{"warning"}}},
+	}
+	summary := pickerSummary(connectFlags{}, nil, inventory, 0, 1, 2)
+
+	if len(summary) == 0 || summary[0] != "1 host  1 warning  1 session  2 tunnels" {
+		t.Fatalf("summary = %#v", summary)
 	}
 }
 

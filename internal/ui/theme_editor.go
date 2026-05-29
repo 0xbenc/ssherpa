@@ -355,7 +355,7 @@ func (m themeEditorModel) renderPreviewLines(width int, theme pickerTheme) []str
 	lines := []string{
 		theme.groupHeader("Preview", width),
 		theme.logo("SSHERPA") + " " + theme.pill(strings.ToUpper(m.base)),
-		theme.summary(termstyle.Truncate("2 hosts  0 warning(s)  1 active session(s)", width)),
+		theme.summary(termstyle.Truncate("2 hosts  0 warnings  1 session  0 tunnels", width)),
 		theme.rule(width),
 		theme.label("FILTER") + "  " + theme.search("[prod                ]") + "  " + theme.counter("3/8"),
 		theme.groupHeader("Actions", width),

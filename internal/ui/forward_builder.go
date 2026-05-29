@@ -590,19 +590,27 @@ func updateTextInputState(msg tea.KeyPressMsg, buf string, cursor int, errStr st
 		return textInputContinue, "", 0, ""
 	default:
 		if isPrintableInput(msg) {
-			runes := []rune(buf)
-			text := msg.Key().Text
-			insert := []rune(text)
-			if cursor > len(runes) {
-				cursor = len(runes)
-			}
-			runes = append(runes[:cursor], append(insert, runes[cursor:]...)...)
-			buf = string(runes)
-			cursor += len(insert)
+			buf, cursor = insertTextAtCursor(buf, cursor, msg.Key().Text)
 			errStr = ""
 		}
 	}
 	return textInputContinue, buf, cursor, errStr
+}
+
+func insertTextAtCursor(buf string, cursor int, text string) (string, int) {
+	if text == "" {
+		return buf, cursor
+	}
+	runes := []rune(buf)
+	insert := []rune(text)
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > len(runes) {
+		cursor = len(runes)
+	}
+	runes = append(runes[:cursor], append(insert, runes[cursor:]...)...)
+	return string(runes), cursor + len(insert)
 }
 
 func (m forwardBuilderModel) updateThrough(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

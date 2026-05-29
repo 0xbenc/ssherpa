@@ -621,10 +621,12 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 	for _, alias := range inventory.Aliases {
 		warnings += len(alias.Warnings)
 	}
-	summary = append(summary, fmt.Sprintf("%d hosts  %d warning(s)  %d active session(s)  %d active tunnel(s)", len(inventory.Aliases), warnings, activeSessions, activeTunnels))
-	if graph != nil && graph.RootPath != "" {
-		summary = append(summary, "config  "+graph.RootPath)
-	}
+	summary = append(summary, strings.Join([]string{
+		countLabel(len(inventory.Aliases), "host"),
+		countLabel(warnings, "warning"),
+		countLabel(activeSessions, "session"),
+		countLabel(activeTunnels, "tunnel"),
+	}, "  "))
 	var scope []string
 	if flags.All {
 		scope = append(scope, "including patterns")
@@ -659,6 +661,14 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		summary = append(summary, strings.Join(scope, "  "))
 	}
 	return summary
+}
+
+func countLabel(count int, singular string) string {
+	label := singular
+	if count != 1 {
+		label += "s"
+	}
+	return fmt.Sprintf("%d %s", count, label)
 }
 
 func pickerSessionCounts(stateDir string) (total int, active int) {

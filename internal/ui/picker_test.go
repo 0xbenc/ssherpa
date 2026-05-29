@@ -121,6 +121,46 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	}
 }
 
+func TestPickerHeaderCombinesSummaryWhenItFits(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		Title:       "ssherpa",
+		Version:     "dev",
+		Subtitle:    "supervised mode",
+		Summary:     []string{"1 host  0 warnings  0 sessions  0 tunnels"},
+	})
+	model.width = 140
+
+	lines := strings.Split(model.View().Content, "\n")
+	if !strings.Contains(lines[0], "SSHERPA dev") || !strings.Contains(lines[0], "SUPERVISED MODE") || !strings.HasSuffix(lines[0], "1 host  0 warnings  0 sessions  0 tunnels") {
+		t.Fatalf("first header line did not combine summary:\n%s", model.View().Content)
+	}
+	if strings.Contains(lines[1], "1 host") {
+		t.Fatalf("summary should not be repeated on second line:\n%s", model.View().Content)
+	}
+}
+
+func TestPickerHeaderKeepsSummarySeparateWhenCombinedLineWouldNotFit(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		Title:       "ssherpa",
+		Version:     "dev",
+		Subtitle:    "supervised mode",
+		Summary:     []string{"1 host  0 warnings  0 sessions  0 tunnels"},
+	})
+	model.width = 71
+
+	lines := strings.Split(model.View().Content, "\n")
+	if strings.Contains(lines[0], "1 host") {
+		t.Fatalf("summary should stay separate when it would not fit:\n%s", model.View().Content)
+	}
+	if !strings.Contains(lines[1], "1 host  0 warnings") {
+		t.Fatalf("summary missing from second line:\n%s", model.View().Content)
+	}
+}
+
 func TestPickerViewOmitsActionRowDescriptions(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
@@ -141,6 +181,33 @@ func TestPickerViewOmitsActionRowDescriptions(t *testing.T) {
 	if !strings.Contains(text, "Adds a new SSH alias to your config.") {
 		t.Fatalf("selection detail missing:\n%s", text)
 	}
+}
+
+func TestPickerHostRowsOnlyShowNickname(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", User: "alice", HostName: "prod.example.com", Port: "2222"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 120
+	model.cursor = 8
+
+	text := model.View().Content
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "[HOST]") {
+			left, _, _ := strings.Cut(line, "|")
+			if !strings.Contains(left, "prod") {
+				t.Fatalf("host row missing nickname:\n%s", text)
+			}
+			if strings.Contains(left, "prod.example.com") || strings.Contains(left, "alice@") || strings.Contains(left, "2222") {
+				t.Fatalf("host row leaked details:\n%s", text)
+			}
+			if !strings.Contains(text, "alice@prod.example.com:2222") {
+				t.Fatalf("selection pane missing target details:\n%s", text)
+			}
+			return
+		}
+	}
+	t.Fatalf("host row not found:\n%s", text)
 }
 
 func TestPickerViewRendersVersionTagInHeader(t *testing.T) {
