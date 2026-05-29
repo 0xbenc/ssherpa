@@ -434,7 +434,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 	}
 	if err == nil {
-		emitSessionTelemetry(output, recordForTelemetry)
+		emitSessionTelemetry(output, recordForTelemetry, env)
 	}
 	return exitCode
 }
@@ -1390,7 +1390,7 @@ func attemptOnce(ac attemptContext) error {
 		_ = ptmx.Close()
 		return fmt.Errorf("write session record: %w", writeErr)
 	}
-	emitSessionTelemetry(ac.output, recordForTelemetry)
+	emitSessionTelemetry(ac.output, recordForTelemetry, ac.env)
 
 	if ac.onPtmxReady != nil {
 		ac.onPtmxReady()
@@ -1431,8 +1431,10 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 		n, err := ptmx.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			observed := tracker.ObserveAll(chunk)
-			_, _ = ac.output.Write(chunk)
+			observed, clean := tracker.ObserveAndFilter(chunk)
+			if len(clean) > 0 {
+				_, _ = ac.output.Write(clean)
+			}
 			if observed.RemoteChanged {
 				recordRemoteState(ac, observed.Remote)
 			}
@@ -1446,15 +1448,35 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 	}
 }
 
-func emitSessionTelemetry(output io.Writer, record state.SessionRecord) {
-	if output == nil || record.RemoteMirror {
+func emitSessionTelemetry(output io.Writer, record state.SessionRecord, env []string) {
+	if output == nil || record.RemoteMirror || !shouldEmitSessionTelemetry(record, env) {
 		return
 	}
 	payload, ok := sessionTelemetryOSC(record)
-	if !ok {
-		return
+	if ok {
+		_, _ = output.Write(payload)
 	}
-	_, _ = output.Write(payload)
+	frame, ok := sessionTelemetryFrame(record)
+	if ok {
+		_, _ = output.Write(frame)
+	}
+}
+
+func shouldEmitSessionTelemetry(record state.SessionRecord, env []string) bool {
+	if record.ParentID != "" {
+		return true
+	}
+	return sessionEnvValue(env, "SSH_CONNECTION") != "" || sessionEnvValue(env, "SSH_TTY") != ""
+}
+
+func sessionEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
 }
 
 func mirrorRemoteSessionRecord(ac attemptContext, record state.SessionRecord) {

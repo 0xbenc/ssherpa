@@ -92,6 +92,36 @@ func TestOSCTrackerTracksSessionTelemetry(t *testing.T) {
 	}
 }
 
+func TestOSCTrackerStripsFramedSessionTelemetry(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "child",
+		ParentID:    "parent",
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		StartedAt:   fixedClock()(),
+	}
+	payload, ok := sessionTelemetryFrame(record)
+	if !ok {
+		t.Fatalf("sessionTelemetryFrame returned !ok")
+	}
+
+	tracker := newOSCTracker()
+	observed, clean := tracker.ObserveAndFilter(append([]byte("before"), payload[:len(payload)/2]...))
+	if len(observed.Mirrors) != 0 {
+		t.Fatalf("partial telemetry produced mirrors: %#v", observed.Mirrors)
+	}
+	if string(clean) != "before" {
+		t.Fatalf("partial clean = %q, want before", string(clean))
+	}
+	observed, clean = tracker.ObserveAndFilter(append(payload[len(payload)/2:], []byte("after")...))
+	if len(observed.Mirrors) != 1 || observed.Mirrors[0].ID != "child" {
+		t.Fatalf("mirrors = %#v, want child mirror", observed.Mirrors)
+	}
+	if string(clean) != "after" {
+		t.Fatalf("clean = %q, want after", string(clean))
+	}
+}
+
 func buildRecordWithRemoteState(host string, cwd string, prompt string) state.SessionRecord {
 	return state.SessionRecord{RemoteHost: host, RemoteCWD: cwd, RemotePrompt: prompt}
 }

@@ -14,7 +14,8 @@ const (
 	RemotePromptRunning     = state.RemotePromptRunning
 	RemotePromptPromptStart = state.RemotePromptPromptStart
 
-	oscMaxPayload = 8192
+	oscMaxPayload       = 8192
+	telemetryMaxPayload = 16384
 )
 
 type remoteState struct {
@@ -40,9 +41,11 @@ type oscObservation struct {
 }
 
 type oscTracker struct {
-	state int
-	buf   []byte
-	last  remoteState
+	state        int
+	buf          []byte
+	last         remoteState
+	telemetry    bool
+	telemetryBuf []byte
 }
 
 const (
@@ -62,25 +65,83 @@ func (t *oscTracker) Observe(data []byte) (remoteState, bool) {
 }
 
 func (t *oscTracker) ObserveAll(data []byte) oscObservation {
-	var observed oscObservation
-	for _, b := range data {
-		update, ok := t.feed(b)
-		if !ok {
-			continue
-		}
-		if update.Mirror != nil {
-			observed.Mirrors = append(observed.Mirrors, *update.Mirror)
-			continue
-		}
-		if t.apply(update) {
-			observed.RemoteChanged = true
-		}
-	}
-	observed.Remote = t.last
+	observed, _ := t.ObserveAndFilter(data)
 	return observed
 }
 
-func (t *oscTracker) feed(b byte) (remoteUpdate, bool) {
+func (t *oscTracker) ObserveAndFilter(data []byte) (oscObservation, []byte) {
+	var observed oscObservation
+	clean := make([]byte, 0, len(data))
+	for _, b := range data {
+		if t.telemetry {
+			replay, update, ok := t.feedTelemetry(b)
+			if len(replay) > 0 {
+				clean = append(clean, replay...)
+				for _, rb := range replay {
+					if oscUpdate, oscOK := t.feedOSC(rb); oscOK {
+						observed.applyUpdate(t, oscUpdate)
+					}
+				}
+			}
+			if ok {
+				observed.Mirrors = append(observed.Mirrors, update)
+			}
+			continue
+		}
+		if b == 0x1e {
+			t.telemetry = true
+			t.telemetryBuf = t.telemetryBuf[:0]
+			continue
+		}
+		clean = append(clean, b)
+		update, ok := t.feedOSC(b)
+		if ok {
+			observed.applyUpdate(t, update)
+		}
+	}
+	observed.Remote = t.last
+	return observed, clean
+}
+
+func (o *oscObservation) applyUpdate(tracker *oscTracker, update remoteUpdate) {
+	if update.Mirror != nil {
+		o.Mirrors = append(o.Mirrors, *update.Mirror)
+		return
+	}
+	if tracker.apply(update) {
+		o.RemoteChanged = true
+	}
+}
+
+func (t *oscTracker) feedTelemetry(b byte) ([]byte, state.SessionRecord, bool) {
+	if b == 0x1e {
+		payload := string(t.telemetryBuf)
+		t.telemetry = false
+		t.telemetryBuf = t.telemetryBuf[:0]
+		record, ok := parseSessionTelemetryFrame(payload)
+		if ok {
+			return nil, record, true
+		}
+		replay := make([]byte, 0, len(payload)+2)
+		replay = append(replay, 0x1e)
+		replay = append(replay, payload...)
+		replay = append(replay, 0x1e)
+		return replay, state.SessionRecord{}, false
+	}
+	if len(t.telemetryBuf) >= telemetryMaxPayload {
+		replay := make([]byte, 0, len(t.telemetryBuf)+2)
+		replay = append(replay, 0x1e)
+		replay = append(replay, t.telemetryBuf...)
+		replay = append(replay, b)
+		t.telemetry = false
+		t.telemetryBuf = t.telemetryBuf[:0]
+		return replay, state.SessionRecord{}, false
+	}
+	t.telemetryBuf = append(t.telemetryBuf, b)
+	return nil, state.SessionRecord{}, false
+}
+
+func (t *oscTracker) feedOSC(b byte) (remoteUpdate, bool) {
 	switch t.state {
 	case oscStateGround:
 		if b == 0x1b {
@@ -114,6 +175,35 @@ func (t *oscTracker) feed(b byte) (remoteUpdate, bool) {
 		t.state = oscStateOSC
 	}
 	return remoteUpdate{}, false
+}
+
+func (t *oscTracker) feed(b byte) (remoteUpdate, bool) {
+	if t.telemetry {
+		_, record, ok := t.feedTelemetry(b)
+		if ok {
+			return remoteUpdate{Mirror: &record}, true
+		}
+		return remoteUpdate{}, false
+	}
+	if b == 0x1e {
+		t.telemetry = true
+		t.telemetryBuf = t.telemetryBuf[:0]
+		return remoteUpdate{}, false
+	}
+	return t.feedOSC(b)
+}
+
+func (t *oscTracker) observeWithoutFilter(data []byte) oscObservation {
+	var observed oscObservation
+	for _, b := range data {
+		update, ok := t.feed(b)
+		if !ok {
+			continue
+		}
+		observed.applyUpdate(t, update)
+	}
+	observed.Remote = t.last
+	return observed
 }
 
 func (t *oscTracker) appendOSCByte(b byte) {
@@ -179,12 +269,27 @@ func parseOSC(payload string) (remoteUpdate, bool) {
 }
 
 func sessionTelemetryOSC(record state.SessionRecord) ([]byte, bool) {
-	data, err := json.Marshal(record)
-	if err != nil {
+	payload, ok := sessionTelemetryPayload(record)
+	if !ok {
 		return nil, false
 	}
-	payload := base64.StdEncoding.EncodeToString(data)
 	return []byte("\x1b]777;ssherpa-session;" + payload + "\x07"), true
+}
+
+func sessionTelemetryFrame(record state.SessionRecord) ([]byte, bool) {
+	payload, ok := sessionTelemetryPayload(record)
+	if !ok {
+		return nil, false
+	}
+	return []byte("\x1essherpa-session:" + payload + "\x1e"), true
+}
+
+func sessionTelemetryPayload(record state.SessionRecord) (string, bool) {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return "", false
+	}
+	return base64.StdEncoding.EncodeToString(data), true
 }
 
 func parseSessionTelemetryOSC(value string) (state.SessionRecord, bool) {
@@ -192,6 +297,18 @@ func parseSessionTelemetryOSC(value string) (state.SessionRecord, bool) {
 	if !ok || tag != "ssherpa-session" {
 		return state.SessionRecord{}, false
 	}
+	return parseSessionTelemetryPayload(payload)
+}
+
+func parseSessionTelemetryFrame(value string) (state.SessionRecord, bool) {
+	payload, ok := strings.CutPrefix(value, "ssherpa-session:")
+	if !ok {
+		return state.SessionRecord{}, false
+	}
+	return parseSessionTelemetryPayload(payload)
+}
+
+func parseSessionTelemetryPayload(payload string) (state.SessionRecord, bool) {
 	data, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		return state.SessionRecord{}, false

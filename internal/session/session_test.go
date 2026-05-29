@@ -209,9 +209,9 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 		StartedAt:   fixedClock()(),
 		RunnerMode:  RunnerModeSupervised,
 	}
-	payload, ok := sessionTelemetryOSC(child)
+	payload, ok := sessionTelemetryFrame(child)
 	if !ok {
-		t.Fatalf("sessionTelemetryOSC returned !ok")
+		t.Fatalf("sessionTelemetryFrame returned !ok")
 	}
 
 	code := RunSupervised(
@@ -233,6 +233,9 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 
 	if code != 0 {
 		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "ssherpa-session") {
+		t.Fatalf("stdout leaked telemetry frame: %q", stdout.String())
 	}
 	records, err := state.ListRecords(stateDir)
 	if err != nil {
