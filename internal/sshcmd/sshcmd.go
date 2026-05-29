@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -32,13 +33,14 @@ const (
 )
 
 type SFTPTransfer struct {
-	Direction  SFTPTransferDirection
-	Alias      string
-	Config     string
-	Hops       []string
-	LocalPath  string
-	RemotePath string
-	Batch      string
+	Direction   SFTPTransferDirection
+	Alias       string
+	Config      string
+	Hops        []string
+	ControlPath string
+	LocalPath   string
+	RemotePath  string
+	Batch       string
 }
 
 type PrintCommand struct {
@@ -120,6 +122,23 @@ func WithSessionEnvForwarding(command Command) Command {
 	return Command{Argv: argv}
 }
 
+func WithControlMaster(command Command, controlPath string) Command {
+	controlPath = strings.TrimSpace(controlPath)
+	if len(command.Argv) == 0 || controlPath == "" || !supportsSSHOptions(command.Argv) || hasSSHOption(command.Argv, "ControlPath=") {
+		return command
+	}
+	insertAt := sshOptionInsertIndex(command.Argv)
+	argv := make([]string, 0, len(command.Argv)+6)
+	argv = append(argv, command.Argv[:insertAt]...)
+	argv = append(argv,
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath="+controlPath,
+		"-o", "ControlPersist=10m",
+	)
+	argv = append(argv, command.Argv[insertAt:]...)
+	return Command{Argv: argv}
+}
+
 func BuildJump(base Command, destination string, hops []string, extraArgs []string) Command {
 	argv := append([]string(nil), base.Argv...)
 	argv = append(argv, "-J", strings.Join(hops, ","), destination)
@@ -185,6 +204,9 @@ func BuildSFTP(binary string, transfer SFTPTransfer) Command {
 		binary = "sftp"
 	}
 	argv := []string{binary, "-b", "-"}
+	if strings.TrimSpace(transfer.ControlPath) != "" {
+		argv = append(argv, "-o", "ControlMaster=auto", "-o", "ControlPath="+strings.TrimSpace(transfer.ControlPath))
+	}
 	if strings.TrimSpace(transfer.Config) != "" {
 		argv = append(argv, "-F", transfer.Config)
 	}
@@ -193,6 +215,34 @@ func BuildSFTP(binary string, transfer SFTPTransfer) Command {
 	}
 	argv = append(argv, transfer.Alias)
 	return Command{Argv: argv}
+}
+
+func hasSSHOption(argv []string, prefix string) bool {
+	for i, arg := range argv {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+		if arg == "-o" && i+1 < len(argv) && strings.HasPrefix(argv[i+1], prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func supportsSSHOptions(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	switch filepath.Base(argv[0]) {
+	case "ssh":
+		return true
+	case "kitten":
+		return len(argv) >= 2 && argv[1] == "ssh"
+	case "kitty":
+		return len(argv) >= 3 && argv[1] == "+kitten" && argv[2] == "ssh"
+	default:
+		return false
+	}
 }
 
 func BuildSFTPBatch(transfer SFTPTransfer) string {

@@ -50,6 +50,7 @@ type SessionRecord struct {
 	TargetAlias      string         `json:"target_alias,omitempty"`
 	Hops             []string       `json:"hops,omitempty"`
 	SSHArgv          []string       `json:"ssh_argv,omitempty"`
+	ControlPath      string         `json:"control_path,omitempty"`
 	Kind             string         `json:"kind,omitempty"`
 	Forward          *ForwardSpec   `json:"forward,omitempty"`
 	Proxy            *ProxySpec     `json:"proxy,omitempty"`

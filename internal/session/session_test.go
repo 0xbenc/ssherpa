@@ -75,6 +75,55 @@ func TestRunSupervisedRecordsSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedAddsControlMasterForSSHCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	sshPath := filepath.Join(t.TempDir(), "ssh")
+	script := "#!/bin/sh\nprintf 'fake ssh\\n'\nexit 0\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{sshPath, "prod"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.ControlPath == "" {
+		t.Fatalf("record ControlPath is empty; record = %#v", record)
+	}
+	got := strings.Join(record.SSHArgv, "\x00")
+	if !strings.Contains(got, "\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath="+record.ControlPath+"\x00-o\x00ControlPersist=10m\x00prod") {
+		t.Fatalf("record ssh argv = %#v, want ControlMaster options before target", record.SSHArgv)
+	}
+}
+
 func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	var stdout bytes.Buffer
 	stateDir := t.TempDir()
@@ -529,6 +578,65 @@ func TestRunSupervisedOverlaySendActionDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedOverlayReceiveActionDoesNotReachRemote(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{OverlayHotkey, 'v', 'z'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	requests := make(chan OverlayTransferRequest, 1)
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=1 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod", Hops: []string{"bastion"}, Route: []string{"bastion", "prod"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+			Overlay: OverlayOptions{
+				Receive: func(req OverlayTransferRequest) int {
+					requests <- req
+					return 0
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "z" {
+		t.Fatalf("remote input = %q, want only post-receive byte", string(got))
+	}
+	select {
+	case req := <-requests:
+		if req.Direction != "receive" || req.TargetAlias != "prod" || !reflect.DeepEqual(req.Hops, []string{"bastion"}) {
+			t.Fatalf("request = %#v, want receive from prod through bastion", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("overlay receive callback was not invoked")
+	}
+	if !strings.Contains(stdout.String(), "v receive") {
+		t.Fatalf("stdout = %q, want receive action in overlay help", stdout.String())
+	}
+}
+
 func TestOverlayTransferRequestIncludesRemoteState(t *testing.T) {
 	stateDir := t.TempDir()
 	record := state.SessionRecord{
@@ -536,6 +644,7 @@ func TestOverlayTransferRequestIncludesRemoteState(t *testing.T) {
 		TargetAlias:  "prod",
 		Hops:         []string{"bastion"},
 		Route:        []string{"bastion", "prod"},
+		ControlPath:  "/tmp/ssherpa.sock",
 		RemoteHost:   "prod.example.com",
 		RemoteCWD:    "/srv/app",
 		RemotePrompt: state.RemotePromptPrompt,
@@ -550,6 +659,9 @@ func TestOverlayTransferRequestIncludesRemoteState(t *testing.T) {
 	}
 	if req.TargetAlias != record.TargetAlias || req.RemoteHost != record.RemoteHost || req.RemoteCWD != record.RemoteCWD || req.RemotePrompt != record.RemotePrompt {
 		t.Fatalf("request remote state = %#v, want record values", req)
+	}
+	if req.ControlPath != record.ControlPath {
+		t.Fatalf("request ControlPath = %q, want %q", req.ControlPath, record.ControlPath)
 	}
 	if !reflect.DeepEqual(req.Hops, record.Hops) || !reflect.DeepEqual(req.Route, record.Route) {
 		t.Fatalf("request route = hops %#v route %#v, want %#v %#v", req.Hops, req.Route, record.Hops, record.Route)

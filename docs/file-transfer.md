@@ -6,8 +6,10 @@
 > in the session map. Public `send` / `receive` commands and the home-page
 > **Send file** action now cover the direct SFTP path, including local and
 > remote folder choosers plus a post-send confirmation for send. The session
-> overlay has a direct-SFTP `send` action wired for interactive sessions.
-> Overlay `receive` and deep in-band/wormhole transports are still design.
+> overlay has direct-SFTP `send` and `receive` actions for interactive sessions,
+> reusing the supervised SSH connection's ControlMaster socket when available
+> and recording overlay transfer audit events. Deep in-band/wormhole transports
+> are still design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -141,9 +143,12 @@ new channel on the **existing** socket:
 -o ControlMaster=auto -o ControlPath=<per-session socket> -o ControlPersist=…
 ```
 
-These are injected into the original invocation in the `sshcmd.Build*`
-constructors (`internal/sshcmd/sshcmd.go`), gated to the supervised path, so the
-control socket is guaranteed to exist when the user beams a file.
+These are injected into the supervised invocation by
+`sshcmd.WithControlMaster` (`internal/sshcmd/sshcmd.go`), gated to the
+interactive supervised path, so the control socket is available when the user
+beams a file from the overlay. Overlay SFTP transfers receive that
+`ControlPath` through the session record and pass it to `sftp -o
+ControlMaster=auto -o ControlPath=…`.
 
 **Destination.** Default to the OSC-7 cwd (`sftp` `cd` then `put`), else remote
 `$HOME`, else a confirmed path.
@@ -384,11 +389,12 @@ recorded lineage rather than an invisible side effect.
    **Implemented.**
 1. **Transport A.** scp/sftp over an auto-enabled `ControlMaster` socket, with
    the local picker and destination confirmation. Fast value, common topology.
-   **Partially implemented:** public `send` / `receive` SFTP commands and the
+   **Mostly implemented:** public `send` / `receive` SFTP commands and the
    home-page **Send file** action exist, with local and remote folder choosers
    plus a post-send confirmation for send. The `Ctrl-]` overlay can launch send
-   against the current interactive session and start the remote picker from the
-   tracked remote cwd. ControlMaster reuse is still pending.
+   and receive against the current interactive session, start send's remote
+   picker from the tracked remote cwd, reuse the session ControlMaster socket,
+   and record overlay transfer audit events.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa

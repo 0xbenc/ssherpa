@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -10,10 +12,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
+	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -28,15 +32,16 @@ const (
 
 type transferFlags struct {
 	inventoryFlags
-	Print      bool
-	Select     string
-	LocalPath  string
-	RemotePath string
-	Hops       []string
-	SFTPBinary string
-	NoColor    bool
-	ThemeName  string
-	ThemeFile  string
+	Print       bool
+	Select      string
+	LocalPath   string
+	RemotePath  string
+	Hops        []string
+	ControlPath string
+	SFTPBinary  string
+	NoColor     bool
+	ThemeName   string
+	ThemeFile   string
 }
 
 func runSend(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -301,12 +306,13 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		return sshcmd.SFTPTransfer{}, false, 1
 	}
 	return sshcmd.SFTPTransfer{
-		Direction:  direction,
-		Alias:      alias.Name,
-		Config:     flags.Config,
-		Hops:       append([]string(nil), flags.Hops...),
-		LocalPath:  localPath,
-		RemotePath: remotePath,
+		Direction:   direction,
+		Alias:       alias.Name,
+		Config:      flags.Config,
+		Hops:        append([]string(nil), flags.Hops...),
+		ControlPath: flags.ControlPath,
+		LocalPath:   localPath,
+		RemotePath:  remotePath,
 	}, true, 0
 }
 
@@ -419,6 +425,9 @@ func overlayTransferOptions(options connectOptions, metadata session.Metadata, s
 		Send: func(req session.OverlayTransferRequest) int {
 			return runOverlaySend(options, req, stdout, stderr)
 		},
+		Receive: func(req session.OverlayTransferRequest) int {
+			return runOverlayReceive(options, req, stdout, stderr)
+		},
 	}
 }
 
@@ -435,6 +444,7 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 		NoColor:        options.NoColor,
 		ThemeName:      options.ThemeName,
 		ThemeFile:      options.ThemeFile,
+		ControlPath:    req.ControlPath,
 	}
 	localPath, ok, err := pickLocalFile(stderr, transferFilePickerOptions(flags), ".")
 	if err != nil {
@@ -478,6 +488,7 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 	flags.RemotePath = remoteJoin(dir, filepath.Base(expanded))
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, flags, hostlist.Alias{Name: alias}, stdout, stderr)
 	if code == 0 && attempted {
+		recordTransferEvent(req.StateDir, req.SessionID, transfer)
 		if err := ui.ShowTransferComplete(context.Background(), ui.TransferCompleteOptions{
 			Input:       os.Stdin,
 			Output:      stderr,
@@ -495,6 +506,91 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 		}
 	}
 	return code
+}
+
+func runOverlayReceive(options connectOptions, req session.OverlayTransferRequest, stdout io.Writer, stderr io.Writer) int {
+	alias := strings.TrimSpace(req.TargetAlias)
+	if alias == "" {
+		fmt.Fprintln(stderr, "ssherpa: overlay receive requires a target alias")
+		return 1
+	}
+	initial := strings.TrimSpace(req.RemoteCWD)
+	if initial != "" && initial != "." {
+		initial = remoteJoin(initial, "")
+	}
+	remotePath, ok, err := ui.PromptText(context.Background(), ui.TextPromptOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     options.NoColor,
+		ThemeName:   options.ThemeName,
+		ThemeFile:   options.ThemeFile,
+		Title:       "Receive file",
+		Label:       "remote path",
+		Initial:     initial,
+		Validate:    validateNonEmpty("Remote path"),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: receive prompt failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stderr, "[skipped] receive cancelled")
+		return 0
+	}
+	flags := transferFlags{
+		inventoryFlags: inventoryFlags{Config: options.Config},
+		Hops:           append([]string(nil), req.Hops...),
+		ControlPath:    req.ControlPath,
+		RemotePath:     remotePath,
+		NoColor:        options.NoColor,
+		ThemeName:      options.ThemeName,
+		ThemeFile:      options.ThemeFile,
+	}
+	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferReceive, flags, hostlist.Alias{Name: alias}, stdout, stderr)
+	if code == 0 && attempted {
+		recordTransferEvent(req.StateDir, req.SessionID, transfer)
+	}
+	return code
+}
+
+func recordTransferEvent(stateDir string, sessionID string, transfer sshcmd.SFTPTransfer) {
+	stateDir = strings.TrimSpace(stateDir)
+	sessionID = strings.TrimSpace(sessionID)
+	if stateDir == "" || sessionID == "" {
+		return
+	}
+	record, err := state.ReadRecord(stateDir, sessionID)
+	if err != nil {
+		return
+	}
+	hash, size := transferDigest(transfer)
+	remote := transfer.Alias + ":" + transfer.RemotePath
+	message := fmt.Sprintf("transport=sftp local=%q remote=%q bytes=%d sha256=%s", transfer.LocalPath, remote, size, hash)
+	record.Events = append(record.Events, state.SessionEvent{
+		Time:    time.Now().UTC(),
+		Type:    "transfer_" + string(transfer.Direction),
+		Message: message,
+	})
+	_ = state.WriteRecord(stateDir, record)
+}
+
+func transferDigest(transfer sshcmd.SFTPTransfer) (string, int64) {
+	path := transfer.LocalPath
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return "", 0
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", info.Size()
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", info.Size()
+	}
+	return hex.EncodeToString(hash.Sum(nil)), info.Size()
 }
 
 type filePickerOptions struct {

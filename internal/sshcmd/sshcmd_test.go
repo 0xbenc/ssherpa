@@ -99,6 +99,36 @@ func TestWithSessionEnvForwardingIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestWithControlMaster(t *testing.T) {
+	cmd := WithControlMaster(Command{Argv: []string{"ssh", "-J", "bastion", "prod"}}, "/tmp/ssherpa.sock")
+
+	want := "ssh\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-o\x00ControlPersist=10m\x00-J\x00bastion\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestWithControlMasterKeepsKittyPrefix(t *testing.T) {
+	cmd := WithControlMaster(Command{Argv: []string{"kitten", "ssh", "prod"}}, "/tmp/ssherpa.sock")
+
+	want := "kitten\x00ssh\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-o\x00ControlPersist=10m\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestWithControlMasterSkipsExistingControlPathAndNonSSHCommands(t *testing.T) {
+	withExisting := WithControlMaster(Command{Argv: []string{"ssh", "-o", "ControlPath=/tmp/old.sock", "prod"}}, "/tmp/new.sock")
+	if got, want := strings.Join(withExisting.Argv, "\x00"), "ssh\x00-o\x00ControlPath=/tmp/old.sock\x00prod"; got != want {
+		t.Fatalf("existing Argv = %#v, want %q", withExisting.Argv, want)
+	}
+
+	nonSSH := WithControlMaster(Command{Argv: []string{"sh", "-c", "true"}}, "/tmp/new.sock")
+	if got, want := strings.Join(nonSSH.Argv, "\x00"), "sh\x00-c\x00true"; got != want {
+		t.Fatalf("non-ssh Argv = %#v, want %q", nonSSH.Argv, want)
+	}
+}
+
 func TestBuildProxy(t *testing.T) {
 	cmd := BuildProxy(Command{Argv: []string{"ssh"}}, "prod", "127.0.0.1", 1080, []string{"-v"})
 
@@ -130,6 +160,15 @@ func TestBuildSFTPWithJumpHops(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", Hops: []string{"bastion", "edge"}})
 
 	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00-J\x00bastion,edge\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestBuildSFTPWithControlPath(t *testing.T) {
+	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", ControlPath: "/tmp/ssherpa.sock"})
+
+	want := "sftp\x00-b\x00-\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-F\x00/tmp/ssh_config\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}

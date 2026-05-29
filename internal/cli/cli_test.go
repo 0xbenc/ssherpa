@@ -14,6 +14,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -257,6 +258,42 @@ Host prod
 	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
 		t.Fatalf("fake sftp batch = %q, want local dir expanded", got)
 	}
+}
+
+func TestRecordTransferEventWritesAuditDetails(t *testing.T) {
+	stateDir := t.TempDir()
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	record := state.SessionRecord{ID: "session-1", TargetAlias: "prod"}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("WriteRecord returned error: %v", err)
+	}
+
+	recordTransferEvent(stateDir, record.ID, sshcmd.SFTPTransfer{
+		Direction:  sshcmd.SFTPTransferSend,
+		Alias:      "prod",
+		LocalPath:  local,
+		RemotePath: "/tmp/payload.txt",
+	})
+
+	got, err := state.ReadRecord(stateDir, record.ID)
+	if err != nil {
+		t.Fatalf("ReadRecord returned error: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %#v, want one transfer event", got.Events)
+	}
+	event := got.Events[0]
+	if event.Type != "transfer_send" {
+		t.Fatalf("event type = %q, want transfer_send", event.Type)
+	}
+	assertContains(t, event.Message, `transport=sftp`)
+	assertContains(t, event.Message, `local="`+local+`"`)
+	assertContains(t, event.Message, `remote="prod:/tmp/payload.txt"`)
+	assertContains(t, event.Message, `bytes=5`)
+	assertContains(t, event.Message, `sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824`)
 }
 
 func TestRunConnectDirectExecutesFakeSSH(t *testing.T) {

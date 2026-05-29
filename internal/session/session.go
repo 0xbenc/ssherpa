@@ -2,12 +2,15 @@ package session
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -173,6 +176,7 @@ type OverlayTransferRequest struct {
 	TargetAlias  string
 	Hops         []string
 	Route        []string
+	ControlPath  string
 	RemoteHost   string
 	RemoteCWD    string
 	RemotePrompt string
@@ -238,6 +242,18 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		return 1
 	}
 	record := buildRecord(command, metadata, now(), env, opts.RecordID)
+	if controlPath, ok, err := prepareControlMaster(stateDir, record.ID, metadata); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: prepare SSH control socket: %v\n", err)
+		return 1
+	} else if ok {
+		controlled := sshcmd.WithControlMaster(command, controlPath)
+		if !sameStrings(controlled.Argv, command.Argv) {
+			command = controlled
+			record.SSHArgv = append([]string(nil), command.Argv...)
+			record.ControlPath = controlPath
+			defer func() { _ = os.Remove(controlPath) }()
+		}
+	}
 	overlayBase := overlayTransferRequestFromRecord("", stateDir, record)
 	var recordMu sync.Mutex
 
@@ -506,6 +522,24 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 	}
 }
 
+func prepareControlMaster(stateDir string, recordID string, metadata Metadata) (string, bool, error) {
+	if strings.TrimSpace(recordID) == "" || !interactiveSessionKind(metadata.Kind) {
+		return "", false, nil
+	}
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("ssherpa-%d", os.Getuid()), "cm")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, err
+	}
+	sum := sha1.Sum([]byte(stateDir + "\x00" + recordID))
+	path := filepath.Join(dir, hex.EncodeToString(sum[:8])+".sock")
+	return path, true, nil
+}
+
+func interactiveSessionKind(kind string) bool {
+	kind = strings.TrimSpace(kind)
+	return kind == "" || kind == state.KindInteractive
+}
+
 func sessionEnv(env []string, record state.SessionRecord) []string {
 	return withEnv(env, state.EnvForRecord(record))
 }
@@ -675,6 +709,15 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 			clearSessionOverlay(output.w, frame)
 			runOverlayTransfer(overlay.Send, overlayTransferRequest("send", stateDir, currentID, overlayBase), suspendTerminal)
 			return
+		case 'v', 'V':
+			if overlay.Receive == nil {
+				clearSessionOverlay(output.w, frame)
+				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa receive", "receive is not available for this session")
+				continue
+			}
+			clearSessionOverlay(output.w, frame)
+			runOverlayTransfer(overlay.Receive, overlayTransferRequest("receive", stateDir, currentID, overlayBase), suspendTerminal)
+			return
 		}
 	}
 }
@@ -709,11 +752,24 @@ func overlayTransferRequestFromRecord(direction string, stateDir string, record 
 		TargetAlias:  record.TargetAlias,
 		Hops:         append([]string(nil), record.Hops...),
 		Route:        append([]string(nil), record.Route...),
+		ControlPath:  record.ControlPath,
 		RemoteHost:   record.RemoteHost,
 		RemoteCWD:    record.RemoteCWD,
 		RemotePrompt: record.RemotePrompt,
 	}
 	return req
+}
+
+func sameStrings(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overlayFrame {
