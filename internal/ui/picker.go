@@ -42,6 +42,7 @@ const (
 type SavedForwardItem struct {
 	Name        string
 	Description string
+	Detail      string
 }
 
 // ActiveTunnelItem is the picker-facing projection of a live
@@ -156,6 +157,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Token:       sf.Name,
 			Title:       sf.Name,
 			Description: sf.Description,
+			Detail:      sf.Detail,
 			Group:       "Saved Forwards",
 			Badge:       "forward",
 		})
@@ -166,6 +168,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Token:       sp.Name,
 			Title:       sp.Name,
 			Description: sp.Description,
+			Detail:      sp.Detail,
 			Group:       "Saved Proxies",
 			Badge:       "proxy",
 		})
@@ -538,7 +541,11 @@ func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
 		lines = append(lines, previewKVLines(theme, width, "Target", item.Description, 2)...)
 	}
 	if item.Detail != "" {
-		lines = append(lines, previewKVLines(theme, width, "Source", item.Detail, 2)...)
+		label := "Source"
+		if item.Kind == ItemForwardSaved || item.Kind == ItemProxySaved {
+			label = "Details"
+		}
+		lines = append(lines, previewKVLines(theme, width, label, item.Detail, 2)...)
 	}
 	lines = append(lines, "")
 	for _, line := range wrapPlain(selectionHint(item), width, 2) {
@@ -594,7 +601,7 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 		title = termstyle.Truncate(item.Title, titleWidth)
 		desc = ""
 	}
-	if item.Kind != ItemAlias && item.Detail != "" && descWidth > 24 {
+	if item.Kind != ItemAlias && item.Kind != ItemForwardSaved && item.Kind != ItemProxySaved && item.Detail != "" && descWidth > 24 {
 		detailWidth := min(18, descWidth/3)
 		desc = termstyle.Truncate(item.Description, descWidth-detailWidth-3) + "  " + termstyle.Truncate(item.Detail, detailWidth)
 	}

@@ -134,6 +134,41 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	}
 }
 
+func TestSavedRowsKeepFullDetailsOutOfLeftList(t *testing.T) {
+	model := newPickerModel(BuildItemsWithOptions(nil, BuildItemsOptions{
+		SavedForwards: []SavedForwardItem{{
+			Name:        "pg",
+			Description: ":15432 -> :5432",
+			Detail:      "alias pgbox · 127.0.0.1:15432 -> 127.0.0.1:5432",
+		}},
+	}), PickOptions{NoAltScreen: true, NoColor: true})
+	model.width = 88
+
+	text := model.View().Content
+	if strings.Contains(text, "pgbox") || strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("saved row leaked full details into left list:\n%s", text)
+	}
+	if !strings.Contains(text, ":15432 -> :5432") {
+		t.Fatalf("saved row missing compact endpoints:\n%s", text)
+	}
+}
+
+func TestSavedRowsShowFullDetailsInPreview(t *testing.T) {
+	model := newPickerModel(BuildItemsWithOptions(nil, BuildItemsOptions{
+		SavedForwards: []SavedForwardItem{{
+			Name:        "pg",
+			Description: ":15432 -> :5432",
+			Detail:      "alias pgbox · 127.0.0.1:15432 -> 127.0.0.1:5432",
+		}},
+	}), PickOptions{NoAltScreen: true, NoColor: true})
+	model.width = 120
+
+	text := model.View().Content
+	if !strings.Contains(text, "Details") || !strings.Contains(text, "alias pgbox") || !strings.Contains(text, "127.0.0.1:15432") {
+		t.Fatalf("saved preview missing full details:\n%s", text)
+	}
+}
+
 func TestPickerHeaderCombinesSummaryWhenItFits(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,

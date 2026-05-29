@@ -698,6 +698,12 @@ func TestPickerSavedForwardsHidesActiveSavedTunnel(t *testing.T) {
 	if len(got) != 1 || got[0].Name != "redis" {
 		t.Fatalf("pickerSavedForwards = %+v, want only redis", got)
 	}
+	if got[0].Description != ":16379 -> :6379" {
+		t.Fatalf("saved forward description = %q, want compact loopback endpoints", got[0].Description)
+	}
+	if !strings.Contains(got[0].Detail, "alias redisbox") || !strings.Contains(got[0].Detail, "127.0.0.1:16379 -> 127.0.0.1:6379") {
+		t.Fatalf("saved forward detail = %q, want alias and full endpoints", got[0].Detail)
+	}
 }
 
 func TestPickerSavedProxiesHidesActiveSavedProxy(t *testing.T) {
@@ -712,6 +718,12 @@ func TestPickerSavedProxiesHidesActiveSavedProxy(t *testing.T) {
 	got := pickerSavedProxies(stateDir, map[string]bool{"corp": true})
 	if len(got) != 1 || got[0].Name != "lab" {
 		t.Fatalf("pickerSavedProxies = %+v, want only lab", got)
+	}
+	if got[0].Description != "SOCKS :1081" {
+		t.Fatalf("saved proxy description = %q, want compact loopback listener", got[0].Description)
+	}
+	if !strings.Contains(got[0].Detail, "alias lab") || !strings.Contains(got[0].Detail, "127.0.0.1:1081") {
+		t.Fatalf("saved proxy detail = %q, want alias and full listener", got[0].Detail)
 	}
 }
 

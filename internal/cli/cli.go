@@ -986,14 +986,11 @@ func pickerSavedForwards(stateDir string, active map[string]bool) []ui.SavedForw
 		if active[f.Name] {
 			continue
 		}
-		desc := fmt.Sprintf("%s:%d -> %s:%d", endpointBindOrLoopback(f.LocalBind), f.LocalPort, f.RemoteHost, f.RemotePort)
-		if f.Through != "" {
-			desc += " via " + f.Through
-		}
-		desc += "  (alias " + f.SSHAlias + ")"
+		desc := formatEndpointBindOrLoopback(f.LocalBind, f.LocalPort) + " -> " + formatEndpointBindOrLoopback(f.RemoteHost, f.RemotePort)
 		out = append(out, ui.SavedForwardItem{
 			Name:        f.Name,
 			Description: desc,
+			Detail:      savedForwardDetail(f),
 		})
 	}
 	return out
@@ -1013,20 +1010,30 @@ func pickerSavedProxies(stateDir string, active map[string]bool) []ui.SavedForwa
 		if active[p.Name] {
 			continue
 		}
-		desc := proxySavedListener(p) + "  (alias " + p.SSHAlias + ")"
-		if p.Description != "" {
-			desc += " · " + p.Description
-		}
-		out = append(out, ui.SavedForwardItem{Name: p.Name, Description: desc})
+		desc := "SOCKS " + formatEndpointBindOrLoopback(p.Bind, p.Port)
+		out = append(out, ui.SavedForwardItem{Name: p.Name, Description: desc, Detail: savedProxyDetail(p)})
 	}
 	return out
 }
 
-func endpointBindOrLoopback(bind string) string {
-	if bind == "" {
-		return "127.0.0.1"
+func savedForwardDetail(f state.StoredForward) string {
+	parts := []string{fmt.Sprintf("alias %s", f.SSHAlias)}
+	parts = append(parts, fmt.Sprintf("%s:%d -> %s:%d", defaultString(f.LocalBind, "127.0.0.1"), f.LocalPort, f.RemoteHost, f.RemotePort))
+	if f.Through != "" {
+		parts = append(parts, "via "+f.Through)
 	}
-	return bind
+	if f.Description != "" {
+		parts = append(parts, f.Description)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func savedProxyDetail(p state.StoredProxy) string {
+	parts := []string{fmt.Sprintf("alias %s", p.SSHAlias), proxySavedListener(p)}
+	if p.Description != "" {
+		parts = append(parts, p.Description)
+	}
+	return strings.Join(parts, " · ")
 }
 
 type inventoryFlags struct {
