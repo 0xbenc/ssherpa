@@ -104,6 +104,7 @@ type ForwardActionOptions struct {
 	ThemeFile   string
 	Name        string
 	Description string
+	KindLabel   string
 }
 
 // BuildForward runs the multi-step wizard on the home-page picker's
@@ -238,6 +239,7 @@ const (
 type forwardActionModel struct {
 	name        string
 	description string
+	kindLabel   string
 	choice      forwardLaunchChoice
 	canceled    bool
 	action      ForwardAction
@@ -250,6 +252,7 @@ func newForwardActionModel(opts ForwardActionOptions, theme termstyle.Theme) for
 	return forwardActionModel{
 		name:        opts.Name,
 		description: opts.Description,
+		kindLabel:   opts.KindLabel,
 		theme:       theme,
 		width:       104,
 		height:      18,
@@ -299,7 +302,11 @@ func (m forwardActionModel) View() tea.View {
 	var b strings.Builder
 
 	b.WriteString("  ")
-	b.WriteString(theme.logo("SSHERPA FORWARD PRESET"))
+	label := strings.TrimSpace(m.kindLabel)
+	if label == "" {
+		label = "SSHERPA FORWARD PRESET"
+	}
+	b.WriteString(theme.logo(label))
 	b.WriteString("\n")
 	b.WriteString("  ")
 	b.WriteString(theme.theme.Style(termstyle.RoleBorder, strings.Repeat("-", innerWidth)))

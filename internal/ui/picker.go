@@ -24,6 +24,9 @@ const (
 	ItemForward       ItemKind = "forward"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
+	ItemProxySaved    ItemKind = "proxy_saved"
+	ItemProxyActive   ItemKind = "proxy_active"
+	ItemStopAllActive ItemKind = "stop_all_active"
 	ItemCheck         ItemKind = "check"
 	ItemSessions      ItemKind = "sessions"
 	ItemTheme         ItemKind = "theme"
@@ -39,6 +42,7 @@ const (
 type SavedForwardItem struct {
 	Name        string
 	Description string
+	Detail      string
 }
 
 // ActiveTunnelItem is the picker-facing projection of a live
@@ -90,12 +94,17 @@ type BuildItemsOptions struct {
 	// standard action rows so daily-use one-tap launches get
 	// prominence — decision #3 in docs/forward-phase-2.md.
 	SavedForwards []SavedForwardItem
+	SavedProxies  []SavedForwardItem
 	// ActiveTunnels renders as an "Active Tunnels" group above
 	// Saved Forwards — they're more actionable (you want to stop
 	// them right now) than launches. Picker dispatch calls
 	// `ssherpa forward stop` when one is selected. The count
 	// shown in the subtitle is derived from len(ActiveTunnels).
 	ActiveTunnels []ActiveTunnelItem
+	ActiveProxies []ActiveTunnelItem
+	// StopAllActiveCount renders the global kill action when at least one
+	// live tracked session exists, including interactive jump/direct sessions.
+	StopAllActiveCount int
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -104,6 +113,17 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 
 func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []Item {
 	items := []Item{}
+
+	if opts.StopAllActiveCount > 0 {
+		items = append(items, Item{
+			Kind:        ItemStopAllActive,
+			Token:       "STOP_ALL",
+			Title:       "Stop all active sessions",
+			Description: fmt.Sprintf("%d tracked session(s)", opts.StopAllActiveCount),
+			Group:       "Active",
+			Badge:       "stop all",
+		})
+	}
 
 	// Active tunnels lead — they're the "kill this right now"
 	// surface. Selecting one calls `forward stop SESSION_ID`,
@@ -118,6 +138,16 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Badge:       "stop",
 		})
 	}
+	for _, ap := range opts.ActiveProxies {
+		items = append(items, Item{
+			Kind:        ItemProxyActive,
+			Token:       ap.SessionID,
+			Title:       ap.Title,
+			Description: ap.Description,
+			Group:       "Active Proxies",
+			Badge:       "stop",
+		})
+	}
 
 	// Saved forwards next — explicit "I set this up to reuse"
 	// entries. Selecting one launches the saved spec.
@@ -127,8 +157,20 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Token:       sf.Name,
 			Title:       sf.Name,
 			Description: sf.Description,
+			Detail:      sf.Detail,
 			Group:       "Saved Forwards",
 			Badge:       "forward",
+		})
+	}
+	for _, sp := range opts.SavedProxies {
+		items = append(items, Item{
+			Kind:        ItemProxySaved,
+			Token:       sp.Name,
+			Title:       sp.Name,
+			Description: sp.Description,
+			Detail:      sp.Detail,
+			Group:       "Saved Proxies",
+			Badge:       "proxy",
 		})
 	}
 
@@ -499,7 +541,11 @@ func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
 		lines = append(lines, previewKVLines(theme, width, "Target", item.Description, 2)...)
 	}
 	if item.Detail != "" {
-		lines = append(lines, previewKVLines(theme, width, "Source", item.Detail, 2)...)
+		label := "Source"
+		if item.Kind == ItemForwardSaved || item.Kind == ItemProxySaved {
+			label = "Details"
+		}
+		lines = append(lines, previewKVLines(theme, width, label, item.Detail, 2)...)
 	}
 	lines = append(lines, "")
 	for _, line := range wrapPlain(selectionHint(item), width, 2) {
@@ -555,7 +601,7 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 		title = termstyle.Truncate(item.Title, titleWidth)
 		desc = ""
 	}
-	if item.Kind != ItemAlias && item.Detail != "" && descWidth > 24 {
+	if item.Kind != ItemAlias && item.Kind != ItemForwardSaved && item.Kind != ItemProxySaved && item.Detail != "" && descWidth > 24 {
 		detailWidth := min(18, descWidth/3)
 		desc = termstyle.Truncate(item.Description, descWidth-detailWidth-3) + "  " + termstyle.Truncate(item.Detail, detailWidth)
 	}
@@ -664,7 +710,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RolePrimary
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
-	case ItemForwardActive:
+	case ItemForwardActive, ItemProxyActive, ItemStopAllActive:
 		role = termstyle.RoleDanger
 	case ItemCheck:
 		role = termstyle.RoleInfo
@@ -782,6 +828,12 @@ func selectionHint(item Item) string {
 		return "Builds a ProxyJump route through selected hops."
 	case ItemProxy:
 		return "Starts a local SOCKS proxy through an SSH alias."
+	case ItemProxySaved:
+		return "Launches a saved SOCKS proxy preset."
+	case ItemProxyActive:
+		return "Stops this running SOCKS proxy."
+	case ItemStopAllActive:
+		return "Stops every live tracked session: tunnels, proxies, jumps, and supervised direct SSH."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemForwardSaved:

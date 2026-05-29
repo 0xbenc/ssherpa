@@ -382,19 +382,20 @@ func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	savedForwards := editSavedForwards(flags.StateDir)
-	if len(inventory.Aliases) == 0 && len(savedForwards) == 0 {
-		fmt.Fprintln(stdout, "[skipped] no aliases or saved forwards available to edit")
+	savedProxies := editSavedProxies(flags.StateDir)
+	if len(inventory.Aliases) == 0 && len(savedForwards) == 0 && len(savedProxies) == 0 {
+		fmt.Fprintln(stdout, "[skipped] no aliases or saved presets available to edit")
 		return 0
 	}
 
-	item, ok, err := ui.Pick(context.Background(), editItems(inventory.Aliases, savedForwards), ui.PickOptions{
+	item, ok, err := ui.Pick(context.Background(), editItems(inventory.Aliases, savedForwards, savedProxies), ui.PickOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		NoColor:     flags.NoColor,
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
-		Title:       "Edit: pick an alias or saved forward",
+		Title:       "Edit: pick an alias or saved preset",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -410,6 +411,8 @@ func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runEditAliasTUI(item.Token, flags, stdout, stderr)
 	case ui.ItemForwardSaved:
 		return runEditSavedForwardTUI(item.Token, flags, stdout, stderr)
+	case ui.ItemProxySaved:
+		return runEditSavedProxyTUI(item.Token, flags, stdout, stderr)
 	}
 	fmt.Fprintln(stdout, "[skipped] edit cancelled")
 	return 0
@@ -505,7 +508,7 @@ func runEditSavedForwardTUI(name string, flags editInteractiveFlags, stdout io.W
 		return runRenameSavedForwardTUI(name, flags, stdout, stderr)
 	}
 	if action.Token == "delete" {
-		args := []string{"saved", "delete", name}
+		args := []string{"saved", "delete", name, "--yes"}
 		if flags.StateDir != "" {
 			args = append(args, "--state-dir", flags.StateDir)
 		}
@@ -619,6 +622,125 @@ func runRenameSavedForwardTUI(name string, flags editInteractiveFlags, stdout io
 	return runForward(args, stdout, stderr)
 }
 
+func runEditSavedProxyTUI(name string, flags editInteractiveFlags, stdout io.Writer, stderr io.Writer) int {
+	action, ok, err := pickEditAction("Edit saved proxy: "+name, []ui.Item{
+		{Kind: ui.ItemKind("edit_details"), Token: "edit", Title: "Edit proxy", Description: "open the proxy editor"},
+		{Kind: ui.ItemKind("rename"), Token: "rename", Title: "Rename saved proxy", Description: "change the catalog handle"},
+		{Kind: ui.ItemKind("delete"), Token: "delete", Title: "Delete saved proxy", Description: "remove from ssherpa catalog"},
+		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "leave unchanged"},
+	}, flags, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
+		return 1
+	}
+	if !ok || action.Token == "back" {
+		fmt.Fprintln(stdout, "[skipped] edit cancelled")
+		return 0
+	}
+	if action.Token == "rename" {
+		return runRenameSavedProxyTUI(name, flags, stdout, stderr)
+	}
+	if action.Token == "delete" {
+		args := []string{"saved", "delete", name, "--yes"}
+		if flags.StateDir != "" {
+			args = append(args, "--state-dir", flags.StateDir)
+		}
+		return runProxy(args, stdout, stderr)
+	}
+
+	stateDir, ok := resolveForwardSavedStateDir(flags.StateDir, stderr)
+	if !ok {
+		return 1
+	}
+	spec, err := state.ReadProxy(stateDir, name)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: read saved proxy %q: %v\n", name, err)
+		return 2
+	}
+	_, inventory, err := loadInventory(flags.inventoryFlags)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 2
+	}
+	if findAlias(inventory.Aliases, spec.SSHAlias) == nil {
+		fmt.Fprintf(stderr, "ssherpa: alias %q not found\n", spec.SSHAlias)
+		return 2
+	}
+	aliases := make([]ui.ForwardAlias, 0, len(inventory.Aliases))
+	for _, a := range inventory.Aliases {
+		aliases = append(aliases, ui.ForwardAlias{Name: a.Name, Description: displayAlias(a)})
+	}
+	result, ok, err := ui.BuildProxy(context.Background(), ui.BuildProxyOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Aliases:     aliases,
+		Initial: ui.ProxyResult{
+			Alias: spec.SSHAlias,
+			Bind:  spec.Bind,
+			Port:  spec.Port,
+		},
+		EditMode: true,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: proxy editor failed: %v\n", err)
+		return 1
+	}
+	if !ok || result.Action != ui.ForwardActionSaveChanges {
+		fmt.Fprintln(stdout, "[skipped] edit cancelled")
+		return 0
+	}
+	updated := spec
+	updated.SSHAlias = result.Alias
+	updated.Bind = result.Bind
+	updated.Port = result.Port
+	if err := validateStoredProxy(updated); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if err := state.WriteProxy(stateDir, updated); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: edit proxy: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "ssherpa: proxy %q updated\n", updated.Name)
+	return 0
+}
+
+func runRenameSavedProxyTUI(name string, flags editInteractiveFlags, stdout io.Writer, stderr io.Writer) int {
+	newName, ok, err := ui.PromptText(context.Background(), ui.TextPromptOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Rename saved proxy",
+		Label:       "name",
+		Initial:     name,
+		Validate:    state.ValidateProxyName,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: rename prompt failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] rename cancelled")
+		return 0
+	}
+	if newName == name {
+		fmt.Fprintln(stdout, "[skipped] name unchanged")
+		return 0
+	}
+	args := []string{"saved", "rename", name, newName}
+	if flags.StateDir != "" {
+		args = append(args, "--state-dir", flags.StateDir)
+	}
+	return runProxy(args, stdout, stderr)
+}
+
 func pickEditAction(title string, items []ui.Item, flags editInteractiveFlags, stderr io.Writer) (ui.Item, bool, error) {
 	return ui.Pick(context.Background(), items, ui.PickOptions{
 		Input:       os.Stdin,
@@ -643,8 +765,20 @@ func editSavedForwards(stateDirOverride string) []state.StoredForward {
 	return forwards
 }
 
-func editItems(aliases []hostlist.Alias, forwards []state.StoredForward) []ui.Item {
-	items := make([]ui.Item, 0, len(aliases)+len(forwards))
+func editSavedProxies(stateDirOverride string) []state.StoredProxy {
+	stateDir, err := state.ResolveDir(stateDirOverride)
+	if err != nil {
+		return nil
+	}
+	proxies, err := state.ListProxies(stateDir)
+	if err != nil {
+		return nil
+	}
+	return proxies
+}
+
+func editItems(aliases []hostlist.Alias, forwards []state.StoredForward, proxies []state.StoredProxy) []ui.Item {
+	items := make([]ui.Item, 0, len(aliases)+len(forwards)+len(proxies))
 	for _, forward := range forwards {
 		items = append(items, ui.Item{
 			Kind:        ui.ItemForwardSaved,
@@ -653,6 +787,16 @@ func editItems(aliases []hostlist.Alias, forwards []state.StoredForward) []ui.It
 			Description: savedForwardDescription(forward),
 			Group:       "Saved Forwards",
 			Badge:       "forward",
+		})
+	}
+	for _, proxy := range proxies {
+		items = append(items, ui.Item{
+			Kind:        ui.ItemProxySaved,
+			Token:       proxy.Name,
+			Title:       proxy.Name,
+			Description: savedProxyDescription(proxy),
+			Group:       "Saved Proxies",
+			Badge:       "proxy",
 		})
 	}
 	for _, alias := range aliases {
@@ -674,6 +818,14 @@ func savedForwardDescription(spec state.StoredForward) string {
 	if spec.Through != "" {
 		base += " via " + spec.Through
 	}
+	if spec.Description != "" {
+		base += " · " + spec.Description
+	}
+	return base
+}
+
+func savedProxyDescription(spec state.StoredProxy) string {
+	base := fmt.Sprintf("%s: %s", spec.SSHAlias, proxySavedListener(spec))
 	if spec.Description != "" {
 		base += " · " + spec.Description
 	}

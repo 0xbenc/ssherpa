@@ -22,6 +22,8 @@ const (
 	detachedLogPathFlag = "--__detached-log-path"
 )
 
+var daemonRecordReadyTimeout = 2 * time.Second
+
 // daemonStartProcess is the seam tests use to swap in a stub spawner.
 // In production it re-execs ssherpa with the supervisor flags set; the
 // returned PID is reported to the parent invocation's stdout so the
@@ -47,7 +49,15 @@ var daemonStartProcess = func(name string, argv []string, attr *os.ProcAttr) (in
 // forward args minus `--background`, prefixed by the hidden supervisor
 // flags so cli.Run's dispatch routes it to runSupervisorChild.
 func daemonizeForward(originalArgs []string, flags forwardFlags, stdout io.Writer, stderr io.Writer) int {
-	stateDir, err := state.ResolveDir(flags.StateDir)
+	return daemonizeRoute("forward", originalArgs, flags.StateDir, stdout, stderr)
+}
+
+func daemonizeProxy(originalArgs []string, flags proxyFlags, stdout io.Writer, stderr io.Writer) int {
+	return daemonizeRoute("proxy", originalArgs, flags.StateDir, stdout, stderr)
+}
+
+func daemonizeRoute(command string, originalArgs []string, stateDirOverride string, stdout io.Writer, stderr io.Writer) int {
+	stateDir, err := state.ResolveDir(stateDirOverride)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1
@@ -82,13 +92,13 @@ func daemonizeForward(originalArgs []string, flags forwardFlags, stdout io.Write
 		return 1
 	}
 
-	childForward := stripFlag(originalArgs, "--background")
+	childCommand := stripFlag(originalArgs, "--background")
 	childArgs := []string{self, supervisorFlag,
 		detachedIDFlag, sessionID,
 		detachedStateFlag, stateDir,
 		detachedLogPathFlag, logPath,
-		"forward"}
-	childArgs = append(childArgs, childForward...)
+		command}
+	childArgs = append(childArgs, childCommand...)
 
 	pid, err := daemonStartProcess(self, childArgs, &os.ProcAttr{
 		Env:   os.Environ(),
@@ -100,12 +110,30 @@ func daemonizeForward(originalArgs []string, flags forwardFlags, stdout io.Write
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "ssherpa: forward detached\n")
+	waitForDetachedRecord(stateDir, sessionID, daemonRecordReadyTimeout)
+
+	fmt.Fprintf(stdout, "ssherpa: %s detached\n", command)
 	fmt.Fprintf(stdout, "  session id: %s\n", sessionID)
 	fmt.Fprintf(stdout, "  daemon pid: %d\n", pid)
 	fmt.Fprintf(stdout, "  log file:   %s\n", logPath)
-	fmt.Fprintf(stdout, "  stop with:  ssherpa forward stop %s\n", sessionID)
+	fmt.Fprintf(stdout, "  stop with:  ssherpa %s stop %s\n", command, sessionID)
 	return 0
+}
+
+func waitForDetachedRecord(stateDir string, sessionID string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := state.ReadRecord(stateDir, sessionID); err == nil {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 // stripFlag returns args with the first occurrence of flag removed.
@@ -126,8 +154,9 @@ func stripFlag(args []string, flag string) []string {
 // runSupervisorChild is the child-side entry point after the parent
 // daemonized. It strips the hidden flags, makes the state dir override
 // authoritative (env var alternative would race a user's $SSHERPA_STATE_DIR),
-// then routes back into runForwardWith with detached=true so flag parsing
-// and validation stay identical between foreground and background paths.
+// then routes back into the relevant command body with detached=true so
+// flag parsing and validation stay identical between foreground and
+// background paths.
 func runSupervisorChild(args []string, stdout io.Writer, stderr io.Writer) int {
 	var recordID, stateDirOverride string
 	rest := make([]string, 0, len(args))
@@ -166,17 +195,26 @@ func runSupervisorChild(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ssherpa: --__supervisor requires --__detached-id")
 		return 1
 	}
-	if len(rest) == 0 || rest[0] != "forward" {
-		fmt.Fprintln(stderr, "ssherpa: --__supervisor currently only supports the forward subcommand")
+	if len(rest) == 0 {
+		fmt.Fprintln(stderr, "ssherpa: --__supervisor requires a subcommand")
 		return 1
 	}
-	forwardArgs := rest[1:]
+	command := rest[0]
+	commandArgs := rest[1:]
 	if stateDirOverride != "" {
 		// Inject as the first arg so the parent's resolved state dir
 		// is authoritative even if the user's environment changes
 		// between fork and exec (or if SSHERPA_STATE_DIR is set
 		// inconsistently in the daemon's env).
-		forwardArgs = append([]string{"--state-dir", stateDirOverride}, forwardArgs...)
+		commandArgs = append([]string{"--state-dir", stateDirOverride}, commandArgs...)
 	}
-	return runForwardWith(forwardArgs, true, recordID, stdout, stderr)
+	switch command {
+	case "forward":
+		return runForwardWith(commandArgs, true, recordID, stdout, stderr)
+	case "proxy":
+		return runProxyWith(commandArgs, true, recordID, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "ssherpa: --__supervisor does not support %q\n", command)
+		return 1
+	}
 }

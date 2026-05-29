@@ -74,7 +74,16 @@ Mutation Commands:
 
 Route Commands:
   ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
-  ssherpa proxy --select ALIAS [--bind ADDR] [--port PORT] [--print] [--direct]
+  ssherpa proxy --select ALIAS_OR_SAVED [--bind ADDR] [--port PORT] [--background] [--print] [--direct]
+  ssherpa proxy list [--json] [--state-dir PATH]
+  ssherpa proxy status SESSION_ID_OR_NAME [--json] [--state-dir PATH]
+  ssherpa proxy stop SESSION_ID_OR_NAME [--state-dir PATH]
+  ssherpa proxy saved list [--json] [--state-dir PATH]
+  ssherpa proxy saved show NAME [--json] [--state-dir PATH]
+  ssherpa proxy saved save NAME --select ALIAS --port PORT [--bind ADDR] [--description TEXT] [--yes]
+  ssherpa proxy saved edit NAME [--select ALIAS] [--port PORT] [--bind ADDR] [--description TEXT|--clear-description]
+  ssherpa proxy saved delete NAME [--yes]
+  ssherpa proxy saved rename OLD NEW [--yes]
   ssherpa forward --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--print] [--direct] [--background] [--reconnect-max N] [--no-reconnect]
   ssherpa forward list [--json] [--state-dir PATH]
   ssherpa forward status SESSION_ID_OR_NAME [--json] [--state-dir PATH]
@@ -107,12 +116,13 @@ Session Commands:
   ssherpa session list [--json] [--state-dir PATH]
   ssherpa session map [--json] [--all] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
+  ssherpa session stop-all [--json] [--state-dir PATH]
   ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
 
 Phase 10:
   SSH config inventory, picker, supervised SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
-  management are available. Connection checks and saved-forward catalog
+  management are available. Connection checks and saved forward/proxy catalog
   management are available. Supervised PTY sessions, session maps, and
   upgraded picker UX are available. The TUI defaults to the terminal
   palette, supports theme role overrides, includes a live theme editor,
@@ -262,8 +272,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			continue
 		case ui.ItemProxy:
-			code := runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
-			if code == 0 && flags.Select == "" {
+			code, returnHome := runProxyBuilder(flags, inventory, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}
 			return code
@@ -291,6 +301,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 				continue
 			}
 			return code
+		case ui.ItemProxySaved:
+			code, returnHome := runProxyPreset(flags, item, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemForwardActive:
 			// One-tap stop: item.Token is the session ID; runForward
 			// dispatches to runForwardStop which SIGHUPs the daemon.
@@ -304,6 +320,27 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 				continue
 			}
 			return code
+		case ui.ItemProxyActive:
+			stopArgs := []string{"stop"}
+			if flags.StateDir != "" {
+				stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
+			}
+			stopArgs = append(stopArgs, item.Token)
+			code := runProxy(stopArgs, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemStopAllActive:
+			stopArgs := []string{"stop-all"}
+			if flags.StateDir != "" {
+				stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
+			}
+			code := runSession(stopArgs, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemAuthkeys:
 			code := runAuthkeys(nil, stdout, stderr)
 			if code == 0 && flags.Select == "" {
@@ -311,8 +348,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			return code
 		case ui.ItemSessions:
-			code := runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
-			if code == 0 && flags.Select == "" {
+			code, returnHome := runSessionMapViewer(flags, stderr, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}
 			return code
@@ -608,13 +645,19 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 	}
 
 	sessionCount, activeSessions := pickerSessionCounts(flags.StateDir)
-	savedForwards := pickerSavedForwards(flags.StateDir)
 	activeTunnels := pickerActiveTunnels(flags.StateDir)
+	activeProxies := pickerActiveProxies(flags.StateDir)
+	stoppableSessions := pickerStoppableSessionCount(flags.StateDir)
+	savedForwards := pickerSavedForwards(flags.StateDir, activeSavedNames(activeTunnels))
+	savedProxies := pickerSavedProxies(flags.StateDir, activeSavedNames(activeProxies))
 	item, ok, err := ui.Pick(context.Background(), ui.BuildItemsWithOptions(inventory.Aliases, ui.BuildItemsOptions{
 		SessionCount:       sessionCount,
 		ActiveSessionCount: activeSessions,
 		SavedForwards:      savedForwards,
+		SavedProxies:       savedProxies,
 		ActiveTunnels:      activeTunnels,
+		ActiveProxies:      activeProxies,
+		StopAllActiveCount: stoppableSessions,
 	}), ui.PickOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
@@ -625,7 +668,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		Title:       "ssherpa",
 		Version:     pickerVersionLabel(build),
 		Subtitle:    pickerMode(flags),
-		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)),
+		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)+len(activeProxies)),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -744,6 +787,24 @@ func pickerSessionCounts(stateDir string) (total int, active int) {
 	return len(records), active
 }
 
+func pickerStoppableSessionCount(stateDir string) int {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return 0
+	}
+	records, err := state.ListRecords(dir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, record := range records {
+		if state.ProcessAlive(record) {
+			count++
+		}
+	}
+	return count
+}
+
 // pickerActiveTunnels flattens live KindTunnel records into the
 // picker's "Active Tunnels" projection. Only records whose daemon
 // process is still alive are surfaced — orphan records (daemon
@@ -780,6 +841,30 @@ func pickerActiveTunnels(stateDir string) []ui.ActiveTunnelItem {
 	return out
 }
 
+func pickerActiveProxies(stateDir string) []ui.ActiveTunnelItem {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	records, err := state.ListRecords(dir)
+	if err != nil {
+		return nil
+	}
+	var out []ui.ActiveTunnelItem
+	now := time.Now()
+	for _, r := range records {
+		if r.Kind != state.KindProxy || r.EndedAt != nil || !state.ProcessAlive(r) {
+			continue
+		}
+		out = append(out, ui.ActiveTunnelItem{
+			SessionID:   r.ID,
+			Title:       activeProxyTitle(r),
+			Description: activeProxyDescription(r, now),
+		})
+	}
+	return out
+}
+
 // activeTunnelTitle picks the most recognizable label for a live
 // tunnel row: saved alias if the launch came from the catalog,
 // otherwise the SSH destination alias, falling back to a short
@@ -798,23 +883,45 @@ func activeTunnelTitle(r state.SessionRecord) string {
 }
 
 // activeTunnelDescription renders the operator-facing one-liner:
-// `LOCAL -> REMOTE · up DURATION · pid PID`. Compact so the home page
-// row stays scannable.
+// `LOCAL -> REMOTE · up DURATION`. Compact so the home page row stays
+// scannable; process IDs stay in details/status views.
 func activeTunnelDescription(r state.SessionRecord, now time.Time) string {
 	parts := []string{}
 	if r.Forward != nil {
 		parts = append(parts, formatEndpointBindOrLoopback(r.Forward.LocalBind, r.Forward.LocalPort)+" -> "+
-			fmt.Sprintf("%s:%d", r.Forward.RemoteHost, r.Forward.RemotePort))
-		if r.Forward.Through != "" {
-			parts = append(parts, "via "+r.Forward.Through)
-		}
+			formatEndpointBindOrLoopback(r.Forward.RemoteHost, r.Forward.RemotePort))
 	}
 	uptime := now.Sub(r.StartedAt)
 	if uptime > 0 {
 		parts = append(parts, "up "+humanShortDuration(uptime))
 	}
-	if r.LocalPID > 0 {
-		parts = append(parts, fmt.Sprintf("pid %d", r.LocalPID))
+	if len(parts) == 0 {
+		return "running"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func activeProxyTitle(r state.SessionRecord) string {
+	if r.Proxy != nil && r.Proxy.SavedAlias != "" {
+		return r.Proxy.SavedAlias
+	}
+	if r.TargetAlias != "" {
+		return r.TargetAlias
+	}
+	if len(r.ID) > 12 {
+		return "session " + r.ID[len(r.ID)-12:]
+	}
+	return r.ID
+}
+
+func activeProxyDescription(r state.SessionRecord, now time.Time) string {
+	parts := []string{}
+	if r.Proxy != nil {
+		parts = append(parts, "SOCKS "+formatEndpointBindOrLoopback(r.Proxy.Bind, r.Proxy.Port))
+	}
+	uptime := now.Sub(r.StartedAt)
+	if uptime > 0 {
+		parts = append(parts, "up "+humanShortDuration(uptime))
 	}
 	if len(parts) == 0 {
 		return "running"
@@ -825,6 +932,9 @@ func activeTunnelDescription(r state.SessionRecord, now time.Time) string {
 func formatEndpointBindOrLoopback(bind string, port int) string {
 	if bind == "" {
 		bind = "127.0.0.1"
+	}
+	if bind == "127.0.0.1" {
+		return fmt.Sprintf(":%d", port)
 	}
 	if strings.Contains(bind, ":") {
 		return fmt.Sprintf("[%s]:%d", bind, port)
@@ -852,7 +962,17 @@ func humanShortDuration(d time.Duration) string {
 // picker's lightweight projection. Failures are silent — the home
 // page should always render, even if the forwards directory is
 // missing or unreadable.
-func pickerSavedForwards(stateDir string) []ui.SavedForwardItem {
+func activeSavedNames(items []ui.ActiveTunnelItem) map[string]bool {
+	names := make(map[string]bool, len(items))
+	for _, item := range items {
+		if item.Title != "" {
+			names[item.Title] = true
+		}
+	}
+	return names
+}
+
+func pickerSavedForwards(stateDir string, active map[string]bool) []ui.SavedForwardItem {
 	dir, err := state.ResolveDir(stateDir)
 	if err != nil {
 		return nil
@@ -863,24 +983,57 @@ func pickerSavedForwards(stateDir string) []ui.SavedForwardItem {
 	}
 	out := make([]ui.SavedForwardItem, 0, len(forwards))
 	for _, f := range forwards {
-		desc := fmt.Sprintf("%s:%d -> %s:%d", endpointBindOrLoopback(f.LocalBind), f.LocalPort, f.RemoteHost, f.RemotePort)
-		if f.Through != "" {
-			desc += " via " + f.Through
+		if active[f.Name] {
+			continue
 		}
-		desc += "  (alias " + f.SSHAlias + ")"
+		desc := formatEndpointBindOrLoopback(f.LocalBind, f.LocalPort) + " -> " + formatEndpointBindOrLoopback(f.RemoteHost, f.RemotePort)
 		out = append(out, ui.SavedForwardItem{
 			Name:        f.Name,
 			Description: desc,
+			Detail:      savedForwardDetail(f),
 		})
 	}
 	return out
 }
 
-func endpointBindOrLoopback(bind string) string {
-	if bind == "" {
-		return "127.0.0.1"
+func pickerSavedProxies(stateDir string, active map[string]bool) []ui.SavedForwardItem {
+	dir, err := state.ResolveDir(stateDir)
+	if err != nil {
+		return nil
 	}
-	return bind
+	proxies, err := state.ListProxies(dir)
+	if err != nil || len(proxies) == 0 {
+		return nil
+	}
+	out := make([]ui.SavedForwardItem, 0, len(proxies))
+	for _, p := range proxies {
+		if active[p.Name] {
+			continue
+		}
+		desc := "SOCKS " + formatEndpointBindOrLoopback(p.Bind, p.Port)
+		out = append(out, ui.SavedForwardItem{Name: p.Name, Description: desc, Detail: savedProxyDetail(p)})
+	}
+	return out
+}
+
+func savedForwardDetail(f state.StoredForward) string {
+	parts := []string{fmt.Sprintf("alias %s", f.SSHAlias)}
+	parts = append(parts, fmt.Sprintf("%s:%d -> %s:%d", defaultString(f.LocalBind, "127.0.0.1"), f.LocalPort, f.RemoteHost, f.RemotePort))
+	if f.Through != "" {
+		parts = append(parts, "via "+f.Through)
+	}
+	if f.Description != "" {
+		parts = append(parts, f.Description)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func savedProxyDetail(p state.StoredProxy) string {
+	parts := []string{fmt.Sprintf("alias %s", p.SSHAlias), proxySavedListener(p)}
+	if p.Description != "" {
+		parts = append(parts, p.Description)
+	}
+	return strings.Join(parts, " · ")
 }
 
 type inventoryFlags struct {

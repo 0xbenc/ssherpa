@@ -31,9 +31,11 @@ type jumpFlags struct {
 
 type proxyFlags struct {
 	connectFlags
-	Bind    string
-	Port    int
-	PortSet bool
+	Bind             string
+	Port             int
+	PortSet          bool
+	Background       bool
+	savedFromCatalog string
 }
 
 type forwardFlags struct {
@@ -161,6 +163,22 @@ func runJump(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "list":
+			return runProxyList(args[1:], stdout, stderr)
+		case "status":
+			return runProxyStatus(args[1:], stdout, stderr)
+		case "stop":
+			return runProxyStop(args[1:], stdout, stderr)
+		case "saved":
+			return runProxySaved(args[1:], stdout, stderr)
+		}
+	}
+	return runProxyWith(args, false, "", stdout, stderr)
+}
+
+func runProxyWith(args []string, detached bool, recordID string, stdout io.Writer, stderr io.Writer) int {
 	if hasHelpFlag(args) {
 		printUsage(stdout)
 		return 0
@@ -181,6 +199,23 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if flags.JSON {
 		fmt.Fprintln(stderr, "ssherpa: --json is not supported for proxy")
+		return 1
+	}
+	if flags.Select != "" && !flags.PortSet {
+		if stateDir, err := state.ResolveDir(flags.StateDir); err == nil {
+			if saved, err := state.ReadProxy(stateDir, flags.Select); err == nil {
+				applyProxyCatalogDefaults(&flags, saved)
+				flags.savedFromCatalog = saved.Name
+				touchProxyLastLaunched(stateDir, saved)
+			}
+		}
+	}
+	if flags.Background && flags.Print {
+		fmt.Fprintln(stderr, "ssherpa: --background and --print are mutually exclusive")
+		return 1
+	}
+	if flags.Background && flags.Direct {
+		fmt.Fprintln(stderr, "ssherpa: --background requires supervised mode; remove --direct")
 		return 1
 	}
 
@@ -207,14 +242,28 @@ func runProxy(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
+	if flags.Background && !detached {
+		return daemonizeProxy(args, flags, stdout, stderr)
+	}
 
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildProxy(base, alias.Name, flags.Bind, flags.Port, flags.SSHArgs)
 	metadata := session.Metadata{
 		TargetAlias: alias.Name,
 		Route:       []string{alias.Name},
+		Kind:        state.KindProxy,
+		Proxy: &state.ProxySpec{
+			Bind:       flags.Bind,
+			Port:       flags.Port,
+			SavedAlias: flags.savedFromCatalog,
+			Detached:   detached,
+		},
 	}
-	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
+	opts := flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops))
+	opts.Reconnect = session.DefaultReconnect()
+	opts.Detached = detached
+	opts.RecordID = recordID
+	return printOrRunSSH(cmd, opts, metadata, stdout, stderr)
 }
 
 func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -684,6 +733,8 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			}
 			flags.Port = port
 			flags.PortSet = true
+		case arg == "--background":
+			flags.Background = true
 		case arg == "--no-kitty":
 			flags.NoKitty = true
 		case arg == "--no-color":
@@ -1380,6 +1431,48 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	return runForward(args, stdout, stderr), result.Action == ui.ForwardActionBackground
 }
 
+func runProxyBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
+	aliases := make([]ui.ForwardAlias, 0, len(inventory.Aliases))
+	for _, a := range inventory.Aliases {
+		aliases = append(aliases, ui.ForwardAlias{Name: a.Name, Description: displayAlias(a)})
+	}
+	if len(aliases) == 0 {
+		fmt.Fprintln(stderr, "[skipped] no aliases available for proxy")
+		return 0, true
+	}
+	result, ok, err := ui.BuildProxy(context.Background(), ui.BuildProxyOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Aliases:     aliases,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: proxy builder failed: %v\n", err)
+		return 1, false
+	}
+	if !ok || result.Action == ui.ForwardActionCancel {
+		fmt.Fprintln(stderr, "[skipped] proxy builder cancelled")
+		return 0, true
+	}
+	if result.Action == ui.ForwardActionSave {
+		return saveProxyFromBuilder(flags, result, stdout, stderr), true
+	}
+	args := []string{"--select", result.Alias, "--port", strconv.Itoa(result.Port)}
+	if result.Bind != "" && result.Bind != defaultProxyBind {
+		args = append(args, "--bind", result.Bind)
+	}
+	if result.Action == ui.ForwardActionBackground {
+		args = append(args, "--background")
+	} else if result.Action == ui.ForwardActionPrint {
+		args = append(args, "--print")
+	}
+	args = append(args, connectFlagsAsProxyArgs(flags)...)
+	return runProxy(args, stdout, stderr), result.Action == ui.ForwardActionBackground
+}
+
 // runForwardPreset handles a saved-forward row picked from the home
 // page. The catalog still supplies the actual --local/--remote/--through
 // values inside runForwardWith; this function only asks whether the
@@ -1407,12 +1500,44 @@ func runForwardPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr
 	return runForward(savedForwardLaunchArgs(flags, item.Token, action), stdout, stderr), action == ui.ForwardActionBackground
 }
 
+func runProxyPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr io.Writer) (int, bool) {
+	action, ok, err := ui.ChooseForwardLaunchAction(context.Background(), ui.ForwardActionOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Name:        item.Title,
+		Description: item.Description,
+		KindLabel:   "SSHERPA PROXY PRESET",
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: proxy preset picker failed: %v\n", err)
+		return 1, false
+	}
+	if !ok || action == ui.ForwardActionCancel {
+		fmt.Fprintln(stderr, "[skipped] proxy preset cancelled")
+		return 0, true
+	}
+	return runProxy(savedProxyLaunchArgs(flags, item.Token, action), stdout, stderr), action == ui.ForwardActionBackground
+}
+
 func savedForwardLaunchArgs(flags connectFlags, name string, action ui.ForwardAction) []string {
 	args := []string{"--select", name}
 	if action == ui.ForwardActionBackground {
 		args = append(args, "--background")
 	}
 	args = append(args, connectFlagsAsForwardArgs(flags)...)
+	return args
+}
+
+func savedProxyLaunchArgs(flags connectFlags, name string, action ui.ForwardAction) []string {
+	args := []string{"--select", name}
+	if action == ui.ForwardActionBackground {
+		args = append(args, "--background")
+	}
+	args = append(args, connectFlagsAsProxyArgs(flags)...)
 	return args
 }
 
@@ -1453,6 +1578,30 @@ func saveForwardFromBuilder(flags connectFlags, result ui.ForwardResult, stdout 
 	return 0
 }
 
+func saveProxyFromBuilder(flags connectFlags, result ui.ProxyResult, stdout io.Writer, stderr io.Writer) int {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	spec := state.StoredProxy{
+		Name:     result.SavedName,
+		SSHAlias: result.Alias,
+		Bind:     result.Bind,
+		Port:     result.Port,
+	}
+	if err := state.WriteProxy(stateDir, spec); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: save proxy: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "ssherpa: proxy saved as %q\n", spec.Name)
+	fmt.Fprintf(stdout, "  ssh alias:  %s\n", spec.SSHAlias)
+	fmt.Fprintf(stdout, "  listener:   %s\n", result.ListenerSpec())
+	fmt.Fprintf(stdout, "  launch:     ssherpa proxy --select %s\n", spec.Name)
+	fmt.Fprintf(stdout, "  daemonize:  ssherpa proxy --select %s --background\n", spec.Name)
+	return 0
+}
+
 // applyCatalogDefaults overlays a saved forward's spec onto flags
 // when --local/--remote weren't set on the CLI. The user's explicit
 // --through still wins if they passed one.
@@ -1479,6 +1628,22 @@ func touchForwardLastLaunched(stateDir string, saved state.StoredForward) {
 	now := time.Now().UTC()
 	saved.LastLaunchedAt = &now
 	_ = state.WriteForward(stateDir, saved)
+}
+
+func applyProxyCatalogDefaults(flags *proxyFlags, saved state.StoredProxy) {
+	flags.Bind = saved.Bind
+	if flags.Bind == "" {
+		flags.Bind = defaultProxyBind
+	}
+	flags.Port = saved.Port
+	flags.PortSet = true
+	flags.Select = saved.SSHAlias
+}
+
+func touchProxyLastLaunched(stateDir string, saved state.StoredProxy) {
+	now := time.Now().UTC()
+	saved.LastLaunchedAt = &now
+	_ = state.WriteProxy(stateDir, saved)
 }
 
 func connectFlagsAsRouteArgs(flags connectFlags) []string {

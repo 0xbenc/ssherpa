@@ -14,7 +14,7 @@ import (
 )
 
 func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
-	saved := pickerSavedForwards(flags.StateDir)
+	saved := pickerSavedForwards(flags.StateDir, nil)
 	items := []ui.Item{
 		{Kind: ui.ItemCheck, Token: "host", Title: "Check one host", Description: "pick an SSH alias and run SSH/ICMP checks", Badge: "check"},
 		{Kind: ui.ItemCheck, Token: "hosts", Title: "Check visible hosts", Description: "run checks for the current host list", Badge: "check"},

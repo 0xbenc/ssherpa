@@ -1,19 +1,24 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/sessionview"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 const sessionUsage = `Usage:
   ssherpa session list [--json] [--state-dir PATH]
   ssherpa session map [--json] [--all] [--state-dir PATH]
   ssherpa session show SESSION_ID [--json] [--state-dir PATH]
+  ssherpa session stop-all [--json] [--state-dir PATH]
   ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
 `
 
@@ -35,6 +40,25 @@ type sessionFlags struct {
 	Rest      []string
 }
 
+type sessionStopAllResult struct {
+	Scanned  int                    `json:"scanned"`
+	Matched  int                    `json:"matched"`
+	Signaled int                    `json:"signaled"`
+	Stopped  int                    `json:"stopped"`
+	Pending  int                    `json:"pending"`
+	Errors   int                    `json:"errors"`
+	Records  []sessionStopAllRecord `json:"records"`
+}
+
+type sessionStopAllRecord struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Target string `json:"target,omitempty"`
+	PID    int    `json:"pid,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
 func runSession(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 || hasHelpFlag(args) {
 		fmt.Fprint(stdout, sessionUsage)
@@ -48,6 +72,8 @@ func runSession(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runSessionMap(args[1:], stdout, stderr)
 	case "show":
 		return runSessionShow(args[1:], stdout, stderr)
+	case "stop-all":
+		return runSessionStopAll(args[1:], stdout, stderr)
 	case "prune":
 		return runSessionPrune(args[1:], stdout, stderr)
 	default:
@@ -83,6 +109,124 @@ func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	sessionview.WriteList(stdout, stateDir, records)
 	return 0
+}
+
+func runSessionStopAll(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags, ok := parseSessionFlags(args, stderr, false, false)
+	if !ok {
+		return 1
+	}
+	if len(flags.Rest) != 0 {
+		fmt.Fprintf(stderr, "ssherpa: session stop-all does not accept positional arguments: %s\n", strings.Join(flags.Rest, " "))
+		return 1
+	}
+
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
+		return 1
+	}
+
+	result := stopAllLiveSessions(stateDir, records)
+	if flags.JSON {
+		writeJSON(stdout, result)
+		return boolToCode(result.Errors == 0)
+	}
+	if result.Matched == 0 {
+		fmt.Fprintln(stdout, "No active tracked sessions to stop.")
+		return 0
+	}
+	fmt.Fprintf(stdout, "ssherpa: stop-all signaled %d active session(s); stopped %d, pending %d, errors %d\n",
+		result.Signaled, result.Stopped, result.Pending, result.Errors)
+	for _, rec := range result.Records {
+		label := defaultString(rec.Kind, state.KindInteractive)
+		target := defaultString(rec.Target, "-")
+		line := fmt.Sprintf("%s\t%s\t%s\tpid=%d\t%s", rec.ID, label, target, rec.PID, rec.Status)
+		if rec.Error != "" {
+			line += "\t" + rec.Error
+		}
+		fmt.Fprintln(stdout, line)
+	}
+	return boolToCode(result.Errors == 0)
+}
+
+func stopAllLiveSessions(stateDir string, records []state.SessionRecord) sessionStopAllResult {
+	result := sessionStopAllResult{Scanned: len(records)}
+	indexByID := map[string]int{}
+	for _, record := range records {
+		if !state.ProcessAlive(record) {
+			continue
+		}
+		entry := sessionStopAllRecord{
+			ID:     record.ID,
+			Kind:   defaultString(record.Kind, state.KindInteractive),
+			Target: record.TargetAlias,
+			PID:    record.LocalPID,
+			Status: "signaled",
+		}
+		result.Matched++
+		if err := syscall.Kill(record.LocalPID, syscall.SIGHUP); err != nil {
+			entry.Status = "error"
+			entry.Error = err.Error()
+			result.Errors++
+		} else {
+			result.Signaled++
+		}
+		indexByID[entry.ID] = len(result.Records)
+		result.Records = append(result.Records, entry)
+	}
+	if result.Signaled == 0 {
+		return result
+	}
+
+	deadline := time.Now().Add(forwardStopWait)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, entry := range result.Records {
+			if entry.Status == "signaled" {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		for id, index := range indexByID {
+			if result.Records[index].Status != "signaled" {
+				continue
+			}
+			record, err := state.ReadRecord(stateDir, id)
+			if err != nil {
+				continue
+			}
+			if record.EndedAt != nil || !state.ProcessAlive(record) {
+				result.Records[index].Status = "stopped"
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	for _, entry := range result.Records {
+		switch entry.Status {
+		case "stopped":
+			result.Stopped++
+		case "signaled":
+			result.Pending++
+		}
+	}
+	return result
+}
+
+func boolToCode(ok bool) int {
+	if ok {
+		return 0
+	}
+	return 1
 }
 
 func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -128,6 +272,47 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	sessionview.WriteMapWithOptions(stdout, stateDir, records, sessionview.MapOptions{IncludeExited: flags.All})
 	return 0
+}
+
+func runSessionMapViewer(flags connectFlags, output io.Writer, stderr io.Writer) (int, bool) {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1, false
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: map sessions: %v\n", err)
+		return 1, false
+	}
+	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    flags.ThemeName,
+		File:    flags.ThemeFile,
+		NoColor: flags.NoColor,
+		Env:     os.Environ(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1, false
+	}
+	err = sessionview.ShowMap(context.Background(), sessionview.ShowOptions{
+		Input:       os.Stdin,
+		Output:      output,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		View: sessionview.ViewOptions{
+			Title:    "ssherpa session map",
+			StateDir: stateDir,
+			Records:  records,
+			Map:      sessionview.MapOptions{},
+			Theme:    theme.WithNoColor(theme.NoColor || flags.NoColor),
+			Help:     "press any key to return",
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: session map failed: %v\n", err)
+		return 1, false
+	}
+	return 0, true
 }
 
 func runSessionShow(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -264,8 +449,14 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 	fmt.Fprintf(stdout, "status:\t%s\n", record.Status())
 	fmt.Fprintf(stdout, "target:\t%s\n", defaultString(record.TargetAlias, "-"))
 	fmt.Fprintf(stdout, "depth:\t%d\n", record.Depth)
-	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatRoute(record.Route))
+	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatDisplayRoute(record.Route))
 	fmt.Fprintf(stdout, "hops:\t%s\n", sessionview.FormatRoute(record.Hops))
+	if forward := sessionview.ForwardSummary(record); forward != "" {
+		fmt.Fprintf(stdout, "forward:\t%s\n", forward)
+	}
+	if proxy := sessionview.ProxySummary(record); proxy != "" {
+		fmt.Fprintf(stdout, "proxy:\t%s\n", proxy)
+	}
 	fmt.Fprintf(stdout, "started:\t%s\n", record.StartedAt.Local().Format(time.RFC3339))
 	fmt.Fprintf(stdout, "ended:\t%s\n", formatOptionalTime(record.EndedAt))
 	if record.ExitCode != nil {

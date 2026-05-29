@@ -1,0 +1,225 @@
+package sessionview
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
+)
+
+func TestMapViewCarriesRouteDetails(t *testing.T) {
+	record := state.SessionRecord{
+		ID:               "child",
+		Depth:            2,
+		TargetAlias:      "prod",
+		Route:            []string{"laptop", "bastion", "prod"},
+		Hops:             []string{"bastion"},
+		StartedAt:        time.Unix(1700000000, 0),
+		DisconnectReason: "latency_timeout",
+	}
+
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Map:      MapOptions{CurrentID: "child"},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    96,
+		Height:   20,
+		Help:     "q close",
+	})
+
+	text := view.Content
+	for _, want := range []string{
+		"ssherpa session map",
+		"active 1",
+		"state /tmp/ssherpa-state",
+		"+- prod [jump] [active]",
+		"depth 2  id child  current",
+		"PATH",
+		"● here  local",
+		"└─▶ laptop",
+		"└─▶ bastion",
+		"└─▶ prod",
+		"health disconnected: latency_timeout",
+		"q close",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "└─▶ laptop") >= strings.Index(text, "└─▶ bastion") || strings.Index(text, "└─▶ bastion") >= strings.Index(text, "└─▶ prod") {
+		t.Fatalf("route nodes are not ordered as a chain:\n%s", text)
+	}
+}
+
+func TestMapViewShowsLocalOriginForSingleHopRoute(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "root",
+		Depth:       0,
+		TargetAlias: "prod",
+		Route:       []string{"prod"},
+		StartedAt:   time.Unix(1700000000, 0),
+	}
+
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    96,
+		Height:   20,
+	})
+
+	if !strings.Contains(view.Content, "● here  local") || !strings.Contains(view.Content, "└─▶ prod") {
+		t.Fatalf("view missing local origin:\n%s", view.Content)
+	}
+}
+
+func TestMapViewDoesNotRenderSeparateHopsRow(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "root",
+		Depth:       0,
+		TargetAlias: "prod",
+		Kind:        state.KindTunnel,
+		Route:       []string{"bastion", "prod"},
+		Hops:        []string{"bastion"},
+		StartedAt:   time.Unix(1700000000, 0),
+		Forward: &state.ForwardSpec{
+			LocalBind:  "127.0.0.1",
+			LocalPort:  15432,
+			RemoteHost: "127.0.0.1",
+			RemotePort: 5432,
+		},
+	}
+
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    96,
+		Height:   20,
+	})
+
+	if strings.Contains(view.Content, "hops") {
+		t.Fatalf("view rendered separate hops row:\n%s", view.Content)
+	}
+	for _, want := range []string{
+		"+- prod [forward] [active]",
+		"FORWARD local :15432 -> remote :5432",
+	} {
+		if !strings.Contains(view.Content, want) {
+			t.Fatalf("view missing %q:\n%s", want, view.Content)
+		}
+	}
+}
+
+func TestForwardSummaryIncludesEndpointDetails(t *testing.T) {
+	record := state.SessionRecord{
+		Kind: state.KindTunnel,
+		Forward: &state.ForwardSpec{
+			LocalBind:  "0.0.0.0",
+			LocalPort:  15432,
+			RemoteHost: "db.internal",
+			RemotePort: 5432,
+			SavedAlias: "pg-tunnel",
+			Detached:   true,
+			RetryCount: 2,
+		},
+	}
+
+	want := "local 0.0.0.0:15432 -> remote db.internal:5432  (saved pg-tunnel, background, retries 2)"
+	if got := ForwardSummary(record); got != want {
+		t.Fatalf("ForwardSummary = %q, want %q", got, want)
+	}
+}
+
+func TestForwardSummaryOmitsLoopbackHost(t *testing.T) {
+	record := state.SessionRecord{
+		Kind: state.KindTunnel,
+		Forward: &state.ForwardSpec{
+			LocalBind:  "127.0.0.1",
+			LocalPort:  15432,
+			RemoteHost: "127.0.0.1",
+			RemotePort: 5432,
+		},
+	}
+
+	if got, want := ForwardSummary(record), "local :15432 -> remote :5432"; got != want {
+		t.Fatalf("ForwardSummary = %q, want %q", got, want)
+	}
+}
+
+func TestMapViewShowsProxyDetails(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "proxy",
+		Kind:        state.KindProxy,
+		TargetAlias: "bastion",
+		Route:       []string{"bastion"},
+		StartedAt:   time.Unix(1700000000, 0),
+		Proxy: &state.ProxySpec{
+			Bind:       "127.0.0.1",
+			Port:       1080,
+			SavedAlias: "corp-proxy",
+			Detached:   true,
+		},
+	}
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    96,
+		Height:   20,
+	})
+	for _, want := range []string{
+		"+- bastion [proxy] [active]",
+		"PROXY SOCKS :1080  (saved corp-proxy, background)",
+	} {
+		if !strings.Contains(view.Content, want) {
+			t.Fatalf("view missing %q:\n%s", want, view.Content)
+		}
+	}
+}
+
+func TestFormatDisplayRouteKeepsInheritedOrigin(t *testing.T) {
+	if got := FormatDisplayRoute([]string{"laptop", "bastion", "prod"}); got != "here -> laptop -> bastion -> prod" {
+		t.Fatalf("FormatDisplayRoute = %q", got)
+	}
+	if got := FormatDisplayRoute([]string{"prod"}); got != "here -> prod" {
+		t.Fatalf("FormatDisplayRoute = %q", got)
+	}
+	if got := FormatDisplayRoute([]string{"here", "prod"}); got != "here -> prod" {
+		t.Fatalf("FormatDisplayRoute = %q", got)
+	}
+}
+
+func TestMapModelWaitsForKey(t *testing.T) {
+	m := mapModel{
+		noAltScreen: true,
+		view: ViewOptions{
+			Title:    "ssherpa session map",
+			StateDir: "/tmp/ssherpa-state",
+			Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		},
+		width:  80,
+		height: 20,
+	}
+
+	view := m.View()
+	if view.AltScreen {
+		t.Fatalf("AltScreen = true, want false")
+	}
+	if !strings.Contains(view.Content, "press any key to return") {
+		t.Fatalf("view missing return hint:\n%s", view.Content)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	if cmd == nil {
+		t.Fatalf("key press did not request quit")
+	}
+}

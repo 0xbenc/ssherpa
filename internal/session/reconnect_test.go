@@ -73,6 +73,14 @@ func TestShouldRetry(t *testing.T) {
 			want:    false,
 		},
 		{
+			name:    "proxy retries like tunnel",
+			kind:    state.KindProxy,
+			opts:    enabled,
+			err:     exitErrorFromCmd(t, 255),
+			attempt: 1,
+			want:    true,
+		},
+		{
 			name:    "max attempts reached",
 			kind:    state.KindTunnel,
 			opts:    enabled,

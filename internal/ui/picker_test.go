@@ -11,7 +11,7 @@ import (
 func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 	items := BuildItemsWithOptions([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}, BuildItemsOptions{
 		ActiveTunnels: []ActiveTunnelItem{
-			{SessionID: "sess-1", Title: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432 · up 2m · pid 31337"},
+			{SessionID: "sess-1", Title: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432 · up 2m"},
 		},
 		SavedForwards: []SavedForwardItem{
 			{Name: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432  (alias pgbox)"},
@@ -41,6 +41,19 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 	}
 	if items[1].Group != "Saved Forwards" {
 		t.Fatalf("saved-forward group = %q", items[1].Group)
+	}
+}
+
+func TestBuildItemsIncludesStopAllActiveAction(t *testing.T) {
+	items := BuildItemsWithOptions(nil, BuildItemsOptions{StopAllActiveCount: 3})
+	if len(items) == 0 {
+		t.Fatalf("BuildItemsWithOptions returned no items")
+	}
+	if items[0].Kind != ItemStopAllActive || items[0].Badge != "stop all" {
+		t.Fatalf("items[0] = %#v, want stop-all action first", items[0])
+	}
+	if !strings.Contains(items[0].Description, "3 tracked") {
+		t.Fatalf("stop-all description = %q", items[0].Description)
 	}
 }
 
@@ -118,6 +131,41 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	}
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("view contains ANSI escapes with NoColor: %q", text)
+	}
+}
+
+func TestSavedRowsKeepFullDetailsOutOfLeftList(t *testing.T) {
+	model := newPickerModel(BuildItemsWithOptions(nil, BuildItemsOptions{
+		SavedForwards: []SavedForwardItem{{
+			Name:        "pg",
+			Description: ":15432 -> :5432",
+			Detail:      "alias pgbox · 127.0.0.1:15432 -> 127.0.0.1:5432",
+		}},
+	}), PickOptions{NoAltScreen: true, NoColor: true})
+	model.width = 88
+
+	text := model.View().Content
+	if strings.Contains(text, "pgbox") || strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("saved row leaked full details into left list:\n%s", text)
+	}
+	if !strings.Contains(text, ":15432 -> :5432") {
+		t.Fatalf("saved row missing compact endpoints:\n%s", text)
+	}
+}
+
+func TestSavedRowsShowFullDetailsInPreview(t *testing.T) {
+	model := newPickerModel(BuildItemsWithOptions(nil, BuildItemsOptions{
+		SavedForwards: []SavedForwardItem{{
+			Name:        "pg",
+			Description: ":15432 -> :5432",
+			Detail:      "alias pgbox · 127.0.0.1:15432 -> 127.0.0.1:5432",
+		}},
+	}), PickOptions{NoAltScreen: true, NoColor: true})
+	model.width = 120
+
+	text := model.View().Content
+	if !strings.Contains(text, "Details") || !strings.Contains(text, "alias pgbox") || !strings.Contains(text, "127.0.0.1:15432") {
+		t.Fatalf("saved preview missing full details:\n%s", text)
 	}
 }
 
@@ -299,6 +347,8 @@ func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
 		{ItemForward, "\x1b[36m"},       // tunnel builder
 		{ItemForwardSaved, "\x1b[36m"},  // tunnel launch
 		{ItemForwardActive, "\x1b[31m"}, // stop running tunnel
+		{ItemProxyActive, "\x1b[31m"},   // stop running proxy
+		{ItemStopAllActive, "\x1b[31m"}, // stop all running sessions
 		{ItemAuthkeys, "\x1b[33m"},      // security-sensitive
 		{ItemSessions, "\x1b[34m"},      // inspection
 		{ItemTheme, "\x1b[33m"},         // appearance/config
