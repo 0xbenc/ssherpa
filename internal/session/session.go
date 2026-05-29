@@ -1447,7 +1447,7 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 }
 
 func emitSessionTelemetry(output io.Writer, record state.SessionRecord) {
-	if output == nil || record.ParentID == "" || record.RemoteMirror {
+	if output == nil || record.RemoteMirror {
 		return
 	}
 	payload, ok := sessionTelemetryOSC(record)
@@ -1458,17 +1458,34 @@ func emitSessionTelemetry(output io.Writer, record state.SessionRecord) {
 }
 
 func mirrorRemoteSessionRecord(ac attemptContext, record state.SessionRecord) {
-	if !isDescendantTelemetry(*ac.record, record) {
+	parent := *ac.record
+	record, ok := remoteMirrorRecord(parent, record)
+	if !ok {
 		return
 	}
-	record.RemoteMirror = true
-	record.Inherited = false
-	record.LocalPID = 0
-	record.SSHPID = 0
-	if record.StateVersion == 0 {
-		record.StateVersion = state.StateVersion
-	}
 	_ = state.WriteRecord(ac.stateDir, record)
+}
+
+func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (state.SessionRecord, bool) {
+	if child.ID == "" || child.ID == parent.ID || child.RemoteMirror {
+		return state.SessionRecord{}, false
+	}
+	if child.ParentID == "" {
+		child.ParentID = parent.ID
+		child.Depth = parent.Depth + 1
+		child.OriginHost = firstNonEmpty(child.OriginHost, parent.OriginHost)
+		child.Route = appendRoute(parent.Route, child.Route, child.TargetAlias)
+	} else if !isDescendantTelemetry(parent, child) {
+		return state.SessionRecord{}, false
+	}
+	child.RemoteMirror = true
+	child.Inherited = false
+	child.LocalPID = 0
+	child.SSHPID = 0
+	if child.StateVersion == 0 {
+		child.StateVersion = state.StateVersion
+	}
+	return child, true
 }
 
 func isDescendantTelemetry(parent state.SessionRecord, child state.SessionRecord) bool {
@@ -1490,6 +1507,36 @@ func isDescendantTelemetry(parent state.SessionRecord, child state.SessionRecord
 		return false
 	}
 	return true
+}
+
+func appendRoute(parentRoute []string, childRoute []string, fallbackTarget string) []string {
+	route := append([]string(nil), parentRoute...)
+	appendPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		if len(route) > 0 && route[len(route)-1] == part {
+			return
+		}
+		route = append(route, part)
+	}
+	for _, part := range childRoute {
+		appendPart(part)
+	}
+	if len(route) == len(parentRoute) {
+		appendPart(fallbackTarget)
+	}
+	return route
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func recordRemoteState(ac attemptContext, observed remoteState) {

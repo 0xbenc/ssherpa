@@ -204,11 +204,8 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 
 	child := state.SessionRecord{
 		ID:          "child",
-		ParentID:    "parent",
-		Depth:       1,
-		OriginHost:  "laptop",
 		TargetAlias: "prod",
-		Route:       []string{"bastion", "prod"},
+		Route:       []string{"prod"},
 		StartedAt:   fixedClock()(),
 		RunnerMode:  RunnerModeSupervised,
 	}
@@ -250,11 +247,28 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 			mirrored = record
 		}
 	}
-	if !mirrored.RemoteMirror || mirrored.ParentID != "parent" || mirrored.TargetAlias != "prod" {
+	if !mirrored.RemoteMirror || mirrored.ParentID != "parent" || mirrored.TargetAlias != "prod" || mirrored.Depth != 1 {
 		t.Fatalf("mirrored record = %#v, want remote mirror child under parent", mirrored)
+	}
+	if !reflect.DeepEqual(mirrored.Route, []string{"bastion", "prod"}) {
+		t.Fatalf("mirrored route = %#v, want parent route plus child target", mirrored.Route)
 	}
 	if mirrored.LocalPID != 0 || mirrored.SSHPID != 0 || state.ProcessAlive(mirrored) {
 		t.Fatalf("mirrored pids/process = %#v, want non-local process", mirrored)
+	}
+}
+
+func TestRemoteMirrorRecordRejectsUnrelatedTelemetry(t *testing.T) {
+	parent := state.SessionRecord{ID: "parent", Route: []string{"bastion"}, OriginHost: "laptop"}
+	child := state.SessionRecord{
+		ID:         "child",
+		ParentID:   "other",
+		OriginHost: "other-laptop",
+		Route:      []string{"unrelated", "prod"},
+	}
+
+	if got, ok := remoteMirrorRecord(parent, child); ok {
+		t.Fatalf("remoteMirrorRecord = %#v, true; want rejected unrelated telemetry", got)
 	}
 }
 
