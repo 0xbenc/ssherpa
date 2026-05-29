@@ -1,0 +1,77 @@
+.TH SSHERPA 1 "May 2026" "ssherpa" "User Commands"
+.SH NAME
+ssherpa \- terminal UI and supervisor for OpenSSH configs
+.SH SYNOPSIS
+.B ssherpa
+[\fIcommand\fR] [\fIflags\fR]
+.br
+.B ssherpa check
+\fIALIAS...\fR [--json] [--no-icmp]
+.br
+.B ssherpa forward saved
+\fIcommand\fR [\fIflags\fR]
+.SH DESCRIPTION
+.B ssherpa
+reads OpenSSH config, lets you pick and connect to aliases, supervises SSH
+sessions, manages safe config edits, authorized_keys, jump/proxy routes, and
+local port-forward tunnels.
+.SH COMMANDS
+.TP
+.B add
+Add or update an SSH alias with previewable, backed-up config writes.
+.TP
+.B edit
+Edit or delete SSH aliases.
+.TP
+.B jump
+Connect through one or more ProxyJump hops.
+.TP
+.B proxy
+Start a local SOCKS proxy through an SSH alias.
+.TP
+.B forward
+Open a local TCP port-forward tunnel and inspect or stop tunnel sessions.
+.TP
+.B forward saved
+Manage saved forward catalog entries with list, show, save, edit, delete, and rename.
+.TP
+.B check
+Test SSH aliases or saved forwards with a BatchMode SSH probe and best-effort ICMP latency.
+.TP
+.B authkeys
+Manage authorized_keys on this device.
+.TP
+.B theme
+Build and save the terminal UI color schema.
+.TP
+.B session
+Inspect supervised session records and route maps.
+.SH CHECK EXAMPLES
+.EX
+ssherpa check prod
+ssherpa check --filter prod --json
+ssherpa check --saved-forward pg --no-icmp
+ssherpa check --saved-forwards --timeout 3s
+.EE
+.SH SAVED FORWARD EXAMPLES
+.EX
+ssherpa forward saved save pg --select pgbox --local 15432 --remote 127.0.0.1:5432
+ssherpa forward saved list
+ssherpa forward saved show pg --json
+ssherpa forward saved edit pg --description "local postgres"
+ssherpa forward saved rename pg prod-pg
+ssherpa forward saved delete prod-pg --yes
+.EE
+.SH FILES
+.TP
+.I ~/.ssh/config
+Default OpenSSH config source.
+.TP
+.I ~/.local/state/ssherpa
+Default Linux state directory.
+.TP
+.I ~/Library/Application Support/ssherpa
+Default macOS state directory.
+.SH SEE ALSO
+.BR ssh (1),
+.BR ssh_config (5)

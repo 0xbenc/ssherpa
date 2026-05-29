@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -154,8 +153,12 @@ func runAuthkeysAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printAuthkeysDiagnostics(stderr, plan.Diagnostics)
 	if !flags.DryRun && !flags.Yes && plan.Changed {
-		reader := bufio.NewReader(os.Stdin)
-		if !confirm(reader, stderr, fmt.Sprintf("Add 1 key to %s?", path)) {
+		ok, err := confirmActionChoice(stderr, "Add authorized key", "1 key to "+path)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: add confirmation failed: %v\n", err)
+			return 1
+		}
+		if !ok {
 			fmt.Fprintln(stdout, "[skipped] authkeys add cancelled")
 			return 0
 		}
@@ -185,8 +188,12 @@ func runAuthkeysMerge(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printAuthkeysDiagnostics(stderr, plan.Diagnostics)
 	if !flags.DryRun && !flags.Yes && plan.Changed {
-		reader := bufio.NewReader(os.Stdin)
-		if !confirm(reader, stderr, fmt.Sprintf("Merge %d new key(s) into %s?", plan.Stats.Added, path)) {
+		ok, err := confirmActionChoice(stderr, "Merge authorized_keys", fmt.Sprintf("%d new key(s) into %s", plan.Stats.Added, path))
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: merge confirmation failed: %v\n", err)
+			return 1
+		}
+		if !ok {
 			fmt.Fprintln(stdout, "[skipped] authkeys merge cancelled")
 			return 0
 		}
@@ -217,8 +224,12 @@ func runAuthkeysReplace(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printAuthkeysDiagnostics(stderr, plan.Diagnostics)
 	if !flags.DryRun && !flags.Yes && plan.Changed {
-		reader := bufio.NewReader(os.Stdin)
-		if !confirm(reader, stderr, fmt.Sprintf("Replace all entries in %s with %d key(s)?", path, len(plan.Keys))) {
+		ok, err := confirmActionChoice(stderr, "Replace authorized_keys", fmt.Sprintf("%s with %d key(s)", path, len(plan.Keys)))
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: replace confirmation failed: %v\n", err)
+			return 1
+		}
+		if !ok {
 			fmt.Fprintln(stdout, "[skipped] authkeys replace cancelled")
 			return 0
 		}
@@ -251,8 +262,12 @@ func runAuthkeysDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Warning: fingerprint not found: %s\n", fp)
 	}
 	if !flags.DryRun && !flags.Yes && plan.Changed {
-		reader := bufio.NewReader(os.Stdin)
-		if !confirm(reader, stderr, fmt.Sprintf("Delete %d key(s) from %s?", plan.Stats.Deleted, path)) {
+		ok, err := confirmDeleteChoice(stderr, "Delete authorized_keys entries", fmt.Sprintf("%d key(s) from %s", plan.Stats.Deleted, path))
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: delete confirmation failed: %v\n", err)
+			return 1
+		}
+		if !ok {
 			fmt.Fprintln(stdout, "[skipped] authkeys delete cancelled")
 			return 0
 		}
@@ -284,13 +299,16 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 			return 0
 		}
 
-		reader := bufio.NewReader(os.Stdin)
 		switch item.Token {
 		case "add":
-			line, err := promptLine(reader, stderr, "SSH public key", "")
+			line, ok, err := promptText(stderr, "Add authorized key", "key", "", validateNonEmpty("SSH public key"))
 			if err != nil {
 				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 				return 1
+			}
+			if !ok {
+				fmt.Fprintln(stdout, "[skipped] authkeys add cancelled")
+				continue
 			}
 			if strings.TrimSpace(line) == "" {
 				fmt.Fprintln(stdout, "[skipped] empty key; nothing added")
@@ -304,19 +322,27 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 				return code
 			}
 		case "merge":
-			dir, err := promptLine(reader, stderr, "Directory", ".")
+			dir, ok, err := promptText(stderr, "Merge authorized_keys", "directory", ".", validateNonEmpty("Directory"))
 			if err != nil {
 				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 				return 1
+			}
+			if !ok {
+				fmt.Fprintln(stdout, "[skipped] authkeys merge cancelled")
+				continue
 			}
 			if code := runAuthkeysMerge(authkeysInteractiveDirArgs(path, dir, flags), stdout, stderr); code != 0 {
 				return code
 			}
 		case "replace":
-			dir, err := promptLine(reader, stderr, "Directory", ".")
+			dir, ok, err := promptText(stderr, "Replace authorized_keys", "directory", ".", validateNonEmpty("Directory"))
 			if err != nil {
 				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 				return 1
+			}
+			if !ok {
+				fmt.Fprintln(stdout, "[skipped] authkeys replace cancelled")
+				continue
 			}
 			if code := runAuthkeysReplace(authkeysInteractiveDirArgs(path, dir, flags), stdout, stderr); code != 0 {
 				return code

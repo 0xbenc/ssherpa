@@ -18,14 +18,14 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 		},
 	})
 
-	// Expected order: Active Tunnels, Saved Forwards, Actions (8), Hosts.
-	if len(items) != 1+1+8+1 {
-		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+8+1)
+	// Expected order: Active Tunnels, Saved Forwards, Actions (10), Hosts.
+	if len(items) != 1+1+10+1 {
+		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+10+1)
 	}
 	want := []ItemKind{
 		ItemForwardActive, // active tunnel row
 		ItemForwardSaved,  // saved forward row
-		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemAuthkeys, ItemSessions, ItemTheme,
+		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs,
 		ItemAlias, // host
 	}
 	for i, kind := range want {
@@ -47,25 +47,25 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 
-	if len(items) != 9 {
-		t.Fatalf("len(items) = %d, want 9", len(items))
+	if len(items) != 11 {
+		t.Fatalf("len(items) = %d, want 11", len(items))
 	}
 
-	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemAuthkeys, ItemSessions, ItemTheme, ItemAlias}
+	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs, ItemAlias}
 	for i, kind := range want {
 		if items[i].Kind != kind {
 			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
 		}
 	}
-	if items[8].Token != "prod" || items[8].Description != "prod.example.com" || items[8].Group != "Hosts" {
-		t.Fatalf("alias item = %#v", items[8])
+	if items[10].Token != "prod" || items[10].Description != "prod.example.com" || items[10].Group != "Hosts" {
+		t.Fatalf("alias item = %#v", items[10])
 	}
 }
 
 func TestBuildItemsIncludesSessionCounts(t *testing.T) {
 	items := BuildItemsWithOptions(nil, BuildItemsOptions{SessionCount: 4, ActiveSessionCount: 2})
 
-	session := items[6]
+	session := items[7]
 	if session.Kind != ItemSessions {
 		t.Fatalf("items[6].Kind = %q, want sessions", session.Kind)
 	}
@@ -189,7 +189,7 @@ func TestPickerHostRowsOnlyShowNickname(t *testing.T) {
 		NoColor:     true,
 	})
 	model.width = 120
-	model.cursor = 8
+	model.cursor = 10
 
 	text := model.View().Content
 	for _, line := range strings.Split(text, "\n") {
@@ -355,7 +355,7 @@ func TestPickerWideLayoutKeepsActionTitlesComplete(t *testing.T) {
 
 	text := model.View().Content
 	for _, title := range []string{
-		"Edit aliases or delete",
+		"Edit aliases and forwards",
 		"Jump via intermediate hops",
 		"Open port-forward tunnel",
 		"Sessions and route map",

@@ -30,6 +30,9 @@ archives:
     ids:
       - ssherpa
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - completions/*
+      - man/*
 
 nfpms:
   - id: ssherpa
@@ -44,6 +47,15 @@ nfpms:
     formats:
       - deb
       - rpm
+    contents:
+      - src: completions/ssherpa.bash
+        dst: /usr/share/bash-completion/completions/ssherpa
+      - src: completions/ssherpa.zsh
+        dst: /usr/share/zsh/site-functions/_ssherpa
+      - src: completions/ssherpa.fish
+        dst: /usr/share/fish/vendor_completions.d/ssherpa.fish
+      - src: man/ssherpa.1
+        dst: /usr/share/man/man1/ssherpa.1
 
 checksum:
   name_template: checksums.txt

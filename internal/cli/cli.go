@@ -25,10 +25,11 @@ const usage = `Usage:
 
 Available Commands:
   add        Add or update an SSH alias
-  edit       Edit or delete SSH aliases
+  edit       Edit or delete SSH aliases and saved forwards
   jump       Connect through one or more ProxyJump hops
   proxy      Start a local SOCKS proxy through an SSH alias
   forward    Open a local TCP port-forward (-L) tunnel through an SSH alias
+  check      Test SSH aliases and saved forwards
   authkeys   Manage authorized_keys on this device
   theme      Build and save the terminal UI color schema
   session    Inspect supervised session records
@@ -78,6 +79,18 @@ Route Commands:
   ssherpa forward list [--json] [--state-dir PATH]
   ssherpa forward status SESSION_ID_OR_NAME [--json] [--state-dir PATH]
   ssherpa forward stop SESSION_ID_OR_NAME [--state-dir PATH]
+  ssherpa forward saved list [--json] [--state-dir PATH]
+  ssherpa forward saved show NAME [--json] [--state-dir PATH]
+  ssherpa forward saved save NAME --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--description TEXT] [--yes]
+  ssherpa forward saved edit NAME [--select ALIAS] [--local ...] [--remote ...] [--through HOP|--clear-through] [--description TEXT|--clear-description]
+  ssherpa forward saved delete NAME [--yes]
+  ssherpa forward saved rename OLD NEW [--yes]
+
+Check Commands:
+  ssherpa check ALIAS... [--json] [--timeout 5s] [--icmp-timeout 2s] [--no-icmp]
+  ssherpa check --filter SUBSTR [--json]
+  ssherpa check --saved-forward NAME [--json]
+  ssherpa check --saved-forwards [--json]
 
 Theme Commands:
   ssherpa theme [--theme-file PATH]
@@ -99,6 +112,7 @@ Session Commands:
 Phase 10:
   SSH config inventory, picker, supervised SSH execution, and safe SSH config
   add/edit/delete mutations are available. Jump/proxy and authorized_keys
+  management are available. Connection checks and saved-forward catalog
   management are available. Supervised PTY sessions, session maps, and
   upgraded picker UX are available. The TUI defaults to the terminal
   palette, supports theme role overrides, includes a live theme editor,
@@ -148,6 +162,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runProxy(args[1:], stdout, stderr)
 	case "forward":
 		return runForward(args[1:], stdout, stderr)
+	case "check":
+		return runCheck(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
 	case "show":
@@ -246,12 +262,26 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			continue
 		case ui.ItemProxy:
-			return runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
+			code := runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemJump:
-			return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
+			code := runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemForward:
 			code, returnHome := runForwardBuilder(flags, inventory, stdout, stderr)
 			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemCheck:
+			code, returnHome := runCheckPicker(flags, inventory, stdout, stderr)
+			if returnHome && flags.Select == "" {
 				continue
 			}
 			return code
@@ -269,13 +299,35 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 				stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
 			}
 			stopArgs = append(stopArgs, item.Token)
-			return runForward(stopArgs, stdout, stderr)
+			code := runForward(stopArgs, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemAuthkeys:
-			return runAuthkeys(nil, stdout, stderr)
+			code := runAuthkeys(nil, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemSessions:
-			return runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
+			code := runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemTheme:
-			return runTheme(connectFlagsAsThemeArgs(flags), stdout, stderr)
+			code := runTheme(connectFlagsAsThemeArgs(flags), stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemDocs:
+			code, returnHome := runDocsPicker(stdout, stderr, flags)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		}
 
 		base := resolveSSHCommand(flags)

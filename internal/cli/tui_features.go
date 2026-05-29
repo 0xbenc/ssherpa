@@ -1,0 +1,249 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/ui"
+)
+
+func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
+	saved := pickerSavedForwards(flags.StateDir)
+	items := []ui.Item{
+		{Kind: ui.ItemCheck, Token: "host", Title: "Check one host", Description: "pick an SSH alias and run SSH/ICMP checks", Badge: "check"},
+		{Kind: ui.ItemCheck, Token: "hosts", Title: "Check visible hosts", Description: "run checks for the current host list", Badge: "check"},
+	}
+	if len(saved) > 0 {
+		items = append(items,
+			ui.Item{Kind: ui.ItemCheck, Token: "forward", Title: "Check one saved forward", Description: "validate a saved tunnel and run reachability checks", Badge: "check"},
+			ui.Item{Kind: ui.ItemCheck, Token: "forwards", Title: "Check saved forwards", Description: "validate every saved tunnel", Badge: "check"},
+		)
+	}
+	items = append(items, ui.Item{Kind: ui.ItemCheck, Token: "back", Title: "Back", Description: "return to the home screen", Badge: "back"})
+
+	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Check reachability",
+		Footer:      "enter select  /  q back",
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: check picker failed: %v\n", err)
+		return 1, false
+	}
+	if !ok || item.Token == "back" {
+		fmt.Fprintln(stdout, "[skipped] check cancelled")
+		return 0, true
+	}
+
+	switch item.Token {
+	case "host":
+		alias, ok, err := pickAlias(inventory.Aliases, flags.NoColor, flags.ThemeName, flags.ThemeFile, "Check: pick host", stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
+			return 1, false
+		}
+		if !ok {
+			fmt.Fprintln(stdout, "[skipped] check cancelled")
+			return 0, true
+		}
+		return runCheckTUI(append(checkBaseArgs(flags), alias.Name), flags, stderr), true
+	case "hosts":
+		if len(inventory.Aliases) == 0 {
+			fmt.Fprintln(stdout, "[skipped] no aliases available to check")
+			return 0, true
+		}
+		args := checkBaseArgs(flags)
+		for _, alias := range inventory.Aliases {
+			args = append(args, alias.Name)
+		}
+		return runCheckTUI(args, flags, stderr), true
+	case "forward":
+		name, ok, code := pickSavedForwardForCheck(flags, saved, stderr, stdout)
+		if !ok {
+			return code, code == 0
+		}
+		return runCheckTUI(append(checkBaseArgs(flags), "--saved-forward", name), flags, stderr), true
+	case "forwards":
+		return runCheckTUI(append(checkBaseArgs(flags), "--saved-forwards"), flags, stderr), true
+	default:
+		return 0, true
+	}
+}
+
+func runCheckTUI(args []string, connect connectFlags, stderr io.Writer) int {
+	flags, ok := parseCheckFlags(args, stderr)
+	if !ok {
+		return 1
+	}
+	if flags.Timeout <= 0 {
+		flags.Timeout = 5 * time.Second
+	}
+	if flags.ICMPTimeout <= 0 {
+		flags.ICMPTimeout = 2 * time.Second
+	}
+	out, code := runCheckWithFlags(flags, stderr)
+	if code != 0 {
+		return code
+	}
+	results := make([]ui.CheckResult, 0, len(out.Results))
+	for _, result := range out.Results {
+		results = append(results, ui.CheckResult{
+			Kind:            result.Kind,
+			Name:            result.Name,
+			Status:          result.Status,
+			SSHRttMillis:    result.SSHRttMillis,
+			SSHError:        result.SSHError,
+			ICMPStatus:      result.ICMPStatus,
+			ICMPRttMillis:   result.ICMPRttMillis,
+			LocalBindStatus: result.LocalBindStatus,
+			Message:         result.Message,
+		})
+	}
+	if err := ui.ShowCheckResults(context.Background(), ui.CheckResultsOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     connect.NoColor,
+		ThemeName:   connect.ThemeName,
+		ThemeFile:   connect.ThemeFile,
+		CheckedAt:   out.CheckedAt,
+		OK:          out.OK,
+		Results:     results,
+	}); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: check results failed: %v\n", err)
+		return 1
+	}
+	if out.OK {
+		return 0
+	}
+	return 2
+}
+
+func pickSavedForwardForCheck(flags connectFlags, saved []ui.SavedForwardItem, stderr io.Writer, stdout io.Writer) (string, bool, int) {
+	items := make([]ui.Item, 0, len(saved))
+	for _, sf := range saved {
+		items = append(items, ui.Item{
+			Kind:        ui.ItemForwardSaved,
+			Token:       sf.Name,
+			Title:       sf.Name,
+			Description: sf.Description,
+			Badge:       "forward",
+		})
+	}
+	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Check: pick saved forward",
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
+		return "", false, 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] check cancelled")
+		return "", false, 0
+	}
+	return item.Token, true, 0
+}
+
+func checkBaseArgs(flags connectFlags) []string {
+	var args []string
+	if flags.Config != "" {
+		args = append(args, "--config", flags.Config)
+	}
+	if flags.StateDir != "" {
+		args = append(args, "--state-dir", flags.StateDir)
+	}
+	if flags.SSHBinary != "" {
+		args = append(args, "--ssh-binary", flags.SSHBinary)
+	}
+	return args
+}
+
+func runDocsPicker(stdout io.Writer, stderr io.Writer, flags connectFlags) (int, bool) {
+	items := []ui.Item{
+		{Kind: ui.ItemDocs, Token: "bash", Title: "Bash completion", Description: "completions/ssherpa.bash", Badge: "bash"},
+		{Kind: ui.ItemDocs, Token: "zsh", Title: "Zsh completion", Description: "completions/ssherpa.zsh", Badge: "zsh"},
+		{Kind: ui.ItemDocs, Token: "fish", Title: "Fish completion", Description: "completions/ssherpa.fish", Badge: "fish"},
+		{Kind: ui.ItemDocs, Token: "man", Title: "Manpage", Description: "man/ssherpa.1", Badge: "man"},
+		{Kind: ui.ItemDocs, Token: "back", Title: "Back", Description: "return to the home screen", Badge: "back"},
+	}
+	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Completions and manpage",
+		Footer:      "enter show path  /  q back",
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: docs picker failed: %v\n", err)
+		return 1, false
+	}
+	if !ok || item.Token == "back" {
+		fmt.Fprintln(stdout, "[skipped] docs cancelled")
+		return 0, true
+	}
+	printArtifactInfo(stdout, item.Token)
+	return 0, true
+}
+
+func printArtifactInfo(stdout io.Writer, token string) {
+	rel := map[string]string{
+		"bash": "completions/ssherpa.bash",
+		"zsh":  "completions/ssherpa.zsh",
+		"fish": "completions/ssherpa.fish",
+		"man":  "man/ssherpa.1",
+	}[token]
+	if rel == "" {
+		return
+	}
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		abs = rel
+	}
+	fmt.Fprintf(stdout, "%s\n", abs)
+	switch token {
+	case "bash":
+		fmt.Fprintln(stdout, "source this file or install it as bash completion for ssherpa")
+	case "zsh":
+		fmt.Fprintln(stdout, "install this file as _ssherpa in a directory on fpath")
+	case "fish":
+		fmt.Fprintln(stdout, "install this file as ssherpa.fish in fish vendor_completions.d")
+	case "man":
+		fmt.Fprintln(stdout, "view with: man ./man/ssherpa.1")
+	}
+}
+
+func savedForwardNames(stateDirOverride string) []string {
+	stateDir, err := state.ResolveDir(stateDirOverride)
+	if err != nil {
+		return nil
+	}
+	forwards, err := state.ListForwards(stateDir)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(forwards))
+	for _, forward := range forwards {
+		names = append(names, forward.Name)
+	}
+	return names
+}

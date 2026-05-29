@@ -29,11 +29,12 @@ type ForwardAlias struct {
 type ForwardAction string
 
 const (
-	ForwardActionRun        ForwardAction = "run"
-	ForwardActionBackground ForwardAction = "background"
-	ForwardActionPrint      ForwardAction = "print"
-	ForwardActionSave       ForwardAction = "save"
-	ForwardActionCancel     ForwardAction = "cancel"
+	ForwardActionRun         ForwardAction = "run"
+	ForwardActionBackground  ForwardAction = "background"
+	ForwardActionPrint       ForwardAction = "print"
+	ForwardActionSave        ForwardAction = "save"
+	ForwardActionSaveChanges ForwardAction = "save_changes"
+	ForwardActionCancel      ForwardAction = "cancel"
 )
 
 // ForwardResult is the wizard's structured output. Cancel returns
@@ -85,6 +86,8 @@ type BuildForwardOptions struct {
 	ThemeName   string
 	ThemeFile   string
 	Aliases     []ForwardAlias
+	Initial     ForwardResult
+	EditMode    bool
 }
 
 // ForwardActionOptions configures the compact picker shown when a
@@ -214,16 +217,28 @@ var builderSummaryActions = []summaryAction{
 	{ForwardActionCancel, "Cancel"},
 }
 
+var builderEditSummaryActions = []summaryAction{
+	{ForwardActionSaveChanges, "Save changes"},
+	{ForwardActionCancel, "Cancel"},
+}
+
 var forwardLaunchActions = []summaryAction{
 	{ForwardActionRun, "Run active (foreground supervised)"},
 	{ForwardActionBackground, "Run in background (detached, auto-reconnect)"},
 	{ForwardActionCancel, "Cancel"},
 }
 
+type forwardLaunchChoice int
+
+const (
+	forwardLaunchForeground forwardLaunchChoice = iota
+	forwardLaunchBackground
+)
+
 type forwardActionModel struct {
 	name        string
 	description string
-	cursor      int
+	choice      forwardLaunchChoice
 	canceled    bool
 	action      ForwardAction
 	theme       termstyle.Theme
@@ -256,24 +271,21 @@ func (m forwardActionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc":
+		case "ctrl+c", "esc", "q":
 			m.canceled = true
 			return m, tea.Quit
-		case "up", "ctrl+p":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "ctrl+n":
-			if m.cursor < len(forwardLaunchActions)-1 {
-				m.cursor++
-			}
-		case "enter":
-			action := forwardLaunchActions[m.cursor].Action
-			if action == ForwardActionCancel {
-				m.canceled = true
-				return m, tea.Quit
-			}
-			m.action = action
+		case "left", "right", "tab", "shift+tab", "h", "l":
+			m.choice = 1 - m.choice
+		case "f", "F":
+			m.choice = forwardLaunchForeground
+			m.action = ForwardActionRun
+			return m, tea.Quit
+		case "b", "B":
+			m.choice = forwardLaunchBackground
+			m.action = ForwardActionBackground
+			return m, tea.Quit
+		case "enter", " ":
+			m.action = m.selectedAction()
 			return m, tea.Quit
 		}
 	}
@@ -281,38 +293,49 @@ func (m forwardActionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m forwardActionModel) View() tea.View {
-	width := clamp(m.width, 64, 140)
+	width := clamp(m.width, 56, 104)
+	innerWidth := width - 8
 	theme := pickerTheme{theme: m.theme}
 	var b strings.Builder
 
-	title := theme.logo("SSHERPA FORWARD PRESET")
-	b.WriteString(termstyle.PadRight(title, width))
-	b.WriteString("\n\n")
 	b.WriteString("  ")
-	b.WriteString(theme.summary("Pick how to launch this saved forward:"))
+	b.WriteString(theme.logo("SSHERPA FORWARD PRESET"))
+	b.WriteString("\n")
+	b.WriteString("  ")
+	b.WriteString(theme.theme.Style(termstyle.RoleBorder, strings.Repeat("-", innerWidth)))
 	b.WriteString("\n\n")
+
 	previewKVLine(&b, theme, "preset", m.name)
 	if m.description != "" {
-		previewKVLine(&b, theme, "route", termstyle.Truncate(m.description, max(0, width-18)))
+		previewKVLine(&b, theme, "route", termstyle.Truncate(m.description, max(0, innerWidth-16)))
 	}
 	b.WriteByte('\n')
-	for i, action := range forwardLaunchActions {
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-		row := cursor + action.Label
-		if i == m.cursor {
-			row = theme.rowTitle(row, true)
-		}
-		b.WriteString("  ")
-		b.WriteString(row)
-		b.WriteByte('\n')
-	}
-	b.WriteString("\n  ")
-	b.WriteString(theme.muted("enter launch  /  up/down move  /  esc cancel"))
+
+	b.WriteString("  ")
+	b.WriteString(forwardLaunchButton(theme, "Foreground", m.choice == forwardLaunchForeground, termstyle.RolePrimary))
+	b.WriteString("  ")
+	b.WriteString(forwardLaunchButton(theme, "Background", m.choice == forwardLaunchBackground, termstyle.RoleInfo))
+	b.WriteString("\n\n")
+
+	b.WriteString("  ")
+	b.WriteString(theme.muted("enter launch  /  left-right choose  /  f foreground  /  b background  /  esc cancel"))
 	b.WriteByte('\n')
 	return tea.NewView(b.String())
+}
+
+func (m forwardActionModel) selectedAction() ForwardAction {
+	if m.choice == forwardLaunchBackground {
+		return ForwardActionBackground
+	}
+	return ForwardActionRun
+}
+
+func forwardLaunchButton(theme pickerTheme, label string, selected bool, role termstyle.Role) string {
+	text := " " + label + " "
+	if selected {
+		return theme.theme.Style(termstyle.RoleSelected, "["+text+"]")
+	}
+	return theme.theme.Style(role, " "+text+" ")
 }
 
 // forwardBuilderModel is the bubbletea model for the wizard. One
@@ -367,24 +390,62 @@ type forwardBuilderModel struct {
 	theme       termstyle.Theme
 	noAltScreen bool
 	noColor     bool
+	editMode    bool
 	width       int
 	height      int
 }
 
 func newForwardBuilderModel(opts BuildForwardOptions, theme termstyle.Theme) forwardBuilderModel {
+	localBuf := "5432"
+	localCursor := 4
+	remoteBuf := "127.0.0.1:5432"
+	remoteCursor := len(remoteBuf)
+	destCursor := 0
+	destination := ForwardAlias{}
+	through := ""
+	if opts.Initial.Alias != "" {
+		destination = firstForwardAlias(opts.Aliases, opts.Initial.Alias)
+		for i, alias := range opts.Aliases {
+			if alias.Name == destination.Name {
+				destCursor = i
+				break
+			}
+		}
+		localBuf = opts.Initial.LocalSpec()
+		localCursor = len([]rune(localBuf))
+		remoteBuf = opts.Initial.RemoteSpec()
+		remoteCursor = len([]rune(remoteBuf))
+		through = opts.Initial.Through
+	}
 	return forwardBuilderModel{
 		aliases:      opts.Aliases,
 		step:         builderStepDestination,
-		localBuf:     "5432",
-		localCursor:  4,
-		remoteBuf:    "127.0.0.1:5432",
-		remoteCursor: len("127.0.0.1:5432"),
+		destCursor:   destCursor,
+		destination:  destination,
+		localBuf:     localBuf,
+		localCursor:  localCursor,
+		remoteBuf:    remoteBuf,
+		remoteCursor: remoteCursor,
+		through:      through,
 		theme:        theme,
 		noAltScreen:  opts.NoAltScreen,
 		noColor:      opts.NoColor,
+		editMode:     opts.EditMode,
 		width:        104,
 		height:       28,
 	}
+}
+
+func firstForwardAlias(aliases []ForwardAlias, want string) ForwardAlias {
+	for _, alias := range aliases {
+		if alias.Name == want {
+			return alias
+		}
+	}
+	if len(aliases) > 0 {
+		return aliases[0]
+	}
+	return ForwardAlias{Name: want}
 }
 
 func (m forwardBuilderModel) Init() tea.Cmd {
@@ -704,6 +765,7 @@ func (m *forwardBuilderModel) finalizeBeforeSummary() {
 }
 
 func (m forwardBuilderModel) updateSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	actions := m.summaryActions()
 	switch msg.String() {
 	case "esc":
 		m.canceled = true
@@ -716,11 +778,11 @@ func (m forwardBuilderModel) updateSummary(msg tea.KeyPressMsg) (tea.Model, tea.
 			m.summaryCursor--
 		}
 	case "down", "ctrl+n":
-		if m.summaryCursor < len(builderSummaryActions)-1 {
+		if m.summaryCursor < len(actions)-1 {
 			m.summaryCursor++
 		}
 	case "enter":
-		action := builderSummaryActions[m.summaryCursor].Action
+		action := actions[m.summaryCursor].Action
 		if action == ForwardActionCancel {
 			m.canceled = true
 			return m, tea.Quit
@@ -801,7 +863,11 @@ func (m forwardBuilderModel) View() tea.View {
 	theme := pickerTheme{theme: m.theme}
 	var b strings.Builder
 
-	title := theme.logo("SSHERPA FORWARD BUILDER")
+	titleText := "SSHERPA FORWARD BUILDER"
+	if m.editMode {
+		titleText = "SSHERPA FORWARD EDITOR"
+	}
+	title := theme.logo(titleText)
 	b.WriteString(termstyle.PadRight(title, width))
 	b.WriteByte('\n')
 	b.WriteString("  ")
@@ -932,6 +998,7 @@ func (m forwardBuilderModel) viewThrough(b *strings.Builder, theme pickerTheme, 
 }
 
 func (m forwardBuilderModel) viewSummary(b *strings.Builder, theme pickerTheme, width int) {
+	actions := m.summaryActions()
 	b.WriteString("  ")
 	b.WriteString(theme.summary("Review and pick an action:"))
 	b.WriteByte('\n')
@@ -949,7 +1016,7 @@ func (m forwardBuilderModel) viewSummary(b *strings.Builder, theme pickerTheme, 
 	b.WriteString("  ")
 	b.WriteString(theme.summary("Actions:"))
 	b.WriteByte('\n')
-	for i, action := range builderSummaryActions {
+	for i, action := range actions {
 		cursor := "  "
 		if i == m.summaryCursor {
 			cursor = "> "
@@ -963,6 +1030,13 @@ func (m forwardBuilderModel) viewSummary(b *strings.Builder, theme pickerTheme, 
 		b.WriteByte('\n')
 	}
 	_ = width
+}
+
+func (m forwardBuilderModel) summaryActions() []summaryAction {
+	if m.editMode {
+		return builderEditSummaryActions
+	}
+	return builderSummaryActions
 }
 
 // renderInput draws a single text-input field plus an optional

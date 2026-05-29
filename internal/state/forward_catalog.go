@@ -60,6 +60,8 @@ func WriteForward(stateDir string, spec StoredForward) error {
 	existing, err := ReadForward(stateDir, spec.Name)
 	if err == nil {
 		spec.CreatedAt = existing.CreatedAt
+	} else if !spec.CreatedAt.IsZero() {
+		spec.CreatedAt = spec.CreatedAt.UTC()
 	} else {
 		spec.CreatedAt = now
 	}

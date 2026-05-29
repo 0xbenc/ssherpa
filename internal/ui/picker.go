@@ -24,8 +24,12 @@ const (
 	ItemForward       ItemKind = "forward"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
+	ItemCheck         ItemKind = "check"
 	ItemSessions      ItemKind = "sessions"
 	ItemTheme         ItemKind = "theme"
+	ItemDocs          ItemKind = "docs"
+	ItemConfirmDelete ItemKind = "confirm_delete"
+	ItemConfirmCancel ItemKind = "confirm_cancel"
 )
 
 // SavedForwardItem is the picker-facing projection of a saved
@@ -130,13 +134,15 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 
 	items = append(items,
 		Item{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Group: "Actions", Badge: "add"},
-		Item{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Group: "Actions", Badge: "edit"},
+		Item{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases and forwards", Group: "Actions", Badge: "edit"},
 		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Group: "Actions", Badge: "jump"},
 		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Group: "Actions", Badge: "proxy"},
 		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Group: "Actions", Badge: "forward"},
+		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
 		Item{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Group: "Actions", Badge: "theme"},
+		Item{Kind: ItemDocs, Token: "DOCS", Title: "Completions and manpage", Group: "Actions", Badge: "docs"},
 	)
 
 	for _, alias := range aliases {
@@ -660,12 +666,20 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RolePrimary
 	case ItemForwardActive:
 		role = termstyle.RoleDanger
+	case ItemCheck:
+		role = termstyle.RoleInfo
 	case ItemAuthkeys:
 		role = termstyle.RoleWarning
 	case ItemSessions:
 		role = termstyle.RoleSecondary
 	case ItemTheme:
 		role = termstyle.RoleAccent
+	case ItemDocs:
+		role = termstyle.RoleSecondary
+	case ItemConfirmDelete:
+		role = termstyle.RoleDanger
+	case ItemConfirmCancel:
+		role = termstyle.RoleSecondary
 	}
 	return t.theme.Style(role, value)
 }
@@ -774,12 +788,16 @@ func selectionHint(item Item) string {
 		return "Launches a saved port-forward tunnel from your ssherpa catalog."
 	case ItemForwardActive:
 		return "Stops this running tunnel — signals the daemon and finalizes the record."
+	case ItemCheck:
+		return "Runs SSH and ICMP reachability checks for hosts or saved forwards."
 	case ItemAuthkeys:
 		return "Manages authorized_keys on this device."
 	case ItemSessions:
 		return "Opens the active session route map."
 	case ItemTheme:
 		return "Builds and saves a UI color schema."
+	case ItemDocs:
+		return "Shows installed shell completion and manpage artifact paths."
 	default:
 		return "Ready."
 	}

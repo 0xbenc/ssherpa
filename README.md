@@ -30,6 +30,8 @@ layer OpenSSH doesn't: visibility into, and control over, nested sessions.
 - **Jump, proxy, and forward** — build a `ProxyJump` route through one or
   more hops, start a local SOCKS proxy through any alias, or open a local
   TCP port-forward (`-L`) tunnel for things like a remote Postgres.
+- **Connection checks** — test aliases and saved forward presets with
+  `BatchMode` SSH probes, SSH RTT timing, and best-effort ICMP latency.
 - **`--print` mode** — print the exact `ssh` command instead of running it, so
   you can see, copy, or script what ssherpa would do.
 - **Themeable** — inherits your terminal palette by default; tune every UI role
@@ -184,6 +186,7 @@ the diff, or `--yes` to skip the prompt.
 ```sh
 ssherpa add --alias prod --host prod.example.com --user alice --dry-run
 ssherpa add --alias prod --host prod.example.com --user alice --yes
+ssherpa edit                                  # TUI for aliases and saved forwards
 ssherpa edit set prod --port 2222 --identity ~/.ssh/prod --yes
 ssherpa edit delete prod --dry-run
 ssherpa edit delete-all --filter scratch --dry-run
@@ -202,6 +205,34 @@ ssherpa forward --select pgbox --local 5433 --remote db.internal:5432 --through 
 under the same supervised PTY as the other commands — so the tunnel
 shows up in `ssherpa session map` with a `[tunnel]` badge and the
 escape rope tears it down alongside any interactive sessions.
+
+Save reusable forward presets in ssherpa's state catalog:
+
+```sh
+ssherpa forward saved save pg --select pgbox --local 5432 --remote 127.0.0.1:5432
+ssherpa forward saved list
+ssherpa forward saved show pg --json
+ssherpa forward saved edit pg --description "local postgres"
+ssherpa forward saved rename pg prod-pg
+ssherpa forward saved delete prod-pg --yes
+ssherpa forward --select pg --background
+```
+
+### Check SSH reachability
+
+`check` runs a non-interactive SSH probe and reports elapsed SSH time in
+milliseconds. It also attempts an ICMP ping when possible; ICMP failures are
+reported separately because many networks block ping while SSH still works.
+
+```sh
+ssherpa check prod
+ssherpa check --filter prod --json
+ssherpa check --saved-forward pg --no-icmp
+ssherpa check --saved-forwards --timeout 3s
+```
+
+Shell completions are shipped in `completions/`, and the manpage is shipped as
+`man/ssherpa.1`.
 
 ### Manage authorized_keys
 

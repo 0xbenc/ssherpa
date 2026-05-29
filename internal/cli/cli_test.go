@@ -83,8 +83,25 @@ func TestRunHelpCommand(t *testing.T) {
 	assertContains(t, stdout.String(), "Usage:")
 	assertContains(t, stdout.String(), "Available Commands:")
 	assertContains(t, stdout.String(), "theme      Build and save")
+	assertContains(t, stdout.String(), "check      Test SSH aliases")
+	assertContains(t, stdout.String(), "forward saved list")
 	assertContains(t, stdout.String(), "Theme Commands:")
 	assertContains(t, stdout.String(), "Phase 10:")
+}
+
+func TestGeneratedShellAndManArtifactsExist(t *testing.T) {
+	for _, path := range []string{
+		"../../completions/ssherpa.bash",
+		"../../completions/ssherpa.zsh",
+		"../../completions/ssherpa.fish",
+		"../../man/ssherpa.1",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read generated artifact %s: %v", path, err)
+		}
+		assertContains(t, string(data), "ssherpa")
+	}
 }
 
 func TestPickerVersionLabel(t *testing.T) {

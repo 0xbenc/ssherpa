@@ -139,6 +139,9 @@ func TestForwardPresetActionPickerDefaultsToActive(t *testing.T) {
 	if m.action != ForwardActionRun {
 		t.Fatalf("action = %q, want active run", m.action)
 	}
+	if !strings.Contains(m.View().Content, "[ Foreground ]") {
+		t.Fatalf("foreground button should be selected by default:\n%s", m.View().Content)
+	}
 }
 
 func TestForwardPresetActionPickerCanChooseBackground(t *testing.T) {
@@ -146,7 +149,11 @@ func TestForwardPresetActionPickerCanChooseBackground(t *testing.T) {
 		Name: "pngwin-pg-tunnel",
 	}, termstyle.Theme{})
 
-	m = updateForwardAction(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyEnter, ""))
+	m = updateForwardAction(m, keyPress(tea.KeyRight, ""))
+	if !strings.Contains(m.View().Content, "[ Background ]") {
+		t.Fatalf("background button should be selected:\n%s", m.View().Content)
+	}
+	m = updateForwardAction(m, keyPress(tea.KeyEnter, ""))
 
 	if m.canceled {
 		t.Fatalf("picker canceled unexpectedly")
@@ -268,6 +275,47 @@ func TestForwardBuilderSaveNameRejectsInvalid(t *testing.T) {
 	}
 	if m.saveNameError == "" {
 		t.Fatalf("expected error to be set")
+	}
+}
+
+func TestForwardBuilderEditModePrefillsAndSavesChanges(t *testing.T) {
+	m := newForwardBuilderModel(BuildForwardOptions{
+		Aliases: []ForwardAlias{
+			{Name: "pgbox", Description: "farmer@pg.example.com"},
+			{Name: "bastion", Description: "farmer@bastion.example.com"},
+		},
+		Initial: ForwardResult{
+			Alias:      "pgbox",
+			LocalBind:  "127.0.0.1",
+			LocalPort:  15432,
+			RemoteHost: "127.0.0.1",
+			RemotePort: 5432,
+			Through:    "bastion",
+		},
+		EditMode: true,
+	}, termstyle.Theme{})
+
+	if m.destination.Name != "pgbox" {
+		t.Fatalf("destination = %q, want pgbox", m.destination.Name)
+	}
+	if m.localBuf != "15432" {
+		t.Fatalf("localBuf = %q, want 15432", m.localBuf)
+	}
+	if m.remoteBuf != "127.0.0.1:5432" {
+		t.Fatalf("remoteBuf = %q", m.remoteBuf)
+	}
+
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))                            // destination
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))                            // local
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))                            // remote
+	m = updateBuilder(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyEnter, "")) // through bastion
+	m = updateBuilder(m, keyPress(tea.KeyEnter, ""))                            // Save changes
+
+	if m.result.Action != ForwardActionSaveChanges {
+		t.Fatalf("action = %q, want save_changes", m.result.Action)
+	}
+	if m.result.LocalPort != 15432 || m.result.Through != "bastion" {
+		t.Fatalf("result = %+v", m.result)
 	}
 }
 

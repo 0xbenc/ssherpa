@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -231,6 +230,8 @@ func runForward(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runForwardStatus(args[1:], stdout, stderr)
 		case "stop":
 			return runForwardStop(args[1:], stdout, stderr)
+		case "saved":
+			return runForwardSaved(args[1:], stdout, stderr)
 		}
 	}
 	return runForwardWith(args, false, "", stdout, stderr)
@@ -1138,21 +1139,35 @@ func pickAlias(aliases []hostlist.Alias, noColor bool, themeName string, themeFi
 }
 
 func promptProxyPort(stderr io.Writer) (int, bool) {
-	value, err := promptLine(bufio.NewReader(os.Stdin), stderr, "Local SOCKS proxy port", strconv.Itoa(defaultProxyPort))
+	value, ok, err := promptText(stderr, "Start SOCKS proxy", "port", strconv.Itoa(defaultProxyPort), func(value string) error {
+		_, err := parsePortValue(value, "proxy port")
+		return err
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: read proxy port: %v\n", err)
+		return 0, false
+	}
+	if !ok {
 		return 0, false
 	}
 	return parseProxyPort(value, stderr)
 }
 
 func parseProxyPort(value string, stderr io.Writer) (int, bool) {
-	port, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || port < 1 || port > 65535 {
-		fmt.Fprintln(stderr, "ssherpa: proxy port must be an integer from 1 to 65535")
+	port, err := parsePortValue(value, "proxy port")
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 0, false
 	}
 	return port, true
+}
+
+func parsePortValue(value string, label string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%s must be an integer from 1 to 65535", label)
+	}
+	return port, nil
 }
 
 // parseReconnectMax accepts a non-negative integer. 0 means unlimited
@@ -1322,7 +1337,7 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	}
 	if len(aliases) == 0 {
 		fmt.Fprintln(stderr, "[skipped] no aliases available for forward")
-		return 0, false
+		return 0, true
 	}
 
 	result, ok, err := ui.BuildForward(context.Background(), ui.BuildForwardOptions{
@@ -1340,7 +1355,7 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	}
 	if !ok || result.Action == ui.ForwardActionCancel {
 		fmt.Fprintln(stderr, "[skipped] forward builder cancelled")
-		return 0, false
+		return 0, true
 	}
 
 	if result.Action == ui.ForwardActionSave {
@@ -1362,7 +1377,7 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 		args = append(args, "--print")
 	}
 	args = append(args, connectFlagsAsForwardArgs(flags)...)
-	return runForward(args, stdout, stderr), false
+	return runForward(args, stdout, stderr), result.Action == ui.ForwardActionBackground
 }
 
 // runForwardPreset handles a saved-forward row picked from the home
@@ -1387,7 +1402,7 @@ func runForwardPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr
 	}
 	if !ok || action == ui.ForwardActionCancel {
 		fmt.Fprintln(stderr, "[skipped] forward preset cancelled")
-		return 0, false
+		return 0, true
 	}
 	return runForward(savedForwardLaunchArgs(flags, item.Token, action), stdout, stderr), action == ui.ForwardActionBackground
 }
