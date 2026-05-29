@@ -1,15 +1,24 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
+	"github.com/0xbenc/ssherpa/internal/ui"
+)
+
+const (
+	filePickerParent ui.ItemKind = "file_parent"
+	filePickerDir    ui.ItemKind = "file_dir"
+	filePickerFile   ui.ItemKind = "file"
 )
 
 type transferFlags struct {
@@ -170,9 +179,9 @@ func runTransfer(direction sshcmd.SFTPTransferDirection, flags transferFlags, st
 	if !ok {
 		return code
 	}
-	transfer, ok := resolveTransferSpec(direction, flags, alias, stderr)
+	transfer, ok, code := resolveTransferSpec(direction, flags, alias, stderr)
 	if !ok {
-		return 1
+		return code
 	}
 	if err := sshcmd.ValidateSFTPTransfer(transfer); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
@@ -209,28 +218,36 @@ func resolveTransferAlias(flags transferFlags, inventory hostlist.Inventory, std
 	return alias, true, 0
 }
 
-func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferFlags, alias hostlist.Alias, stderr io.Writer) (sshcmd.SFTPTransfer, bool) {
+func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferFlags, alias hostlist.Alias, stderr io.Writer) (sshcmd.SFTPTransfer, bool, int) {
 	localPath := strings.TrimSpace(flags.LocalPath)
 	remotePath := strings.TrimSpace(flags.RemotePath)
 	switch direction {
 	case sshcmd.SFTPTransferSend:
 		if localPath == "" {
-			fmt.Fprintln(stderr, "ssherpa: send requires a local file path")
-			return sshcmd.SFTPTransfer{}, false
+			picked, ok, err := pickLocalFile(stderr, transferFilePickerOptions(flags), ".")
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: file picker failed: %v\n", err)
+				return sshcmd.SFTPTransfer{}, false, 1
+			}
+			if !ok {
+				fmt.Fprintln(stderr, "[skipped] send cancelled")
+				return sshcmd.SFTPTransfer{}, false, 0
+			}
+			localPath = picked
 		}
 		expanded, err := expandLocalPath(localPath)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
-			return sshcmd.SFTPTransfer{}, false
+			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		info, err := os.Stat(expanded)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: local file %s: %v\n", expanded, err)
-			return sshcmd.SFTPTransfer{}, false
+			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		if info.IsDir() {
 			fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not implemented yet\n", expanded)
-			return sshcmd.SFTPTransfer{}, false
+			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		localPath = expanded
 		if remotePath == "" {
@@ -239,7 +256,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 	case sshcmd.SFTPTransferReceive:
 		if remotePath == "" {
 			fmt.Fprintln(stderr, "ssherpa: receive requires a remote file path")
-			return sshcmd.SFTPTransfer{}, false
+			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		if localPath == "" {
 			localPath = filepath.Base(remotePath)
@@ -247,7 +264,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		expanded, err := expandLocalPath(localPath)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
-			return sshcmd.SFTPTransfer{}, false
+			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		if strings.HasSuffix(localPath, string(os.PathSeparator)) {
 			expanded = filepath.Join(expanded, filepath.Base(remotePath))
@@ -257,7 +274,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		localPath = expanded
 	default:
 		fmt.Fprintf(stderr, "ssherpa: unknown transfer direction %q\n", direction)
-		return sshcmd.SFTPTransfer{}, false
+		return sshcmd.SFTPTransfer{}, false, 1
 	}
 	return sshcmd.SFTPTransfer{
 		Direction:  direction,
@@ -265,7 +282,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		Config:     flags.Config,
 		LocalPath:  localPath,
 		RemotePath: remotePath,
-	}, true
+	}, true, 0
 }
 
 func runSFTPCommand(cmd sshcmd.Command, batch string, stdout io.Writer, stderr io.Writer) int {
@@ -297,9 +314,9 @@ func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout
 		fmt.Fprintln(stderr, "[skipped] no aliases available for file transfer")
 		return 0, true
 	}
-	localPath, ok, err := promptText(stderr, "Send file", "local file", "", validateNonEmpty("Local file"))
+	localPath, ok, err := pickLocalFile(stderr, connectFilePickerOptions(flags), ".")
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: file prompt failed: %v\n", err)
+		fmt.Fprintf(stderr, "ssherpa: file picker failed: %v\n", err)
 		return 1, false
 	}
 	if !ok {
@@ -373,6 +390,166 @@ func connectFlagsAsTransferArgs(flags connectFlags) []string {
 		args = append(args, "--theme-file", flags.ThemeFile)
 	}
 	return args
+}
+
+type filePickerOptions struct {
+	NoColor   bool
+	ThemeName string
+	ThemeFile string
+}
+
+func transferFilePickerOptions(flags transferFlags) filePickerOptions {
+	return filePickerOptions{NoColor: flags.NoColor, ThemeName: flags.ThemeName, ThemeFile: flags.ThemeFile}
+}
+
+func connectFilePickerOptions(flags connectFlags) filePickerOptions {
+	return filePickerOptions{NoColor: flags.NoColor, ThemeName: flags.ThemeName, ThemeFile: flags.ThemeFile}
+}
+
+func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
+	cwd, err := expandLocalPath(start)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return "", false, err
+	}
+	if !info.IsDir() {
+		cwd = filepath.Dir(cwd)
+	}
+
+	for {
+		items, err := localFilePickerItems(cwd)
+		if err != nil {
+			return "", false, err
+		}
+		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			NoColor:     opts.NoColor,
+			ThemeName:   opts.ThemeName,
+			ThemeFile:   opts.ThemeFile,
+			Title:       "Send file: choose local file",
+			Subtitle:    cwd,
+			Footer:      "enter open/select  /  q cancel",
+		})
+		if err != nil || !ok {
+			return "", ok, err
+		}
+		switch item.Kind {
+		case filePickerParent, filePickerDir:
+			cwd = item.Token
+		case filePickerFile:
+			return item.Token, true, nil
+		}
+	}
+}
+
+func localFilePickerItems(dir string) ([]ui.Item, error) {
+	dir, err := expandLocalPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read directory %s: %w", dir, err)
+	}
+
+	items := []ui.Item{}
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		items = append(items, ui.Item{
+			Kind:        filePickerParent,
+			Token:       parent,
+			Title:       "..",
+			Description: parent,
+			Group:       "Directories",
+			Badge:       "up",
+		})
+	}
+
+	type fileEntry struct {
+		item  ui.Item
+		isDir bool
+		name  string
+	}
+	files := make([]fileEntry, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+		if info.IsDir() {
+			files = append(files, fileEntry{
+				isDir: true,
+				name:  strings.ToLower(name),
+				item: ui.Item{
+					Kind:        filePickerDir,
+					Token:       path,
+					Title:       name + string(os.PathSeparator),
+					Description: path,
+					Group:       "Directories",
+					Badge:       "dir",
+				},
+			})
+			continue
+		}
+		files = append(files, fileEntry{
+			name: strings.ToLower(name),
+			item: ui.Item{
+				Kind:        filePickerFile,
+				Token:       path,
+				Title:       name,
+				Description: filePickerDescription(info),
+				Detail:      path,
+				Group:       "Files",
+				Badge:       "file",
+			},
+		})
+	}
+	sort.SliceStable(files, func(i, j int) bool {
+		if files[i].isDir != files[j].isDir {
+			return files[i].isDir
+		}
+		return files[i].name < files[j].name
+	})
+	for _, file := range files {
+		items = append(items, file.item)
+	}
+	return items, nil
+}
+
+func filePickerDescription(info os.FileInfo) string {
+	mod := info.ModTime()
+	when := "unknown"
+	if !mod.IsZero() {
+		when = mod.Format("2006-01-02 15:04")
+	}
+	return fmt.Sprintf("%s  modified %s", humanBytes(info.Size()), when)
+}
+
+func humanBytes(size int64) string {
+	if size < 0 {
+		size = 0
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(size)
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%d %s", size, units[unit])
+	}
+	if value >= 10 {
+		return fmt.Sprintf("%.0f %s", value, units[unit])
+	}
+	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
 func resolveSFTPBinary(flags transferFlags) string {
