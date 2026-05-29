@@ -183,22 +183,27 @@ func runTransfer(direction sshcmd.SFTPTransferDirection, flags transferFlags, st
 	if !ok {
 		return code
 	}
+	code, _, _ = executeSFTPTransfer(direction, flags, alias, stdout, stderr)
+	return code
+}
+
+func executeSFTPTransfer(direction sshcmd.SFTPTransferDirection, flags transferFlags, alias hostlist.Alias, stdout io.Writer, stderr io.Writer) (int, sshcmd.SFTPTransfer, bool) {
 	transfer, ok, code := resolveTransferSpec(direction, flags, alias, stderr)
 	if !ok {
-		return code
+		return code, sshcmd.SFTPTransfer{}, false
 	}
 	if err := sshcmd.ValidateSFTPTransfer(transfer); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
-		return 1
+		return 1, transfer, false
 	}
 	transfer.Batch = sshcmd.BuildSFTPBatch(transfer)
 	cmd := sshcmd.BuildSFTP(resolveSFTPBinary(flags), transfer)
 	if flags.Print {
 		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 		fmt.Fprintf(stdout, "[batch]\n%s", transfer.Batch)
-		return 0
+		return 0, transfer, true
 	}
-	return runSFTPCommand(cmd, transfer.Batch, stdout, stderr)
+	return runSFTPCommand(cmd, transfer.Batch, stdout, stderr), transfer, true
 }
 
 func resolveTransferAlias(flags transferFlags, inventory hostlist.Inventory, stderr io.Writer) (hostlist.Alias, bool, int) {
@@ -345,12 +350,15 @@ func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1, true
 	}
+	var localInfo os.FileInfo
 	if info, err := os.Stat(expanded); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: local file %s: %v\n", expanded, err)
 		return 1, true
 	} else if info.IsDir() {
 		fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not implemented yet\n", expanded)
 		return 1, true
+	} else {
+		localInfo = info
 	}
 
 	alias, ok, err := pickAlias(inventory.Aliases, flags.NoColor, flags.ThemeName, flags.ThemeFile, "Send file: pick target", stderr)
@@ -363,39 +371,41 @@ func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout
 		return 0, true
 	}
 
-	args := []string{"--select", alias.Name}
-	args = append(args, connectFlagsAsTransferArgs(flags)...)
-	args = append(args, expanded)
-	return runSend(args, stdout, stderr), true
+	transferFlags := transferFlagsFromConnect(flags)
+	transferFlags.LocalPath = expanded
+	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, transferFlags, alias, stdout, stderr)
+	if code == 0 && attempted && !transferFlags.Print {
+		if err := showSendComplete(stderr, flags, transfer, localInfo.Size()); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: send confirmation failed: %v\n", err)
+			return 1, false
+		}
+	}
+	return code, true
 }
 
-func connectFlagsAsTransferArgs(flags connectFlags) []string {
-	var args []string
-	if flags.All {
-		args = append(args, "--all")
+func transferFlagsFromConnect(flags connectFlags) transferFlags {
+	return transferFlags{
+		inventoryFlags: flags.inventoryFlags,
+		Print:          flags.Print,
+		NoColor:        flags.NoColor,
+		ThemeName:      flags.ThemeName,
+		ThemeFile:      flags.ThemeFile,
 	}
-	if flags.Filter != "" {
-		args = append(args, "--filter", flags.Filter)
-	}
-	if flags.User != "" {
-		args = append(args, "--user", flags.User)
-	}
-	if flags.Config != "" {
-		args = append(args, "--config", flags.Config)
-	}
-	if flags.Print {
-		args = append(args, "--print")
-	}
-	if flags.NoColor {
-		args = append(args, "--no-color")
-	}
-	if flags.ThemeName != "" {
-		args = append(args, "--theme", flags.ThemeName)
-	}
-	if flags.ThemeFile != "" {
-		args = append(args, "--theme-file", flags.ThemeFile)
-	}
-	return args
+}
+
+func showSendComplete(stderr io.Writer, flags connectFlags, transfer sshcmd.SFTPTransfer, size int64) error {
+	return ui.ShowTransferComplete(context.Background(), ui.TransferCompleteOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		LocalPath:   transfer.LocalPath,
+		Alias:       transfer.Alias,
+		RemotePath:  transfer.RemotePath,
+		Size:        humanBytes(size),
+	})
 }
 
 type filePickerOptions struct {
