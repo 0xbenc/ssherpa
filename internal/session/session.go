@@ -425,12 +425,16 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	record.EndedAt = &endedAt
 	record.ExitCode = &exitCode
 	err = state.WriteRecord(stateDir, record)
+	recordForTelemetry := record
 	recordMu.Unlock()
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: update session record: %v\n", err)
 		if exitCode == 0 {
 			return 1
 		}
+	}
+	if err == nil {
+		emitSessionTelemetry(output, recordForTelemetry)
 	}
 	return exitCode
 }
@@ -1341,12 +1345,12 @@ type attemptContext struct {
 	watchdog WatchdogOptions
 	stderr   io.Writer
 	now      func() time.Time
-	// onPtmxReady, if non-nil, is invoked once per attempt right
-	// after ptmxRef has been set to the freshly-started PTY. The
-	// supervisor uses this to start the long-lived copyInput
-	// goroutine on the first attempt — before then a fixture-driven
-	// test's stdin bytes could race ahead of the first set and get
-	// dropped by ptmxRef.write's nil fallback.
+	// onPtmxReady, if non-nil, is invoked once per attempt after ptmxRef
+	// points at the freshly-started PTY and the active record has been
+	// written. The supervisor uses this to start the long-lived copyInput
+	// goroutine on the first attempt; opening the input path after the
+	// record write keeps an immediate overlay from racing ahead of the
+	// current session's state file.
 	onPtmxReady func()
 	// pullRope, if non-nil, is the supervisor's escape-rope handle.
 	// forwardSignals invokes it on external SIGTERM/SIGHUP/SIGQUIT
@@ -1374,19 +1378,22 @@ func attemptOnce(ac attemptContext) error {
 		ac.procRef.set(nil)
 		ac.ptmxRef.set(nil)
 	}()
-	if ac.onPtmxReady != nil {
-		ac.onPtmxReady()
-	}
 
 	ac.recordMu.Lock()
 	ac.record.SSHPID = proc.Process.Pid
 	writeErr := state.WriteRecord(ac.stateDir, *ac.record)
+	recordForTelemetry := *ac.record
 	ac.recordMu.Unlock()
 	if writeErr != nil {
 		_ = proc.Process.Kill()
 		_ = proc.Wait()
 		_ = ptmx.Close()
 		return fmt.Errorf("write session record: %w", writeErr)
+	}
+	emitSessionTelemetry(ac.output, recordForTelemetry)
+
+	if ac.onPtmxReady != nil {
+		ac.onPtmxReady()
 	}
 
 	outputDone := make(chan struct{})
@@ -1424,16 +1431,65 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 		n, err := ptmx.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			observed, changed := tracker.Observe(chunk)
+			observed := tracker.ObserveAll(chunk)
 			_, _ = ac.output.Write(chunk)
-			if changed {
-				recordRemoteState(ac, observed)
+			if observed.RemoteChanged {
+				recordRemoteState(ac, observed.Remote)
+			}
+			for _, mirror := range observed.Mirrors {
+				mirrorRemoteSessionRecord(ac, mirror)
 			}
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+func emitSessionTelemetry(output io.Writer, record state.SessionRecord) {
+	if output == nil || record.ParentID == "" || record.RemoteMirror {
+		return
+	}
+	payload, ok := sessionTelemetryOSC(record)
+	if !ok {
+		return
+	}
+	_, _ = output.Write(payload)
+}
+
+func mirrorRemoteSessionRecord(ac attemptContext, record state.SessionRecord) {
+	if !isDescendantTelemetry(*ac.record, record) {
+		return
+	}
+	record.RemoteMirror = true
+	record.Inherited = false
+	record.LocalPID = 0
+	record.SSHPID = 0
+	if record.StateVersion == 0 {
+		record.StateVersion = state.StateVersion
+	}
+	_ = state.WriteRecord(ac.stateDir, record)
+}
+
+func isDescendantTelemetry(parent state.SessionRecord, child state.SessionRecord) bool {
+	if child.ID == "" || child.ID == parent.ID || child.ParentID == "" {
+		return false
+	}
+	if child.ParentID == parent.ID {
+		return true
+	}
+	if len(parent.Route) == 0 || len(child.Route) <= len(parent.Route) {
+		return false
+	}
+	for i, part := range parent.Route {
+		if child.Route[i] != part {
+			return false
+		}
+	}
+	if parent.OriginHost != "" && child.OriginHost != "" && parent.OriginHost != child.OriginHost {
+		return false
+	}
+	return true
 }
 
 func recordRemoteState(ac attemptContext, observed remoteState) {

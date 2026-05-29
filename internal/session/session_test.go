@@ -192,6 +192,72 @@ func TestRunSupervisedRecordsRunningPromptState(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	child := state.SessionRecord{
+		ID:          "child",
+		ParentID:    "parent",
+		Depth:       1,
+		OriginHost:  "laptop",
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		StartedAt:   fixedClock()(),
+		RunnerMode:  RunnerModeSupervised,
+	}
+	payload, ok := sessionTelemetryOSC(child)
+	if !ok {
+		t.Fatalf("sessionTelemetryOSC returned !ok")
+	}
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '%s' "$SSHERPA_TEST_TELEMETRY"`}},
+		Metadata{TargetAlias: "bastion", Route: []string{"bastion"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env: []string{
+				"PATH=" + os.Getenv("PATH"),
+				"SSHERPA_TEST_TELEMETRY=" + string(payload),
+			},
+			Now:      fixedClock(),
+			RecordID: "parent",
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %#v, want parent and mirrored child", records)
+	}
+	var mirrored state.SessionRecord
+	for _, record := range records {
+		if record.ID == "child" {
+			mirrored = record
+		}
+	}
+	if !mirrored.RemoteMirror || mirrored.ParentID != "parent" || mirrored.TargetAlias != "prod" {
+		t.Fatalf("mirrored record = %#v, want remote mirror child under parent", mirrored)
+	}
+	if mirrored.LocalPID != 0 || mirrored.SSHPID != 0 || state.ProcessAlive(mirrored) {
+		t.Fatalf("mirrored pids/process = %#v, want non-local process", mirrored)
+	}
+}
+
 // TestRunSupervisedDetachedMode validates Phase 2b's daemon path at
 // the session level: with Options.Detached the supervisor skips PTY
 // raw mode, never starts copyInput, accepts a pre-assigned RecordID,

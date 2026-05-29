@@ -110,6 +110,11 @@ func TestProcessAlive(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "remote mirror never alive locally",
+			rec:  SessionRecord{LocalPID: os.Getpid(), RemoteMirror: true},
+			want: false,
+		},
+		{
 			name: "obviously-dead pid is not alive",
 			rec:  SessionRecord{LocalPID: 1 << 20}, // very unlikely to exist
 			want: false,

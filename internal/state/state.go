@@ -66,6 +66,7 @@ type SessionRecord struct {
 	DisconnectReason string         `json:"disconnect_reason,omitempty"`
 	StateVersion     int            `json:"state_version"`
 	Inherited        bool           `json:"inherited,omitempty"`
+	RemoteMirror     bool           `json:"remote_mirror,omitempty"`
 }
 
 // ForwardSpec captures the runtime shape of a port-forward tunnel
@@ -124,6 +125,9 @@ func (r SessionRecord) Status() string {
 // returns nil iff the process exists and the caller can signal it.
 // Records with EndedAt set or LocalPID == 0 always return false.
 func ProcessAlive(record SessionRecord) bool {
+	if record.RemoteMirror {
+		return false
+	}
 	if record.EndedAt != nil {
 		return false
 	}

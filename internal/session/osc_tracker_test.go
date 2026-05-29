@@ -64,6 +64,34 @@ func TestOSCTrackerTracksPromptState(t *testing.T) {
 	}
 }
 
+func TestOSCTrackerTracksSessionTelemetry(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "child",
+		ParentID:    "parent",
+		Depth:       2,
+		OriginHost:  "laptop",
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		StartedAt:   fixedClock()(),
+	}
+	payload, ok := sessionTelemetryOSC(record)
+	if !ok {
+		t.Fatalf("sessionTelemetryOSC returned !ok")
+	}
+
+	observed := newOSCTracker().ObserveAll(payload)
+	if observed.RemoteChanged {
+		t.Fatalf("session telemetry changed remote prompt/cwd state")
+	}
+	if len(observed.Mirrors) != 1 {
+		t.Fatalf("mirrors = %#v, want one", observed.Mirrors)
+	}
+	got := observed.Mirrors[0]
+	if got.ID != record.ID || got.ParentID != record.ParentID || got.TargetAlias != record.TargetAlias || got.OriginHost != record.OriginHost {
+		t.Fatalf("mirror = %#v, want %#v", got, record)
+	}
+}
+
 func buildRecordWithRemoteState(host string, cwd string, prompt string) state.SessionRecord {
 	return state.SessionRecord{RemoteHost: host, RemoteCWD: cwd, RemotePrompt: prompt}
 }

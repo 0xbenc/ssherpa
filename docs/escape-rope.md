@@ -111,6 +111,10 @@ reachable.**
   `SendEnv=SSHERPA_*` for supervised connections; each receiving sshd still
   needs `AcceptEnv SSHERPA_*`. The rope's teardown is physical and does
   **not** depend on this.
+- **Nested overlay ownership:** the outermost supervised layer consumes
+  `Ctrl-]`. Inner ssherpa instances report their active session records
+  upstream with private terminal telemetry, so the outer overlay can show
+  downstream lineage without needing the hotkey byte to pass through.
 
 ## Terminal safety
 

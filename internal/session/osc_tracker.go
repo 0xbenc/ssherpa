@@ -1,6 +1,8 @@
 package session
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"strings"
 
@@ -25,9 +27,16 @@ type remoteUpdate struct {
 	Host      string
 	CWD       string
 	Prompt    string
+	Mirror    *state.SessionRecord
 	HostSet   bool
 	CWDSet    bool
 	PromptSet bool
+}
+
+type oscObservation struct {
+	Remote        remoteState
+	RemoteChanged bool
+	Mirrors       []state.SessionRecord
 }
 
 type oscTracker struct {
@@ -48,13 +57,27 @@ func newOSCTracker() *oscTracker {
 }
 
 func (t *oscTracker) Observe(data []byte) (remoteState, bool) {
-	changed := false
+	observed := t.ObserveAll(data)
+	return observed.Remote, observed.RemoteChanged
+}
+
+func (t *oscTracker) ObserveAll(data []byte) oscObservation {
+	var observed oscObservation
 	for _, b := range data {
-		if update, ok := t.feed(b); ok && t.apply(update) {
-			changed = true
+		update, ok := t.feed(b)
+		if !ok {
+			continue
+		}
+		if update.Mirror != nil {
+			observed.Mirrors = append(observed.Mirrors, *update.Mirror)
+			continue
+		}
+		if t.apply(update) {
+			observed.RemoteChanged = true
 		}
 	}
-	return t.last, changed
+	observed.Remote = t.last
+	return observed
 }
 
 func (t *oscTracker) feed(b byte) (remoteUpdate, bool) {
@@ -144,9 +167,43 @@ func parseOSC(payload string) (remoteUpdate, bool) {
 			return remoteUpdate{}, false
 		}
 		return remoteUpdate{Prompt: prompt, PromptSet: true}, true
+	case "777":
+		record, ok := parseSessionTelemetryOSC(rest)
+		if !ok {
+			return remoteUpdate{}, false
+		}
+		return remoteUpdate{Mirror: &record}, true
 	default:
 		return remoteUpdate{}, false
 	}
+}
+
+func sessionTelemetryOSC(record state.SessionRecord) ([]byte, bool) {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return nil, false
+	}
+	payload := base64.StdEncoding.EncodeToString(data)
+	return []byte("\x1b]777;ssherpa-session;" + payload + "\x07"), true
+}
+
+func parseSessionTelemetryOSC(value string) (state.SessionRecord, bool) {
+	tag, payload, ok := strings.Cut(value, ";")
+	if !ok || tag != "ssherpa-session" {
+		return state.SessionRecord{}, false
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return state.SessionRecord{}, false
+	}
+	var record state.SessionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return state.SessionRecord{}, false
+	}
+	if strings.TrimSpace(record.ID) == "" {
+		return state.SessionRecord{}, false
+	}
+	return record, true
 }
 
 func parseOSC7(value string) (host string, cwd string, ok bool) {

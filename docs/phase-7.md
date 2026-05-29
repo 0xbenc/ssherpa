@@ -106,6 +106,10 @@ The overlay renders active local session state. It marks the current
 session when known. Cross-host lineage requires environment propagation:
 ssherpa automatically adds client-side `SendEnv=SSHERPA_*` to supervised
 ssh commands, and each destination sshd must allow `AcceptEnv SSHERPA_*`.
+For nested ssherpa sessions, the outermost supervisor still owns
+`Ctrl-]`; downstream supervisors send invisible session telemetry back up
+the terminal stream so the outer map can include active descendants from
+remote machines.
 session and blocks remote output from drawing over the overlay until the
 overlay closes.
 
