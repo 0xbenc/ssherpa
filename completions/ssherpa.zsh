@@ -54,6 +54,30 @@ _ssherpa() {
               '--state-dir[override state directory]:path:_files'
           fi
           ;;
+        proxy)
+          if [[ $words[3] == saved ]]; then
+            _arguments \
+              '3:subcommand:(list show save edit delete rename)' \
+              '--state-dir[override state directory]:path:_files' \
+              '--config[read SSH config]:path:_files' \
+              '--select[SSH alias]:alias' \
+              '--bind[listener bind address]:bind' \
+              '--port[listener port]:port' \
+              '--description[description]:text' \
+              '--json[emit JSON]' \
+              '--yes[skip confirmation]'
+          else
+            _arguments \
+              '2:subcommand:(list status stop saved)' \
+              '--select[SSH alias or saved proxy]:alias' \
+              '--bind[listener bind address]:bind' \
+              '--port[listener port]:port' \
+              '--background[run detached]' \
+              '--print[print command]' \
+              '--direct[disable supervisor]' \
+              '--state-dir[override state directory]:path:_files'
+          fi
+          ;;
         check)
           _arguments \
             '--json[emit JSON]' \

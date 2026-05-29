@@ -32,3 +32,11 @@ complete -c ssherpa -n '__fish_seen_subcommand_from forward' -l remote -r -d 'Re
 complete -c ssherpa -n '__fish_seen_subcommand_from forward' -l through -r -d 'Jump alias'
 complete -c ssherpa -n '__fish_seen_subcommand_from forward' -l background -d 'Run detached'
 complete -c ssherpa -n '__fish_seen_subcommand_from forward' -l state-dir -r -d 'Override state directory'
+
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -a 'list status stop saved'
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy; and __fish_contains_opt saved' -a 'list show save edit delete rename'
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l select -r -d 'SSH alias or saved proxy'
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l bind -r -d 'Listener bind address'
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l port -r -d 'Listener port'
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l background -d 'Run detached'
+complete -c ssherpa -n '__fish_seen_subcommand_from proxy' -l state-dir -r -d 'Override state directory'

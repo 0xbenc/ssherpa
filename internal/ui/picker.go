@@ -24,6 +24,8 @@ const (
 	ItemForward       ItemKind = "forward"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
+	ItemProxySaved    ItemKind = "proxy_saved"
+	ItemProxyActive   ItemKind = "proxy_active"
 	ItemCheck         ItemKind = "check"
 	ItemSessions      ItemKind = "sessions"
 	ItemTheme         ItemKind = "theme"
@@ -90,12 +92,14 @@ type BuildItemsOptions struct {
 	// standard action rows so daily-use one-tap launches get
 	// prominence — decision #3 in docs/forward-phase-2.md.
 	SavedForwards []SavedForwardItem
+	SavedProxies  []SavedForwardItem
 	// ActiveTunnels renders as an "Active Tunnels" group above
 	// Saved Forwards — they're more actionable (you want to stop
 	// them right now) than launches. Picker dispatch calls
 	// `ssherpa forward stop` when one is selected. The count
 	// shown in the subtitle is derived from len(ActiveTunnels).
 	ActiveTunnels []ActiveTunnelItem
+	ActiveProxies []ActiveTunnelItem
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -118,6 +122,16 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Badge:       "stop",
 		})
 	}
+	for _, ap := range opts.ActiveProxies {
+		items = append(items, Item{
+			Kind:        ItemProxyActive,
+			Token:       ap.SessionID,
+			Title:       ap.Title,
+			Description: ap.Description,
+			Group:       "Active Proxies",
+			Badge:       "stop",
+		})
+	}
 
 	// Saved forwards next — explicit "I set this up to reuse"
 	// entries. Selecting one launches the saved spec.
@@ -129,6 +143,16 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Description: sf.Description,
 			Group:       "Saved Forwards",
 			Badge:       "forward",
+		})
+	}
+	for _, sp := range opts.SavedProxies {
+		items = append(items, Item{
+			Kind:        ItemProxySaved,
+			Token:       sp.Name,
+			Title:       sp.Name,
+			Description: sp.Description,
+			Group:       "Saved Proxies",
+			Badge:       "proxy",
 		})
 	}
 
@@ -664,7 +688,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RolePrimary
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
-	case ItemForwardActive:
+	case ItemForwardActive, ItemProxyActive:
 		role = termstyle.RoleDanger
 	case ItemCheck:
 		role = termstyle.RoleInfo
@@ -782,6 +806,10 @@ func selectionHint(item Item) string {
 		return "Builds a ProxyJump route through selected hops."
 	case ItemProxy:
 		return "Starts a local SOCKS proxy through an SSH alias."
+	case ItemProxySaved:
+		return "Launches a saved SOCKS proxy preset."
+	case ItemProxyActive:
+		return "Stops this running SOCKS proxy."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemForwardSaved:

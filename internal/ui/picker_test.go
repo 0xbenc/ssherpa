@@ -11,7 +11,7 @@ import (
 func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 	items := BuildItemsWithOptions([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}, BuildItemsOptions{
 		ActiveTunnels: []ActiveTunnelItem{
-			{SessionID: "sess-1", Title: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432 · up 2m · pid 31337"},
+			{SessionID: "sess-1", Title: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432 · up 2m"},
 		},
 		SavedForwards: []SavedForwardItem{
 			{Name: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432  (alias pgbox)"},
@@ -299,6 +299,7 @@ func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
 		{ItemForward, "\x1b[36m"},       // tunnel builder
 		{ItemForwardSaved, "\x1b[36m"},  // tunnel launch
 		{ItemForwardActive, "\x1b[31m"}, // stop running tunnel
+		{ItemProxyActive, "\x1b[31m"},   // stop running proxy
 		{ItemAuthkeys, "\x1b[33m"},      // security-sensitive
 		{ItemSessions, "\x1b[34m"},      // inspection
 		{ItemTheme, "\x1b[33m"},         // appearance/config

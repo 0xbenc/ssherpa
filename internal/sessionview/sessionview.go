@@ -233,6 +233,8 @@ func KindBadge(record state.SessionRecord) string {
 	switch record.Kind {
 	case state.KindTunnel:
 		return "[forward]"
+	case state.KindProxy:
+		return "[proxy]"
 	default:
 		if len(record.Hops) > 0 || len(record.Route) > 1 {
 			return "[jump]"
@@ -321,6 +323,9 @@ func appendNodeLines(lines []string, node state.SessionNode, prefix string, last
 	if forward := ForwardSummary(record); forward != "" {
 		lines = append(lines, fmt.Sprintf("%s   forward: %s", prefix, forward))
 	}
+	if proxy := ProxySummary(record); proxy != "" {
+		lines = append(lines, fmt.Sprintf("%s   proxy: %s", prefix, proxy))
+	}
 	if health := HealthSummary(record); health != "" {
 		lines = append(lines, fmt.Sprintf("%s   health: %s", prefix, health))
 	}
@@ -370,6 +375,9 @@ func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string
 	}
 	if forward := ForwardSummary(record); forward != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "FORWARD ")+theme.Style(termstyle.RoleForeground, forward), width))
+	}
+	if proxy := ProxySummary(record); proxy != "" {
+		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "PROXY ")+theme.Style(termstyle.RoleForeground, proxy), width))
 	}
 	if health := HealthSummary(record); health != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleWarning, "health ")+theme.Style(termstyle.RoleForeground, health), width))
@@ -435,6 +443,27 @@ func ForwardSummary(record state.SessionRecord) string {
 	}
 	if record.Forward.RetryCount > 0 {
 		parts = append(parts, fmt.Sprintf("retries %d", record.Forward.RetryCount))
+	}
+	if len(parts) > 0 {
+		summary += "  (" + strings.Join(parts, ", ") + ")"
+	}
+	return summary
+}
+
+func ProxySummary(record state.SessionRecord) string {
+	if record.Kind != state.KindProxy || record.Proxy == nil {
+		return ""
+	}
+	summary := "SOCKS " + forwardEndpoint(record.Proxy.Bind, record.Proxy.Port)
+	var parts []string
+	if record.Proxy.SavedAlias != "" {
+		parts = append(parts, "saved "+record.Proxy.SavedAlias)
+	}
+	if record.Proxy.Detached {
+		parts = append(parts, "background")
+	}
+	if record.Proxy.RetryCount > 0 {
+		parts = append(parts, fmt.Sprintf("retries %d", record.Proxy.RetryCount))
 	}
 	if len(parts) > 0 {
 		summary += "  (" + strings.Join(parts, ", ") + ")"

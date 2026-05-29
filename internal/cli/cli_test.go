@@ -769,6 +769,40 @@ Host pgbox
 	}
 }
 
+func TestRunProxySupervisedRecordsProxyKind(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host bastion
+  HostName bastion.example.com
+`)
+	fakeSSH, _ := writeFakeSSH(t, 0)
+	stateDir := t.TempDir()
+
+	code := Run([]string{"proxy", "--state-dir", stateDir, "--select", "bastion", "--port", "1080", "--config", config, "--ssh-binary", fakeSSH}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.Kind != state.KindProxy || record.Proxy == nil {
+		t.Fatalf("record proxy metadata = %#v", record)
+	}
+	if record.Proxy.Port != 1080 || record.Proxy.Bind != defaultProxyBind {
+		t.Fatalf("record.Proxy = %#v", record.Proxy)
+	}
+	if got := strings.Join(record.SSHArgv, " "); !strings.Contains(got, "-D 127.0.0.1:1080 -C -N") {
+		t.Fatalf("record argv missing proxy spec: %#v", record.SSHArgv)
+	}
+}
+
 func TestRunForwardRejectsInvalidInputs(t *testing.T) {
 	config := writeConfig(t, `
 Host pgbox
@@ -983,6 +1017,10 @@ Host bastion
 	defer func(orig func(string, []string, *os.ProcAttr) (int, error)) {
 		daemonStartProcess = orig
 	}(daemonStartProcess)
+	defer func(orig time.Duration) {
+		daemonRecordReadyTimeout = orig
+	}(daemonRecordReadyTimeout)
+	daemonRecordReadyTimeout = 0
 	daemonStartProcess = func(name string, argv []string, attr *os.ProcAttr) (int, error) {
 		capturedName = name
 		capturedArgs = append([]string(nil), argv...)
@@ -1042,6 +1080,24 @@ Host bastion
 	assertContains(t, stdout.String(), "daemon pid: 31337")
 	assertContains(t, stdout.String(), "session id:")
 	assertContains(t, stdout.String(), "log file:")
+}
+
+func TestWaitForDetachedRecordWaitsUntilRecordExists(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionID := "detached-ready"
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = state.WriteRecord(stateDir, state.SessionRecord{
+			ID:           sessionID,
+			StartedAt:    time.Now(),
+			RunnerMode:   "supervised",
+			StateVersion: state.StateVersion,
+		})
+	}()
+
+	if !waitForDetachedRecord(stateDir, sessionID, time.Second) {
+		t.Fatalf("waitForDetachedRecord returned false")
+	}
 }
 
 func TestRunForwardBackgroundRejectsPrint(t *testing.T) {

@@ -30,6 +30,11 @@ const (
 	// renderers tag these so an operator can tell a tunnel apart from a
 	// shell at a glance.
 	KindTunnel = "tunnel"
+	// KindProxy marks a non-interactive SOCKS proxy session (e.g. one
+	// started by `ssherpa proxy`). It shares the supervised/background
+	// lifecycle with tunnels but carries a ProxySpec instead of a
+	// ForwardSpec.
+	KindProxy = "proxy"
 )
 
 type SessionRecord struct {
@@ -42,6 +47,7 @@ type SessionRecord struct {
 	SSHArgv          []string       `json:"ssh_argv,omitempty"`
 	Kind             string         `json:"kind,omitempty"`
 	Forward          *ForwardSpec   `json:"forward,omitempty"`
+	Proxy            *ProxySpec     `json:"proxy,omitempty"`
 	StartedAt        time.Time      `json:"started_at"`
 	EndedAt          *time.Time     `json:"ended_at,omitempty"`
 	LocalPID         int            `json:"local_pid"`
@@ -79,6 +85,18 @@ type ForwardSpec struct {
 	// initial spawn is still running (or the session exited
 	// without a restart).
 	RetryCount int `json:"retry_count,omitempty"`
+}
+
+// ProxySpec captures the runtime shape of a SOCKS proxy session.
+// It is set on SessionRecord.Proxy when Kind == KindProxy so
+// management commands and the session map can show the listener
+// without re-parsing SSHArgv.
+type ProxySpec struct {
+	Bind       string `json:"bind,omitempty"`
+	Port       int    `json:"port"`
+	SavedAlias string `json:"saved_alias,omitempty"`
+	Detached   bool   `json:"detached,omitempty"`
+	RetryCount int    `json:"retry_count,omitempty"`
 }
 
 func (r SessionRecord) Status() string {

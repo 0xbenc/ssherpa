@@ -10,6 +10,9 @@ ssherpa \- terminal UI and supervisor for OpenSSH configs
 .br
 .B ssherpa forward saved
 \fIcommand\fR [\fIflags\fR]
+.br
+.B ssherpa proxy saved
+\fIcommand\fR [\fIflags\fR]
 .SH DESCRIPTION
 .B ssherpa
 reads OpenSSH config, lets you pick and connect to aliases, supervises SSH
@@ -27,13 +30,16 @@ Edit or delete SSH aliases.
 Connect through one or more ProxyJump hops.
 .TP
 .B proxy
-Start a local SOCKS proxy through an SSH alias.
+Start, inspect, or stop a tracked local SOCKS proxy through an SSH alias.
 .TP
 .B forward
 Open a local TCP port-forward tunnel and inspect or stop tunnel sessions.
 .TP
 .B forward saved
 Manage saved forward catalog entries with list, show, save, edit, delete, and rename.
+.TP
+.B proxy saved
+Manage saved proxy catalog entries with list, show, save, edit, delete, and rename.
 .TP
 .B check
 Test SSH aliases or saved forwards with a BatchMode SSH probe and best-effort ICMP latency.
@@ -61,6 +67,14 @@ ssherpa forward saved show pg --json
 ssherpa forward saved edit pg --description "local postgres"
 ssherpa forward saved rename pg prod-pg
 ssherpa forward saved delete prod-pg --yes
+.EE
+.SH SAVED PROXY EXAMPLES
+.EX
+ssherpa proxy saved save corp --select bastion --port 1080
+ssherpa proxy --select corp --background
+ssherpa proxy list
+ssherpa proxy status corp
+ssherpa proxy stop corp
 .EE
 .SH FILES
 .TP

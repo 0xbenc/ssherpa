@@ -149,21 +149,5 @@ func ForwardPath(stateDir string, name string) string {
 // the two namespaces (session IDs and saved-forward names) can
 // diverge later if either gets stricter.
 func ValidateForwardName(name string) error {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return errors.New("forward name is required")
-	}
-	if name != trimmed {
-		return fmt.Errorf("invalid forward name %q (no leading/trailing whitespace)", name)
-	}
-	if strings.ContainsAny(name, " \t\r\n\x00/\\") {
-		return fmt.Errorf("invalid forward name %q (no whitespace, slashes, or NUL)", name)
-	}
-	if name != filepath.Base(name) {
-		return fmt.Errorf("invalid forward name %q", name)
-	}
-	if strings.HasPrefix(name, ".") {
-		return fmt.Errorf("invalid forward name %q (cannot start with dot)", name)
-	}
-	return nil
+	return validateCatalogName("forward", name)
 }

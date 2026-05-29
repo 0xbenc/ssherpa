@@ -47,7 +47,7 @@ type Metadata struct {
 	Hops        []string
 	Route       []string
 	// Kind tags the recorded session by its high-level shape (e.g.
-	// state.KindInteractive or state.KindTunnel). Leave empty for a
+	// state.KindInteractive, state.KindTunnel, or state.KindProxy). Leave empty for a
 	// default interactive session; the session-map renderer treats an
 	// empty Kind as interactive for backward compatibility with records
 	// written before this field existed.
@@ -57,6 +57,9 @@ type Metadata struct {
 	// so the management commands (`ssherpa forward list/status/stop`)
 	// can read local/remote/through without re-parsing SSHArgv.
 	Forward *state.ForwardSpec
+	// Proxy, when non-nil, captures the runtime SOCKS proxy spec
+	// for a proxy-kind session.
+	Proxy *state.ProxySpec
 }
 
 type Options struct {
@@ -360,9 +363,12 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		if record.Forward != nil {
 			record.Forward.RetryCount = attempt
 		}
+		if record.Proxy != nil {
+			record.Proxy.RetryCount = attempt
+		}
 		_ = state.WriteRecord(stateDir, record)
 		recordMu.Unlock()
-		fmt.Fprintf(stderr, "\r\nssherpa: tunnel attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
+		fmt.Fprintf(stderr, "\r\nssherpa: session attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ropePulledCh:
@@ -429,6 +435,11 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		copyFwd := *metadata.Forward
 		forward = &copyFwd
 	}
+	var proxy *state.ProxySpec
+	if metadata.Proxy != nil {
+		copyProxy := *metadata.Proxy
+		proxy = &copyProxy
+	}
 	id := strings.TrimSpace(recordIDOverride)
 	if id == "" {
 		id = state.NewSessionID(started)
@@ -443,6 +454,7 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		SSHArgv:      append([]string(nil), command.Argv...),
 		Kind:         metadata.Kind,
 		Forward:      forward,
+		Proxy:        proxy,
 		StartedAt:    started.UTC(),
 		LocalPID:     os.Getpid(),
 		RunnerMode:   RunnerModeSupervised,
@@ -1305,7 +1317,7 @@ func attemptOnce(ac attemptContext) error {
 // hit the same wall. Everything else (clean disconnect == 0, network
 // error == 255, unknown codes) is treated as transient.
 func shouldRetry(kind string, opts ReconnectOptions, waitErr error, attempt int) bool {
-	if kind != state.KindTunnel {
+	if kind != state.KindTunnel && kind != state.KindProxy {
 		return false
 	}
 	if !opts.Enabled {

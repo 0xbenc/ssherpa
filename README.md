@@ -189,7 +189,7 @@ the diff, or `--yes` to skip the prompt.
 ```sh
 ssherpa add --alias prod --host prod.example.com --user alice --dry-run
 ssherpa add --alias prod --host prod.example.com --user alice --yes
-ssherpa edit                                  # TUI for aliases and saved forwards
+ssherpa edit                                  # TUI for aliases and saved forward/proxy presets
 ssherpa edit set prod --port 2222 --identity ~/.ssh/prod --yes
 ssherpa edit delete prod --dry-run
 ssherpa edit delete-all --filter scratch --dry-run
@@ -200,14 +200,18 @@ ssherpa edit delete-all --filter scratch --dry-run
 ```sh
 ssherpa jump --dest prod --hop bastion --hop edge --print   # ssh -J bastion,edge prod
 ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
+ssherpa proxy saved save corp --select prod --port 1080
+ssherpa proxy --select corp --background
+ssherpa proxy list
+ssherpa proxy stop corp
 ssherpa forward --select pgbox --local 5432 --remote 127.0.0.1:5432 --print
 ssherpa forward --select pgbox --local 5433 --remote db.internal:5432 --through bastion
 ```
 
-`forward` opens a local TCP port-forward (the `ssh -L` flag) and runs it
-under the same supervised PTY as the other commands — so the tunnel
-shows up in `ssherpa session map` with a `[forward]` badge and the
-escape rope tears it down alongside any interactive sessions.
+`proxy` opens a local SOCKS listener (`ssh -D`) and `forward` opens a
+local TCP port-forward (`ssh -L`). Both can run in the foreground or
+as tracked background sessions, show up in `ssherpa session map`, and
+can be stopped later by session ID or saved preset name.
 
 Save reusable forward presets in ssherpa's state catalog:
 

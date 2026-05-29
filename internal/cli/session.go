@@ -310,6 +310,12 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 	fmt.Fprintf(stdout, "depth:\t%d\n", record.Depth)
 	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatDisplayRoute(record.Route))
 	fmt.Fprintf(stdout, "hops:\t%s\n", sessionview.FormatRoute(record.Hops))
+	if forward := sessionview.ForwardSummary(record); forward != "" {
+		fmt.Fprintf(stdout, "forward:\t%s\n", forward)
+	}
+	if proxy := sessionview.ProxySummary(record); proxy != "" {
+		fmt.Fprintf(stdout, "proxy:\t%s\n", proxy)
+	}
 	fmt.Fprintf(stdout, "started:\t%s\n", record.StartedAt.Local().Format(time.RFC3339))
 	fmt.Fprintf(stdout, "ended:\t%s\n", formatOptionalTime(record.EndedAt))
 	if record.ExitCode != nil {

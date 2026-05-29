@@ -104,6 +104,58 @@ func TestRunForwardListEmpty(t *testing.T) {
 	assertContains(t, stdout.String(), "No tunnel sessions recorded.")
 }
 
+func TestRunProxySavedSaveShowList(t *testing.T) {
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host bastion
+  HostName bastion.example.com
+`)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"proxy", "saved", "save", "corp-proxy", "--state-dir", stateDir, "--config", config, "--select", "bastion", "--port", "1080"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("save returned %d; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), `proxy saved as "corp-proxy"`)
+
+	stdout.Reset()
+	code = Run([]string{"proxy", "saved", "show", "corp-proxy", "--state-dir", stateDir}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("show returned %d; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "listener    127.0.0.1:1080")
+
+	stdout.Reset()
+	code = Run([]string{"proxy", "saved", "list", "--state-dir", stateDir}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("list returned %d; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "corp-proxy")
+}
+
+func TestRunProxySelectFromCatalog(t *testing.T) {
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host bastion
+  HostName bastion.example.com
+`)
+	if err := state.WriteProxy(stateDir, state.StoredProxy{Name: "corp-proxy", SSHAlias: "bastion", Bind: "127.0.0.1", Port: 1081}); err != nil {
+		t.Fatalf("WriteProxy: %v", err)
+	}
+	fakeSSH, _ := writeFakeSSH(t, 0)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"proxy", "--state-dir", stateDir, "--config", config, "--ssh-binary", fakeSSH, "--select", "corp-proxy"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run returned %d; stderr=%q", code, stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(records) != 1 || records[0].Proxy == nil || records[0].Proxy.SavedAlias != "corp-proxy" || records[0].Proxy.Port != 1081 {
+		t.Fatalf("records = %#v", records)
+	}
+}
+
 func TestRunForwardListJSON(t *testing.T) {
 	stateDir := t.TempDir()
 	tunnel := seedTunnelRecord(t, stateDir, state.SessionRecord{
@@ -481,15 +533,55 @@ func TestPickerActiveTunnelsFiltersToLiveTunnels(t *testing.T) {
 	if got[0].Title != "pngwin-pg-tunnel" {
 		t.Fatalf("Title = %q, want 'pngwin-pg-tunnel' (saved alias preferred over TargetAlias)", got[0].Title)
 	}
-	// Description should include endpoints, uptime, and pid.
-	if !strings.Contains(got[0].Description, "127.0.0.1:5432 -> 127.0.0.1:5432") {
+	// Description should include shortened loopback endpoints and uptime.
+	if !strings.Contains(got[0].Description, ":5432 -> :5432") {
 		t.Fatalf("Description missing endpoints: %q", got[0].Description)
 	}
-	if !strings.Contains(got[0].Description, "pid ") {
-		t.Fatalf("Description missing pid: %q", got[0].Description)
+	if strings.Contains(got[0].Description, "pid ") {
+		t.Fatalf("Description should keep pid in details only: %q", got[0].Description)
 	}
 	if !strings.Contains(got[0].Description, "up ") {
 		t.Fatalf("Description missing uptime: %q", got[0].Description)
+	}
+}
+
+func TestPickerActiveProxyDescriptionShortensLoopback(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "proxy-id",
+		Kind:        state.KindProxy,
+		TargetAlias: "bastion",
+		StartedAt:   time.Now().Add(-time.Minute),
+		LocalPID:    123,
+		Proxy:       &state.ProxySpec{Bind: "127.0.0.1", Port: 1080, SavedAlias: "corp"},
+	}
+
+	got := activeProxyDescription(record, time.Now())
+	if !strings.Contains(got, "SOCKS :1080") {
+		t.Fatalf("activeProxyDescription = %q, want shortened loopback", got)
+	}
+	if strings.Contains(got, "pid ") {
+		t.Fatalf("activeProxyDescription should keep pid in details only: %q", got)
+	}
+}
+
+func TestPickerActiveTunnelDescriptionKeepsNonLoopback(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "tunnel-id",
+		Kind:        state.KindTunnel,
+		TargetAlias: "pg",
+		StartedAt:   time.Now().Add(-time.Minute),
+		LocalPID:    123,
+		Forward: &state.ForwardSpec{
+			LocalBind:  "0.0.0.0",
+			LocalPort:  15432,
+			RemoteHost: "db.internal",
+			RemotePort: 5432,
+		},
+	}
+
+	got := activeTunnelDescription(record, time.Now())
+	if !strings.Contains(got, "0.0.0.0:15432 -> db.internal:5432") {
+		t.Fatalf("activeTunnelDescription = %q, want full non-loopback endpoints", got)
 	}
 }
 
@@ -511,6 +603,36 @@ func TestPickerActiveTunnelsTitleFallsBackToTargetAlias(t *testing.T) {
 	}
 	if got[0].Title != "ad-hoc-host" {
 		t.Fatalf("Title = %q, want 'ad-hoc-host' (fallback to TargetAlias)", got[0].Title)
+	}
+}
+
+func TestPickerSavedForwardsHidesActiveSavedTunnel(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := state.WriteForward(stateDir, state.StoredForward{Name: "pg", SSHAlias: "pgbox", LocalPort: 15432, RemoteHost: "127.0.0.1", RemotePort: 5432}); err != nil {
+		t.Fatalf("WriteForward pg: %v", err)
+	}
+	if err := state.WriteForward(stateDir, state.StoredForward{Name: "redis", SSHAlias: "redisbox", LocalPort: 16379, RemoteHost: "127.0.0.1", RemotePort: 6379}); err != nil {
+		t.Fatalf("WriteForward redis: %v", err)
+	}
+
+	got := pickerSavedForwards(stateDir, map[string]bool{"pg": true})
+	if len(got) != 1 || got[0].Name != "redis" {
+		t.Fatalf("pickerSavedForwards = %+v, want only redis", got)
+	}
+}
+
+func TestPickerSavedProxiesHidesActiveSavedProxy(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := state.WriteProxy(stateDir, state.StoredProxy{Name: "corp", SSHAlias: "bastion", Port: 1080}); err != nil {
+		t.Fatalf("WriteProxy corp: %v", err)
+	}
+	if err := state.WriteProxy(stateDir, state.StoredProxy{Name: "lab", SSHAlias: "lab", Port: 1081}); err != nil {
+		t.Fatalf("WriteProxy lab: %v", err)
+	}
+
+	got := pickerSavedProxies(stateDir, map[string]bool{"corp": true})
+	if len(got) != 1 || got[0].Name != "lab" {
+		t.Fatalf("pickerSavedProxies = %+v, want only lab", got)
 	}
 }
 
