@@ -275,6 +275,36 @@ func TestRemoteMirrorRecordRejectsUnrelatedTelemetry(t *testing.T) {
 	}
 }
 
+func TestRemoteMirrorRecordUsesParentOriginForParentlessTelemetry(t *testing.T) {
+	parent := state.SessionRecord{
+		ID:          "parent",
+		Depth:       0,
+		OriginHost:  "Bens-Mac-mini",
+		TargetAlias: "ben-6900hx-daily",
+		Route:       []string{"ben-6900hx-daily"},
+	}
+	child := state.SessionRecord{
+		ID:          "child",
+		OriginHost:  "pop-os",
+		TargetAlias: "mdw0-vms-tailscale",
+		Route:       []string{"mdw0-vms-tailscale"},
+	}
+
+	got, ok := remoteMirrorRecord(parent, child)
+	if !ok {
+		t.Fatalf("remoteMirrorRecord rejected parentless telemetry")
+	}
+	if got.OriginHost != "Bens-Mac-mini" {
+		t.Fatalf("OriginHost = %q, want parent origin", got.OriginHost)
+	}
+	if !reflect.DeepEqual(got.Route, []string{"ben-6900hx-daily", "mdw0-vms-tailscale"}) {
+		t.Fatalf("Route = %#v, want parent alias plus child target", got.Route)
+	}
+	if got.ParentID != "parent" || got.Depth != 1 || !got.RemoteMirror {
+		t.Fatalf("mirror metadata = %#v, want attached remote mirror", got)
+	}
+}
+
 // TestRunSupervisedDetachedMode validates Phase 2b's daemon path at
 // the session level: with Options.Detached the supervisor skips PTY
 // raw mode, never starts copyInput, accepts a pre-assigned RecordID,

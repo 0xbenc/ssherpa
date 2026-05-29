@@ -1495,7 +1495,7 @@ func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (
 	if child.ParentID == "" {
 		child.ParentID = parent.ID
 		child.Depth = parent.Depth + 1
-		child.OriginHost = firstNonEmpty(child.OriginHost, parent.OriginHost)
+		child.OriginHost = firstNonEmpty(parent.OriginHost, child.OriginHost)
 		child.Route = appendRoute(parent.Route, child.Route, child.TargetAlias)
 	} else if !isDescendantTelemetry(parent, child) {
 		return state.SessionRecord{}, false
