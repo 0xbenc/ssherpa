@@ -29,6 +29,8 @@ Available Commands:
   jump       Connect through one or more ProxyJump hops
   proxy      Start a local SOCKS proxy through an SSH alias
   forward    Open a local TCP port-forward (-L) tunnel through an SSH alias
+  send       Send a local file to an SSH alias with SFTP
+  receive    Receive a remote file from an SSH alias with SFTP
   check      Test SSH aliases and saved forwards
   authkeys   Manage authorized_keys on this device
   theme      Build and save the terminal UI color schema
@@ -94,6 +96,8 @@ Route Commands:
   ssherpa forward saved edit NAME [--select ALIAS] [--local ...] [--remote ...] [--through HOP|--clear-through] [--description TEXT|--clear-description]
   ssherpa forward saved delete NAME [--yes]
   ssherpa forward saved rename OLD NEW [--yes]
+  ssherpa send LOCAL_FILE --select ALIAS [--remote REMOTE_PATH] [--print]
+  ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--print]
 
 Check Commands:
   ssherpa check ALIAS... [--json] [--timeout 5s] [--icmp-timeout 2s] [--no-icmp]
@@ -172,6 +176,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runProxy(args[1:], stdout, stderr)
 	case "forward":
 		return runForward(args[1:], stdout, stderr)
+	case "send":
+		return runSend(args[1:], stdout, stderr)
+	case "receive", "recv":
+		return runReceive(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
 	case "list":
@@ -285,6 +293,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			return code
 		case ui.ItemForward:
 			code, returnHome := runForwardBuilder(flags, inventory, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemSendFile:
+			code, returnHome := runSendFileBuilder(flags, inventory, stdout, stderr)
 			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}

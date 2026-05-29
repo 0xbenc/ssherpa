@@ -90,6 +90,47 @@ func TestBuildProbe(t *testing.T) {
 	}
 }
 
+func TestBuildSFTP(t *testing.T) {
+	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config"})
+
+	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestBuildSFTPBatch(t *testing.T) {
+	send := SFTPTransfer{
+		Direction:  SFTPTransferSend,
+		LocalPath:  "/tmp/local file.txt",
+		RemotePath: "/srv/app/local file.txt",
+	}
+	if got, want := BuildSFTPBatch(send), "put \"/tmp/local file.txt\" \"/srv/app/local file.txt\"\n"; got != want {
+		t.Fatalf("send batch = %q, want %q", got, want)
+	}
+
+	receive := SFTPTransfer{
+		Direction:  SFTPTransferReceive,
+		LocalPath:  "/tmp/out.txt",
+		RemotePath: "/srv/app/out.txt",
+	}
+	if got, want := BuildSFTPBatch(receive), "get /srv/app/out.txt /tmp/out.txt\n"; got != want {
+		t.Fatalf("receive batch = %q, want %q", got, want)
+	}
+}
+
+func TestValidateSFTPTransfer(t *testing.T) {
+	valid := SFTPTransfer{Direction: SFTPTransferSend, Alias: "prod", LocalPath: "/tmp/file", RemotePath: "file"}
+	if err := ValidateSFTPTransfer(valid); err != nil {
+		t.Fatalf("ValidateSFTPTransfer returned error: %v", err)
+	}
+	invalid := valid
+	invalid.RemotePath = ""
+	if err := ValidateSFTPTransfer(invalid); err == nil || !strings.Contains(err.Error(), "remote path") {
+		t.Fatalf("ValidateSFTPTransfer error = %v, want remote path", err)
+	}
+}
+
 func TestBuildForward(t *testing.T) {
 	tests := []struct {
 		name       string

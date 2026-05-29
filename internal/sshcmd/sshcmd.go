@@ -22,6 +22,22 @@ type Command struct {
 	Argv []string `json:"argv"`
 }
 
+type SFTPTransferDirection string
+
+const (
+	SFTPTransferSend    SFTPTransferDirection = "send"
+	SFTPTransferReceive SFTPTransferDirection = "receive"
+)
+
+type SFTPTransfer struct {
+	Direction  SFTPTransferDirection
+	Alias      string
+	Config     string
+	LocalPath  string
+	RemotePath string
+	Batch      string
+}
+
 type PrintCommand struct {
 	Argv  []string `json:"argv"`
 	Alias string   `json:"alias"`
@@ -125,6 +141,45 @@ func BuildProbe(base Command, alias string, hops []string) Command {
 	}
 	argv = append(argv, alias, "true")
 	return Command{Argv: argv}
+}
+
+func BuildSFTP(binary string, transfer SFTPTransfer) Command {
+	if strings.TrimSpace(binary) == "" {
+		binary = "sftp"
+	}
+	argv := []string{binary, "-b", "-"}
+	if strings.TrimSpace(transfer.Config) != "" {
+		argv = append(argv, "-F", transfer.Config)
+	}
+	argv = append(argv, transfer.Alias)
+	return Command{Argv: argv}
+}
+
+func BuildSFTPBatch(transfer SFTPTransfer) string {
+	switch transfer.Direction {
+	case SFTPTransferReceive:
+		return fmt.Sprintf("get %s %s\n", quoteSFTPPath(transfer.RemotePath), quoteSFTPPath(transfer.LocalPath))
+	default:
+		return fmt.Sprintf("put %s %s\n", quoteSFTPPath(transfer.LocalPath), quoteSFTPPath(transfer.RemotePath))
+	}
+}
+
+func ValidateSFTPTransfer(transfer SFTPTransfer) error {
+	if strings.TrimSpace(transfer.Alias) == "" {
+		return errors.New("transfer alias is required")
+	}
+	if strings.TrimSpace(transfer.LocalPath) == "" {
+		return errors.New("transfer local path is required")
+	}
+	if strings.TrimSpace(transfer.RemotePath) == "" {
+		return errors.New("transfer remote path is required")
+	}
+	switch transfer.Direction {
+	case SFTPTransferSend, SFTPTransferReceive:
+	default:
+		return fmt.Errorf("unknown transfer direction %q", transfer.Direction)
+	}
+	return nil
 }
 
 func ValidateJumpRoute(destination string, hops []string) error {
@@ -342,6 +397,30 @@ func isSafeShellArg(arg string) bool {
 		case r >= 'A' && r <= 'Z':
 		case r >= '0' && r <= '9':
 		case strings.ContainsRune("@%_+=:,./-", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func quoteSFTPPath(path string) string {
+	if path == "" {
+		return `""`
+	}
+	if isSafeSFTPPath(path) {
+		return path
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`).Replace(path) + `"`
+}
+
+func isSafeSFTPPath(path string) bool {
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("@%_+=:,./~-", r):
 		default:
 			return false
 		}

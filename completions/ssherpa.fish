@@ -5,6 +5,8 @@ complete -c ssherpa -f -n '__fish_use_subcommand' -a edit -d 'Edit or delete SSH
 complete -c ssherpa -f -n '__fish_use_subcommand' -a jump -d 'Connect through ProxyJump hops'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a proxy -d 'Start a local SOCKS proxy'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a forward -d 'Open and manage port-forward tunnels'
+complete -c ssherpa -f -n '__fish_use_subcommand' -a send -d 'Send a local file with SFTP'
+complete -c ssherpa -f -n '__fish_use_subcommand' -a receive -d 'Receive a remote file with SFTP'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a check -d 'Test SSH aliases and saved forwards'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a authkeys -d 'Manage authorized_keys'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a theme -d 'Build and save UI colors'
@@ -23,6 +25,18 @@ complete -c ssherpa -n '__fish_seen_subcommand_from check' -l icmp-timeout -r -d
 complete -c ssherpa -n '__fish_seen_subcommand_from check' -l no-icmp -d 'Skip ICMP ping'
 complete -c ssherpa -n '__fish_seen_subcommand_from check' -l saved-forward -r -d 'Check saved forward'
 complete -c ssherpa -n '__fish_seen_subcommand_from check' -l saved-forwards -d 'Check all saved forwards'
+
+complete -c ssherpa -n '__fish_seen_subcommand_from send' -l select -r -d 'SSH alias'
+complete -c ssherpa -n '__fish_seen_subcommand_from send' -l remote -r -d 'Remote destination path'
+complete -c ssherpa -n '__fish_seen_subcommand_from send' -l config -r -d 'Read SSH config'
+complete -c ssherpa -n '__fish_seen_subcommand_from send' -l sftp-binary -r -d 'Use this SFTP binary'
+complete -c ssherpa -n '__fish_seen_subcommand_from send' -l print -d 'Print command'
+
+complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l select -r -d 'SSH alias'
+complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l local -r -d 'Local destination path'
+complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l config -r -d 'Read SSH config'
+complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l sftp-binary -r -d 'Use this SFTP binary'
+complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l print -d 'Print command'
 
 complete -c ssherpa -n '__fish_seen_subcommand_from forward' -a 'list status stop saved'
 complete -c ssherpa -n '__fish_seen_subcommand_from forward; and __fish_contains_opt saved' -a 'list show save edit delete rename'

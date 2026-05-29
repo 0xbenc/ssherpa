@@ -8,6 +8,8 @@ _ssherpa() {
     'jump:Connect through ProxyJump hops'
     'proxy:Start a local SOCKS proxy'
     'forward:Open and manage port-forward tunnels'
+    'send:Send a local file with SFTP'
+    'receive:Receive a remote file with SFTP'
     'check:Test SSH aliases and saved forwards'
     'authkeys:Manage authorized_keys'
     'theme:Build and save the terminal UI color schema'
@@ -92,6 +94,24 @@ _ssherpa() {
             '--all[include pattern aliases]' \
             '--saved-forward[check saved forward]:name' \
             '--saved-forwards[check all saved forwards]'
+          ;;
+        send)
+          _arguments \
+            '2:local file:_files' \
+            '--select[SSH alias]:alias' \
+            '--remote[remote destination path]:remote path' \
+            '--config[read SSH config]:path:_files' \
+            '--sftp-binary[SFTP binary]:path:_files' \
+            '--print[print command]'
+          ;;
+        receive|recv)
+          _arguments \
+            '2:remote file:remote path' \
+            '--select[SSH alias]:alias' \
+            '--local[local destination path]:path:_files' \
+            '--config[read SSH config]:path:_files' \
+            '--sftp-binary[SFTP binary]:path:_files' \
+            '--print[print command]'
           ;;
         session)
           _arguments \

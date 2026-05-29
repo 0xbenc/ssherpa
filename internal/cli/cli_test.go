@@ -84,6 +84,7 @@ func TestRunHelpCommand(t *testing.T) {
 	assertContains(t, stdout.String(), "Available Commands:")
 	assertContains(t, stdout.String(), "theme      Build and save")
 	assertContains(t, stdout.String(), "check      Test SSH aliases")
+	assertContains(t, stdout.String(), "send       Send a local file")
 	assertContains(t, stdout.String(), "forward saved list")
 	assertContains(t, stdout.String(), "Theme Commands:")
 	assertContains(t, stdout.String(), "Phase 10:")
@@ -184,6 +185,78 @@ Host prod
 		t.Fatalf("Run returned %d, want 0", code)
 	}
 	assertContains(t, stdout.String(), "[print] ssh prod --help")
+}
+
+func TestRunSendPrintsSFTPCommandAndBatch(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--config", config, "--print"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] sftp -b - -F "+config+" prod")
+	assertContains(t, stdout.String(), "put "+local+" /tmp/payload.txt")
+}
+
+func TestRunSendExecutesFakeSFTP(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	fakeSFTP, argvLog, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "fake sftp stdout")
+	if got := strings.TrimSpace(readFile(t, argvLog)); got != "-b - -F "+config+" prod" {
+		t.Fatalf("fake sftp argv = %q", got)
+	}
+	if got := readFile(t, batchLog); got != "put "+local+" /tmp/payload.txt\n" {
+		t.Fatalf("fake sftp batch = %q", got)
+	}
+}
+
+func TestRunReceiveExecutesFakeSFTP(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	wantLocal := filepath.Join(localDir, "app.log")
+	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
+		t.Fatalf("fake sftp batch = %q, want local dir expanded", got)
+	}
 }
 
 func TestRunConnectDirectExecutesFakeSSH(t *testing.T) {
@@ -2053,6 +2126,24 @@ func writeFakeSSH(t *testing.T, exitCode int) (string, string) {
 		t.Fatalf("os.WriteFile returned error: %v", err)
 	}
 	return path, logPath
+}
+
+func writeFakeSFTP(t *testing.T, exitCode int) (string, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	argvLog := filepath.Join(dir, "argv.log")
+	batchLog := filepath.Join(dir, "batch.log")
+	path := filepath.Join(dir, "fake-sftp")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" > " + shellQuote(argvLog) + "\n" +
+		"cat > " + shellQuote(batchLog) + "\n" +
+		"printf '%s\\n' 'fake sftp stdout'\n" +
+		"exit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+	return path, argvLog, batchLog
 }
 
 // writeFakeSSHFlaky drops a shell script whose Nth invocation exits

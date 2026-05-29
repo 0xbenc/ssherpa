@@ -22,6 +22,7 @@ const (
 	ItemProxy         ItemKind = "proxy"
 	ItemJump          ItemKind = "jump"
 	ItemForward       ItemKind = "forward"
+	ItemSendFile      ItemKind = "send_file"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
 	ItemProxySaved    ItemKind = "proxy_saved"
@@ -180,6 +181,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Group: "Actions", Badge: "jump"},
 		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Group: "Actions", Badge: "proxy"},
 		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Group: "Actions", Badge: "forward"},
+		Item{Kind: ItemSendFile, Token: "SEND_FILE", Title: "Send file", Group: "Actions", Badge: "send"},
 		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
@@ -706,7 +708,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleInfo
 	case ItemProxy:
 		role = termstyle.RoleDanger
-	case ItemForward:
+	case ItemForward, ItemSendFile:
 		role = termstyle.RolePrimary
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
@@ -836,6 +838,8 @@ func selectionHint(item Item) string {
 		return "Stops every live tracked session: tunnels, proxies, jumps, and supervised direct SSH."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
+	case ItemSendFile:
+		return "Sends one local file to a selected SSH alias using SFTP."
 	case ItemForwardSaved:
 		return "Launches a saved port-forward tunnel from your ssherpa catalog."
 	case ItemForwardActive:

@@ -13,6 +13,12 @@ ssherpa \- terminal UI and supervisor for OpenSSH configs
 .br
 .B ssherpa proxy saved
 \fIcommand\fR [\fIflags\fR]
+.br
+.B ssherpa send
+\fILOCAL_FILE\fR --select \fIALIAS\fR [--remote \fIREMOTE_PATH\fR]
+.br
+.B ssherpa receive
+\fIREMOTE_PATH\fR --select \fIALIAS\fR [--local \fILOCAL_PATH\fR]
 .SH DESCRIPTION
 .B ssherpa
 reads OpenSSH config, lets you pick and connect to aliases, supervises SSH
@@ -34,6 +40,12 @@ Start, inspect, or stop a tracked local SOCKS proxy through an SSH alias.
 .TP
 .B forward
 Open a local TCP port-forward tunnel and inspect or stop tunnel sessions.
+.TP
+.B send
+Send one local file to an SSH alias with OpenSSH SFTP.
+.TP
+.B receive
+Receive one remote file from an SSH alias with OpenSSH SFTP.
 .TP
 .B forward saved
 Manage saved forward catalog entries with list, show, save, edit, delete, and rename.
@@ -75,6 +87,12 @@ ssherpa proxy --select corp --background
 ssherpa proxy list
 ssherpa proxy status corp
 ssherpa proxy stop corp
+.EE
+.SH FILE TRANSFER EXAMPLES
+.EX
+ssherpa send ./build.tar.gz --select prod --remote /tmp/build.tar.gz
+ssherpa receive /var/log/app.log --select prod --local ./app.log
+ssherpa send ./build.tar.gz --select prod --print
 .EE
 .SH SESSION EXAMPLES
 .EX

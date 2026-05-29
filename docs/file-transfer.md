@@ -3,7 +3,9 @@
 > **Status: foundation in progress.** Phase 0 passive stream sniffing is
 > implemented: supervised sessions observe OSC 7 cwd markers and OSC 133 prompt
 > markers, persist the latest observed state on the session record, and show it
-> in the session map. File-transfer actions and transports are still design.
+> in the session map. Public `send` / `receive` commands and the home-page
+> **Send file** action now cover the direct SFTP path. Overlay verbs and deep
+> in-band/wormhole transports are still design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -378,6 +380,8 @@ recorded lineage rather than an invisible side effect.
    **Implemented.**
 1. **Transport A.** scp/sftp over an auto-enabled `ControlMaster` socket, with
    the local picker and destination confirmation. Fast value, common topology.
+   **Partially implemented:** public `send` / `receive` SFTP commands and the
+   home-page **Send file** action exist; ControlMaster reuse is still pending.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa
