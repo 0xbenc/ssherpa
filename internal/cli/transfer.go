@@ -22,26 +22,29 @@ import (
 )
 
 const (
+	filePickerHere   ui.ItemKind = "file_here"
 	filePickerParent ui.ItemKind = "file_parent"
 	filePickerDir    ui.ItemKind = "file_dir"
 	filePickerFile   ui.ItemKind = "file"
 	remotePickerHere ui.ItemKind = "remote_here"
 	remotePickerDir  ui.ItemKind = "remote_dir"
 	remotePickerUp   ui.ItemKind = "remote_up"
+	remotePickerFile ui.ItemKind = "remote_file"
 )
 
 type transferFlags struct {
 	inventoryFlags
-	Print       bool
-	Select      string
-	LocalPath   string
-	RemotePath  string
-	Hops        []string
-	ControlPath string
-	SFTPBinary  string
-	NoColor     bool
-	ThemeName   string
-	ThemeFile   string
+	Print        bool
+	Select       string
+	LocalPath    string
+	RemotePath   string
+	Hops         []string
+	ControlPath  string
+	PickLocalDir bool
+	SFTPBinary   string
+	NoColor      bool
+	ThemeName    string
+	ThemeFile    string
 }
 
 func runSend(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -284,11 +287,36 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		}
 	case sshcmd.SFTPTransferReceive:
 		if remotePath == "" {
-			fmt.Fprintln(stderr, "ssherpa: receive requires a remote file path")
-			return sshcmd.SFTPTransfer{}, false, 1
+			if flags.Print {
+				fmt.Fprintln(stderr, "ssherpa: receive requires a remote file path")
+				return sshcmd.SFTPTransfer{}, false, 1
+			}
+			picked, ok, err := pickRemoteFile(stderr, transferFilePickerOptions(flags), flags, alias.Name, ".")
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: remote file picker failed: %v\n", err)
+				return sshcmd.SFTPTransfer{}, false, 1
+			}
+			if !ok {
+				fmt.Fprintln(stderr, "[skipped] receive cancelled")
+				return sshcmd.SFTPTransfer{}, false, 0
+			}
+			remotePath = picked
 		}
 		if localPath == "" {
-			localPath = filepath.Base(remotePath)
+			if flags.PickLocalDir && !flags.Print {
+				dir, ok, err := pickLocalDirectory(stderr, transferFilePickerOptions(flags), "Receive file: choose local folder", ".")
+				if err != nil {
+					fmt.Fprintf(stderr, "ssherpa: local folder picker failed: %v\n", err)
+					return sshcmd.SFTPTransfer{}, false, 1
+				}
+				if !ok {
+					fmt.Fprintln(stderr, "[skipped] receive cancelled")
+					return sshcmd.SFTPTransfer{}, false, 0
+				}
+				localPath = filepath.Join(dir, remoteBase(remotePath))
+			} else {
+				localPath = remoteBase(remotePath)
+			}
 		}
 		expanded, err := expandLocalPath(localPath)
 		if err != nil {
@@ -392,6 +420,42 @@ func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout
 	return code, true
 }
 
+func runReceiveFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
+	if len(inventory.Aliases) == 0 {
+		fmt.Fprintln(stderr, "[skipped] no aliases available for file transfer")
+		return 0, true
+	}
+	alias, ok, err := pickAlias(inventory.Aliases, flags.NoColor, flags.ThemeName, flags.ThemeFile, "Receive file: pick source", stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
+		return 1, false
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] receive file cancelled")
+		return 0, true
+	}
+
+	transferFlags := transferFlagsFromConnect(flags)
+	transferFlags.PickLocalDir = true
+	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferReceive, transferFlags, alias, stdout, stderr)
+	if code == 0 && attempted && !transferFlags.Print {
+		size := receivedSize(transfer)
+		if err := showTransferComplete(stderr, transferCompleteOptions{
+			NoColor:     flags.NoColor,
+			ThemeName:   flags.ThemeName,
+			ThemeFile:   flags.ThemeFile,
+			Transfer:    transfer,
+			Size:        size,
+			Direction:   "receive",
+			ReturnLabel: "press any key to return home",
+		}); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: receive confirmation failed: %v\n", err)
+			return 1, false
+		}
+	}
+	return code, true
+}
+
 func transferFlagsFromConnect(flags connectFlags) transferFlags {
 	return transferFlags{
 		inventoryFlags: flags.inventoryFlags,
@@ -403,17 +467,41 @@ func transferFlagsFromConnect(flags connectFlags) transferFlags {
 }
 
 func showSendComplete(stderr io.Writer, flags connectFlags, transfer sshcmd.SFTPTransfer, size int64) error {
+	return showTransferComplete(stderr, transferCompleteOptions{
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Transfer:    transfer,
+		Size:        humanBytes(size),
+		Direction:   "send",
+		ReturnLabel: "press any key to return home",
+	})
+}
+
+type transferCompleteOptions struct {
+	NoColor     bool
+	ThemeName   string
+	ThemeFile   string
+	Transfer    sshcmd.SFTPTransfer
+	Size        string
+	Direction   string
+	ReturnLabel string
+}
+
+func showTransferComplete(stderr io.Writer, opts transferCompleteOptions) error {
 	return ui.ShowTransferComplete(context.Background(), ui.TransferCompleteOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-		NoColor:     flags.NoColor,
-		ThemeName:   flags.ThemeName,
-		ThemeFile:   flags.ThemeFile,
-		LocalPath:   transfer.LocalPath,
-		Alias:       transfer.Alias,
-		RemotePath:  transfer.RemotePath,
-		Size:        humanBytes(size),
+		NoColor:     opts.NoColor,
+		ThemeName:   opts.ThemeName,
+		ThemeFile:   opts.ThemeFile,
+		LocalPath:   opts.Transfer.LocalPath,
+		Alias:       opts.Transfer.Alias,
+		RemotePath:  opts.Transfer.RemotePath,
+		Size:        opts.Size,
+		Direction:   opts.Direction,
+		ReturnLabel: opts.ReturnLabel,
 	})
 }
 
@@ -489,17 +577,14 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, flags, hostlist.Alias{Name: alias}, stdout, stderr)
 	if code == 0 && attempted {
 		recordTransferEvent(req.StateDir, req.SessionID, transfer)
-		if err := ui.ShowTransferComplete(context.Background(), ui.TransferCompleteOptions{
-			Input:       os.Stdin,
-			Output:      stderr,
-			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		if err := showTransferComplete(stderr, transferCompleteOptions{
 			NoColor:     options.NoColor,
 			ThemeName:   options.ThemeName,
 			ThemeFile:   options.ThemeFile,
-			LocalPath:   transfer.LocalPath,
-			Alias:       transfer.Alias,
-			RemotePath:  transfer.RemotePath,
+			Transfer:    transfer,
 			Size:        humanBytes(localInfo.Size()),
+			Direction:   "send",
+			ReturnLabel: "press any key to return to session",
 		}); err != nil {
 			fmt.Fprintf(stderr, "ssherpa: send confirmation failed: %v\n", err)
 			return 1
@@ -514,42 +599,53 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 		fmt.Fprintln(stderr, "ssherpa: overlay receive requires a target alias")
 		return 1
 	}
-	initial := strings.TrimSpace(req.RemoteCWD)
-	if initial != "" && initial != "." {
-		initial = remoteJoin(initial, "")
+	start := strings.TrimSpace(req.RemoteCWD)
+	if start == "" {
+		start = "."
 	}
-	remotePath, ok, err := ui.PromptText(context.Background(), ui.TextPromptOptions{
-		Input:       os.Stdin,
-		Output:      stderr,
-		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-		NoColor:     options.NoColor,
-		ThemeName:   options.ThemeName,
-		ThemeFile:   options.ThemeFile,
-		Title:       "Receive file",
-		Label:       "remote path",
-		Initial:     initial,
-		Validate:    validateNonEmpty("Remote path"),
-	})
+	flags := transferFlags{
+		inventoryFlags: inventoryFlags{Config: options.Config},
+		Hops:           append([]string(nil), req.Hops...),
+		ControlPath:    req.ControlPath,
+		NoColor:        options.NoColor,
+		ThemeName:      options.ThemeName,
+		ThemeFile:      options.ThemeFile,
+	}
+	remotePath, ok, err := pickRemoteFile(stderr, transferFilePickerOptions(flags), flags, alias, start)
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: receive prompt failed: %v\n", err)
+		fmt.Fprintf(stderr, "ssherpa: remote file picker failed: %v\n", err)
 		return 1
 	}
 	if !ok {
 		fmt.Fprintln(stderr, "[skipped] receive cancelled")
 		return 0
 	}
-	flags := transferFlags{
-		inventoryFlags: inventoryFlags{Config: options.Config},
-		Hops:           append([]string(nil), req.Hops...),
-		ControlPath:    req.ControlPath,
-		RemotePath:     remotePath,
-		NoColor:        options.NoColor,
-		ThemeName:      options.ThemeName,
-		ThemeFile:      options.ThemeFile,
+	dir, ok, err := pickLocalDirectory(stderr, transferFilePickerOptions(flags), "Receive file: choose local folder", ".")
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: local folder picker failed: %v\n", err)
+		return 1
 	}
+	if !ok {
+		fmt.Fprintln(stderr, "[skipped] receive cancelled")
+		return 0
+	}
+	flags.RemotePath = remotePath
+	flags.LocalPath = filepath.Join(dir, remoteBase(remotePath))
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferReceive, flags, hostlist.Alias{Name: alias}, stdout, stderr)
 	if code == 0 && attempted {
 		recordTransferEvent(req.StateDir, req.SessionID, transfer)
+		if err := showTransferComplete(stderr, transferCompleteOptions{
+			NoColor:     options.NoColor,
+			ThemeName:   options.ThemeName,
+			ThemeFile:   options.ThemeFile,
+			Transfer:    transfer,
+			Size:        receivedSize(transfer),
+			Direction:   "receive",
+			ReturnLabel: "press any key to return to session",
+		}); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: receive confirmation failed: %v\n", err)
+			return 1
+		}
 	}
 	return code
 }
@@ -591,6 +687,14 @@ func transferDigest(transfer sshcmd.SFTPTransfer) (string, int64) {
 		return "", info.Size()
 	}
 	return hex.EncodeToString(hash.Sum(nil)), info.Size()
+}
+
+func receivedSize(transfer sshcmd.SFTPTransfer) string {
+	info, err := os.Stat(transfer.LocalPath)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	return humanBytes(info.Size())
 }
 
 type filePickerOptions struct {
@@ -644,6 +748,50 @@ func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (stri
 			cwd = item.Token
 		case filePickerFile:
 			return item.Token, true, nil
+		}
+	}
+}
+
+func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, title string, start string) (string, bool, error) {
+	cwd, err := expandLocalPath(start)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return "", false, err
+	}
+	if !info.IsDir() {
+		cwd = filepath.Dir(cwd)
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "Choose local folder"
+	}
+
+	for {
+		items, err := localDirectoryPickerItems(cwd)
+		if err != nil {
+			return "", false, err
+		}
+		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			NoColor:     opts.NoColor,
+			ThemeName:   opts.ThemeName,
+			ThemeFile:   opts.ThemeFile,
+			Title:       title,
+			Subtitle:    cwd,
+			Footer:      "enter open/use  /  q cancel",
+		})
+		if err != nil || !ok {
+			return "", ok, err
+		}
+		switch item.Kind {
+		case filePickerHere:
+			return item.Token, true, nil
+		case filePickerParent, filePickerDir:
+			cwd = item.Token
 		}
 	}
 }
@@ -724,6 +872,68 @@ func localFilePickerItems(dir string) ([]ui.Item, error) {
 	return items, nil
 }
 
+func localDirectoryPickerItems(dir string) ([]ui.Item, error) {
+	dir, err := expandLocalPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read directory %s: %w", dir, err)
+	}
+
+	items := []ui.Item{{
+		Kind:        filePickerHere,
+		Token:       dir,
+		Title:       "Use this folder",
+		Description: dir,
+		Group:       "Current",
+		Badge:       "use",
+	}}
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		items = append(items, ui.Item{
+			Kind:        filePickerParent,
+			Token:       parent,
+			Title:       "..",
+			Description: parent,
+			Group:       "Directories",
+			Badge:       "up",
+		})
+	}
+
+	type dirEntry struct {
+		item ui.Item
+		name string
+	}
+	dirs := make([]dirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+		dirs = append(dirs, dirEntry{
+			name: strings.ToLower(name),
+			item: ui.Item{
+				Kind:        filePickerDir,
+				Token:       path,
+				Title:       name + string(os.PathSeparator),
+				Description: path,
+				Group:       "Directories",
+				Badge:       "dir",
+			},
+		})
+	}
+	sort.SliceStable(dirs, func(i, j int) bool {
+		return dirs[i].name < dirs[j].name
+	})
+	for _, dir := range dirs {
+		items = append(items, dir.item)
+	}
+	return items, nil
+}
+
 func filePickerDescription(info os.FileInfo) string {
 	mod := info.ModTime()
 	when := "unknown"
@@ -756,6 +966,54 @@ func humanBytes(size int64) string {
 type remoteDirectoryListing struct {
 	CWD  string
 	Dirs []string
+}
+
+type remoteListing struct {
+	CWD     string
+	Entries []remoteEntry
+}
+
+type remoteEntry struct {
+	Name  string
+	IsDir bool
+	Size  string
+}
+
+func pickRemoteFile(stderr io.Writer, opts filePickerOptions, flags transferFlags, alias string, start string) (string, bool, error) {
+	current := strings.TrimSpace(start)
+	if current == "" {
+		current = "."
+	}
+	for {
+		listing, err := listRemoteEntries(flags, alias, current)
+		if err != nil {
+			return "", false, err
+		}
+		if listing.CWD != "" {
+			current = listing.CWD
+		}
+		items := remoteFilePickerItems(current, listing.Entries)
+		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			NoColor:     opts.NoColor,
+			ThemeName:   opts.ThemeName,
+			ThemeFile:   opts.ThemeFile,
+			Title:       "Receive file: choose remote file",
+			Subtitle:    alias + ":" + current,
+			Footer:      "enter open/select  /  q cancel",
+		})
+		if err != nil || !ok {
+			return "", ok, err
+		}
+		switch item.Kind {
+		case remotePickerFile:
+			return item.Token, true, nil
+		case remotePickerUp, remotePickerDir:
+			current = item.Token
+		}
+	}
 }
 
 func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transferFlags, alias string, start string) (string, bool, error) {
@@ -796,7 +1054,26 @@ func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transfe
 }
 
 func listRemoteDirectories(flags transferFlags, alias string, dir string) (remoteDirectoryListing, error) {
-	transfer := sshcmd.SFTPTransfer{Alias: alias, Config: flags.Config, Hops: append([]string(nil), flags.Hops...)}
+	listing, err := listRemoteEntries(flags, alias, dir)
+	if err != nil {
+		return remoteDirectoryListing{}, err
+	}
+	dirs := make([]string, 0, len(listing.Entries))
+	for _, entry := range listing.Entries {
+		if entry.IsDir {
+			dirs = append(dirs, entry.Name)
+		}
+	}
+	return remoteDirectoryListing{CWD: listing.CWD, Dirs: dirs}, nil
+}
+
+func listRemoteEntries(flags transferFlags, alias string, dir string) (remoteListing, error) {
+	transfer := sshcmd.SFTPTransfer{
+		Alias:       alias,
+		Config:      flags.Config,
+		Hops:        append([]string(nil), flags.Hops...),
+		ControlPath: flags.ControlPath,
+	}
 	cmd := sshcmd.BuildSFTP(resolveSFTPBinary(flags), transfer)
 	batch := fmt.Sprintf("cd %s\npwd\nls -la\n", quoteSFTPBatchPath(dir))
 	var stdout, stderr strings.Builder
@@ -806,9 +1083,9 @@ func listRemoteDirectories(flags transferFlags, alias string, dir string) (remot
 		if msg == "" {
 			msg = fmt.Sprintf("sftp exited with code %d", code)
 		}
-		return remoteDirectoryListing{}, fmt.Errorf("%s", msg)
+		return remoteListing{}, fmt.Errorf("%s", msg)
 	}
-	listing := parseRemoteDirectoryListing(stdout.String())
+	listing := parseRemoteListing(stdout.String())
 	if listing.CWD == "" {
 		listing.CWD = dir
 	}
@@ -816,41 +1093,133 @@ func listRemoteDirectories(flags transferFlags, alias string, dir string) (remot
 }
 
 func parseRemoteDirectoryListing(output string) remoteDirectoryListing {
-	var listing remoteDirectoryListing
+	listing := parseRemoteListing(output)
+	dirs := make([]string, 0, len(listing.Entries))
+	for _, entry := range listing.Entries {
+		if entry.IsDir {
+			dirs = append(dirs, entry.Name)
+		}
+	}
+	return remoteDirectoryListing{CWD: listing.CWD, Dirs: dirs}
+}
+
+func parseRemoteListing(output string) remoteListing {
+	var cwd string
+	entries := []remoteEntry{}
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if cwd, ok := strings.CutPrefix(line, "Remote working directory: "); ok {
-			listing.CWD = strings.TrimSpace(cwd)
+		if cwdValue, ok := strings.CutPrefix(line, "Remote working directory: "); ok {
+			cwd = strings.TrimSpace(cwdValue)
 			continue
 		}
-		name, ok := parseSFTPLongDirectoryName(line)
-		if !ok || name == "." || name == ".." {
+		entry, ok := parseSFTPLongEntry(line)
+		if !ok || entry.Name == "." || entry.Name == ".." {
 			continue
 		}
-		listing.Dirs = append(listing.Dirs, name)
+		entries = append(entries, entry)
 	}
-	sort.SliceStable(listing.Dirs, func(i, j int) bool {
-		return strings.ToLower(listing.Dirs[i]) < strings.ToLower(listing.Dirs[j])
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
-	return listing
+	return remoteListing{CWD: cwd, Entries: entries}
 }
 
 func parseSFTPLongDirectoryName(line string) (string, bool) {
-	if line == "" || line[0] != 'd' {
+	entry, ok := parseSFTPLongEntry(line)
+	if !ok || !entry.IsDir {
 		return "", false
+	}
+	return entry.Name, true
+}
+
+func parseSFTPLongEntry(line string) (remoteEntry, bool) {
+	if line == "" {
+		return remoteEntry{}, false
+	}
+	kind := line[0]
+	if kind != 'd' && kind != '-' && kind != 'l' {
+		return remoteEntry{}, false
 	}
 	fields := strings.Fields(line)
 	if len(fields) < 9 {
-		return "", false
+		return remoteEntry{}, false
 	}
 	name := strings.Join(fields[8:], " ")
-	if strings.TrimSpace(name) == "" {
-		return "", false
+	if target, _, ok := strings.Cut(name, " -> "); ok {
+		name = target
 	}
-	return name, true
+	if strings.TrimSpace(name) == "" {
+		return remoteEntry{}, false
+	}
+	return remoteEntry{Name: name, IsDir: kind == 'd', Size: fields[4]}, true
+}
+
+func remoteFilePickerItems(cwd string, entries []remoteEntry) []ui.Item {
+	items := []ui.Item{}
+	parent := remoteParent(cwd)
+	if parent != cwd {
+		items = append(items, ui.Item{
+			Kind:        remotePickerUp,
+			Token:       parent,
+			Title:       "..",
+			Description: parent,
+			Group:       "Directories",
+			Badge:       "up",
+		})
+	}
+	for _, entry := range entries {
+		path := remoteJoin(cwd, entry.Name)
+		if entry.IsDir {
+			items = append(items, ui.Item{
+				Kind:        remotePickerDir,
+				Token:       path,
+				Title:       entry.Name + "/",
+				Description: path,
+				Group:       "Directories",
+				Badge:       "dir",
+			})
+			continue
+		}
+		items = append(items, ui.Item{
+			Kind:        remotePickerFile,
+			Token:       path,
+			Title:       entry.Name,
+			Description: remoteFileDescription(entry),
+			Detail:      path,
+			Group:       "Files",
+			Badge:       "file",
+		})
+	}
+	return items
+}
+
+func remoteFileDescription(entry remoteEntry) string {
+	if entry.Size == "" {
+		return ""
+	}
+	return entry.Size + " B"
+}
+
+func remoteBase(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "download"
+	}
+	base := pathpkg.Base(path)
+	if base == "." || base == "/" || base == "" {
+		return "download"
+	}
+	return base
 }
 
 func remoteDirectoryPickerItems(cwd string, dirs []string) []ui.Item {

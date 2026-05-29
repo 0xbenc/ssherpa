@@ -4,8 +4,9 @@
 > implemented: supervised sessions observe OSC 7 cwd markers and OSC 133 prompt
 > markers, persist the latest observed state on the session record, and show it
 > in the session map. Public `send` / `receive` commands and the home-page
-> **Send file** action now cover the direct SFTP path, including local and
-> remote folder choosers plus a post-send confirmation for send. The session
+> **Send file** / **Receive file** actions now cover the direct SFTP path,
+> including local and remote file/folder choosers plus post-transfer
+> confirmations for the home actions and overlay transfers. The session
 > overlay has direct-SFTP `send` and `receive` actions for interactive sessions,
 > reusing the supervised SSH connection's ControlMaster socket when available
 > and recording overlay transfer audit events. Deep in-band/wormhole transports
@@ -390,11 +391,11 @@ recorded lineage rather than an invisible side effect.
 1. **Transport A.** scp/sftp over an auto-enabled `ControlMaster` socket, with
    the local picker and destination confirmation. Fast value, common topology.
    **Mostly implemented:** public `send` / `receive` SFTP commands and the
-   home-page **Send file** action exist, with local and remote folder choosers
-   plus a post-send confirmation for send. The `Ctrl-]` overlay can launch send
-   and receive against the current interactive session, start send's remote
-   picker from the tracked remote cwd, reuse the session ControlMaster socket,
-   and record overlay transfer audit events.
+   home-page **Send file** / **Receive file** actions exist, with local and
+   remote file/folder choosers plus post-transfer confirmations. The `Ctrl-]`
+   overlay can launch send and receive against the current interactive session,
+   start its remote pickers from the tracked remote cwd, reuse the session
+   ControlMaster socket, and record overlay transfer audit events.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa

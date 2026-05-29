@@ -450,6 +450,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 	}
 	if err == nil {
+		finalizeRemoteMirrors(stateDir, recordForTelemetry, endedAt, exitCode)
 		emitSessionTelemetry(output, recordForTelemetry, env)
 	}
 	return exitCode
@@ -1542,6 +1543,38 @@ func mirrorRemoteSessionRecord(ac attemptContext, record state.SessionRecord) {
 		return
 	}
 	_ = state.WriteRecord(ac.stateDir, record)
+}
+
+func finalizeRemoteMirrors(stateDir string, parent state.SessionRecord, endedAt time.Time, exitCode int) {
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		return
+	}
+	finalized := map[string]bool{parent.ID: true}
+	for {
+		changed := false
+		for _, record := range records {
+			if !record.RemoteMirror || record.EndedAt != nil || !finalized[record.ParentID] {
+				continue
+			}
+			record.EndedAt = &endedAt
+			record.ExitCode = &exitCode
+			if parent.DisconnectReason != "" && record.DisconnectReason == "" {
+				record.DisconnectReason = parent.DisconnectReason
+			}
+			if err := state.WriteRecord(stateDir, record); err == nil {
+				finalized[record.ID] = true
+				changed = true
+			}
+		}
+		if !changed {
+			return
+		}
+		records, err = state.ListRecords(stateDir)
+		if err != nil {
+			return
+		}
+	}
 }
 
 func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (state.SessionRecord, bool) {

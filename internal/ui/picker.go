@@ -23,6 +23,7 @@ const (
 	ItemJump          ItemKind = "jump"
 	ItemForward       ItemKind = "forward"
 	ItemSendFile      ItemKind = "send_file"
+	ItemReceiveFile   ItemKind = "receive_file"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
 	ItemProxySaved    ItemKind = "proxy_saved"
@@ -182,6 +183,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Group: "Actions", Badge: "proxy"},
 		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Group: "Actions", Badge: "forward"},
 		Item{Kind: ItemSendFile, Token: "SEND_FILE", Title: "Send file", Group: "Actions", Badge: "send"},
+		Item{Kind: ItemReceiveFile, Token: "RECEIVE_FILE", Title: "Receive file", Group: "Actions", Badge: "recv"},
 		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
@@ -708,7 +710,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleInfo
 	case ItemProxy:
 		role = termstyle.RoleDanger
-	case ItemForward, ItemSendFile:
+	case ItemForward, ItemSendFile, ItemReceiveFile:
 		role = termstyle.RolePrimary
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
@@ -840,6 +842,8 @@ func selectionHint(item Item) string {
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemSendFile:
 		return "Sends one local file to a selected SSH alias using SFTP."
+	case ItemReceiveFile:
+		return "Receives one remote file from a selected SSH alias using SFTP."
 	case ItemForwardSaved:
 		return "Launches a saved port-forward tunnel from your ssherpa catalog."
 	case ItemForwardActive:

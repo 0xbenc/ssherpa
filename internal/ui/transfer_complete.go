@@ -23,6 +23,8 @@ type TransferCompleteOptions struct {
 	Alias       string
 	RemotePath  string
 	Size        string
+	Direction   string
+	ReturnLabel string
 }
 
 func ShowTransferComplete(ctx context.Context, opts TransferCompleteOptions) error {
@@ -43,6 +45,8 @@ func ShowTransferComplete(ctx context.Context, opts TransferCompleteOptions) err
 		alias:       opts.Alias,
 		remotePath:  opts.RemotePath,
 		size:        opts.Size,
+		direction:   opts.Direction,
+		returnLabel: opts.ReturnLabel,
 		width:       96,
 	}
 	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
@@ -63,6 +67,8 @@ type transferCompleteModel struct {
 	alias       string
 	remotePath  string
 	size        string
+	direction   string
+	returnLabel string
 	width       int
 }
 
@@ -87,14 +93,14 @@ func (m transferCompleteModel) View() tea.View {
 	theme := pickerTheme{theme: m.theme}
 	var b strings.Builder
 
-	title := "SSHERPA SEND COMPLETE"
+	title := "SSHERPA " + strings.ToUpper(transferCompleteDirection(m.direction)) + " COMPLETE"
 	b.WriteString(termstyle.PadRight(theme.logo(title), width))
 	b.WriteString("\n")
 	b.WriteString(theme.rule(width))
 	b.WriteString("\n\n")
 
 	b.WriteString("  ")
-	b.WriteString(theme.theme.Style(termstyle.RoleSuccess, "SENT"))
+	b.WriteString(theme.theme.Style(termstyle.RoleSuccess, transferCompleteStatus(m.direction)))
 	if m.size != "" {
 		b.WriteString(theme.muted("  " + m.size))
 	}
@@ -115,12 +121,34 @@ func (m transferCompleteModel) View() tea.View {
 
 	b.WriteString("\n")
 	b.WriteString("  ")
-	b.WriteString(theme.muted("press any key to return home"))
+	label := m.returnLabel
+	if strings.TrimSpace(label) == "" {
+		label = "press any key to return home"
+	}
+	b.WriteString(theme.muted(label))
 	b.WriteString("\n")
 
 	view := tea.NewView(b.String())
 	view.AltScreen = !m.noAltScreen
 	return view
+}
+
+func transferCompleteDirection(direction string) string {
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "receive", "received":
+		return "receive"
+	default:
+		return "send"
+	}
+}
+
+func transferCompleteStatus(direction string) string {
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "receive", "received":
+		return "RECEIVED"
+	default:
+		return "SENT"
+	}
 }
 
 func transferDetailLines(theme pickerTheme, width int, label string, value string) []string {

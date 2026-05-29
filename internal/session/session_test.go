@@ -308,6 +308,42 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 	if mirrored.LocalPID != 0 || mirrored.SSHPID != 0 || state.ProcessAlive(mirrored) {
 		t.Fatalf("mirrored pids/process = %#v, want non-local process", mirrored)
 	}
+	if mirrored.EndedAt == nil || mirrored.ExitCode == nil || *mirrored.ExitCode != 0 {
+		t.Fatalf("mirrored finalization = %#v, want finalized with parent exit", mirrored)
+	}
+}
+
+func TestFinalizeRemoteMirrorsClosesDescendants(t *testing.T) {
+	stateDir := t.TempDir()
+	parent := state.SessionRecord{ID: "parent", TargetAlias: "bastion"}
+	child := state.SessionRecord{ID: "child", ParentID: "parent", RemoteMirror: true, TargetAlias: "prod"}
+	grandchild := state.SessionRecord{ID: "grandchild", ParentID: "child", RemoteMirror: true, TargetAlias: "db"}
+	unrelated := state.SessionRecord{ID: "unrelated", ParentID: "other", RemoteMirror: true, TargetAlias: "other"}
+	for _, record := range []state.SessionRecord{parent, child, grandchild, unrelated} {
+		if err := state.WriteRecord(stateDir, record); err != nil {
+			t.Fatalf("WriteRecord(%s): %v", record.ID, err)
+		}
+	}
+
+	endedAt := fixedClock()().UTC()
+	finalizeRemoteMirrors(stateDir, parent, endedAt, 120)
+
+	for _, id := range []string{"child", "grandchild"} {
+		record, err := state.ReadRecord(stateDir, id)
+		if err != nil {
+			t.Fatalf("ReadRecord(%s): %v", id, err)
+		}
+		if record.EndedAt == nil || !record.EndedAt.Equal(endedAt) || record.ExitCode == nil || *record.ExitCode != 120 {
+			t.Fatalf("%s finalization = %#v, want ended with parent exit", id, record)
+		}
+	}
+	record, err := state.ReadRecord(stateDir, "unrelated")
+	if err != nil {
+		t.Fatalf("ReadRecord(unrelated): %v", err)
+	}
+	if record.EndedAt != nil {
+		t.Fatalf("unrelated mirror ended = %#v, want active", record)
+	}
 }
 
 func TestRemoteMirrorRecordRejectsUnrelatedTelemetry(t *testing.T) {

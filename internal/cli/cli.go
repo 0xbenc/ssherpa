@@ -303,6 +303,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 				continue
 			}
 			return code
+		case ui.ItemReceiveFile:
+			code, returnHome := runReceiveFileBuilder(flags, inventory, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemCheck:
 			code, returnHome := runCheckPicker(flags, inventory, stdout, stderr)
 			if returnHome && flags.Select == "" {
@@ -798,11 +804,20 @@ func pickerSessionCounts(stateDir string) (total int, active int) {
 		return 0, 0
 	}
 	for _, record := range records {
+		if record.RemoteMirror {
+			continue
+		}
 		if record.Status() == "active" {
 			active++
 		}
 	}
-	return len(records), active
+	total = 0
+	for _, record := range records {
+		if !record.RemoteMirror {
+			total++
+		}
+	}
+	return total, active
 }
 
 func pickerStoppableSessionCount(stateDir string) int {

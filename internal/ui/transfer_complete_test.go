@@ -15,6 +15,7 @@ func TestTransferCompleteViewRendersConfirmation(t *testing.T) {
 		alias:       "prod",
 		remotePath:  "/srv/reports/report.txt",
 		size:        "12 KB",
+		direction:   "send",
 		width:       90,
 	}
 
@@ -30,5 +31,26 @@ func TestTransferCompleteViewRendersConfirmation(t *testing.T) {
 	}
 	if view.AltScreen {
 		t.Fatalf("AltScreen = true, want false")
+	}
+}
+
+func TestTransferCompleteViewRendersReceiveConfirmation(t *testing.T) {
+	model := transferCompleteModel{
+		noAltScreen: true,
+		theme:       termstyle.TerminalTheme().WithNoColor(true),
+		localPath:   "/tmp/report.txt",
+		alias:       "prod",
+		remotePath:  "/srv/reports/report.txt",
+		size:        "12 KB",
+		direction:   "receive",
+		returnLabel: "press any key to return to session",
+		width:       90,
+	}
+
+	text := model.View().Content
+	for _, want := range []string{"SSHERPA RECEIVE COMPLETE", "RECEIVED", "12 KB", "Local:", "/tmp/report.txt", "Remote:", "prod:/srv/reports/report.txt", "press any key to return to session"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view = %q, want substring %q", text, want)
+		}
 	}
 }

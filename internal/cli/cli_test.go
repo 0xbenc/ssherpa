@@ -260,6 +260,28 @@ Host prod
 	}
 }
 
+func TestRunReceiveDefaultsLocalPathToRemoteBasename(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	t.Chdir(localDir)
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	wantLocal := filepath.Join(localDir, "app.log")
+	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
+		t.Fatalf("fake sftp batch = %q, want local basename expanded", got)
+	}
+}
+
 func TestRecordTransferEventWritesAuditDetails(t *testing.T) {
 	stateDir := t.TempDir()
 	local := filepath.Join(t.TempDir(), "payload.txt")
@@ -484,6 +506,36 @@ func TestPickerSummaryUsesPluralizedCompactCounts(t *testing.T) {
 
 	if len(summary) == 0 || summary[0] != "1 host  1 warning  1 session  2 tunnels" {
 		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestPickerSessionCountsIgnoreRemoteMirrors(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:          "local-active",
+		Kind:        state.KindInteractive,
+		TargetAlias: "prod",
+		LocalPID:    os.Getpid(),
+		RunnerMode:  "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord local-active: %v", err)
+	}
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:           "mirrored-active",
+		ParentID:     "local-active",
+		TargetAlias:  "nested",
+		RemoteMirror: true,
+		RunnerMode:   "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord mirrored-active: %v", err)
+	}
+
+	total, active := pickerSessionCounts(stateDir)
+	if total != 1 || active != 1 {
+		t.Fatalf("pickerSessionCounts = total %d active %d, want only local active counted", total, active)
+	}
+	if got := pickerStoppableSessionCount(stateDir); got != 1 {
+		t.Fatalf("pickerStoppableSessionCount = %d, want local active only", got)
 	}
 }
 

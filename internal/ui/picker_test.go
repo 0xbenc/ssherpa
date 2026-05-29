@@ -18,14 +18,14 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 		},
 	})
 
-	// Expected order: Active Tunnels, Saved Forwards, Actions (11), Hosts.
-	if len(items) != 1+1+11+1 {
-		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+11+1)
+	// Expected order: Active Tunnels, Saved Forwards, Actions (12), Hosts.
+	if len(items) != 1+1+12+1 {
+		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+12+1)
 	}
 	want := []ItemKind{
 		ItemForwardActive, // active tunnel row
 		ItemForwardSaved,  // saved forward row
-		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemSendFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs,
+		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemSendFile, ItemReceiveFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs,
 		ItemAlias, // host
 	}
 	for i, kind := range want {
@@ -60,25 +60,25 @@ func TestBuildItemsIncludesStopAllActiveAction(t *testing.T) {
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 
-	if len(items) != 12 {
-		t.Fatalf("len(items) = %d, want 12", len(items))
+	if len(items) != 13 {
+		t.Fatalf("len(items) = %d, want 13", len(items))
 	}
 
-	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemSendFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs, ItemAlias}
+	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemSendFile, ItemReceiveFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs, ItemAlias}
 	for i, kind := range want {
 		if items[i].Kind != kind {
 			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
 		}
 	}
-	if items[11].Token != "prod" || items[11].Description != "prod.example.com" || items[11].Group != "Hosts" {
-		t.Fatalf("alias item = %#v", items[11])
+	if items[12].Token != "prod" || items[12].Description != "prod.example.com" || items[12].Group != "Hosts" {
+		t.Fatalf("alias item = %#v", items[12])
 	}
 }
 
 func TestBuildItemsIncludesSessionCounts(t *testing.T) {
 	items := BuildItemsWithOptions(nil, BuildItemsOptions{SessionCount: 4, ActiveSessionCount: 2})
 
-	session := items[8]
+	session := items[9]
 	if session.Kind != ItemSessions {
 		t.Fatalf("items[6].Kind = %q, want sessions", session.Kind)
 	}
@@ -121,6 +121,7 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 		Subtitle:    "exec mode",
 		Summary:     []string{"1 host  0 warnings"},
 	})
+	model.height = 40
 	view := model.View()
 	text := view.Content
 
@@ -237,7 +238,7 @@ func TestPickerHostRowsOnlyShowNickname(t *testing.T) {
 		NoColor:     true,
 	})
 	model.width = 120
-	model.cursor = 11
+	model.cursor = 12
 
 	text := model.View().Content
 	for _, line := range strings.Split(text, "\n") {
@@ -346,6 +347,7 @@ func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
 		{ItemProxy, "\x1b[31m"},         // exposed local proxy
 		{ItemForward, "\x1b[36m"},       // tunnel builder
 		{ItemSendFile, "\x1b[36m"},      // file transfer
+		{ItemReceiveFile, "\x1b[36m"},   // file transfer
 		{ItemForwardSaved, "\x1b[36m"},  // tunnel launch
 		{ItemForwardActive, "\x1b[31m"}, // stop running tunnel
 		{ItemProxyActive, "\x1b[31m"},   // stop running proxy
@@ -410,6 +412,7 @@ func TestPickerWideLayoutKeepsActionTitlesComplete(t *testing.T) {
 		"Jump via intermediate hops",
 		"Open port-forward tunnel",
 		"Send file",
+		"Receive file",
 		"Sessions and route map",
 	} {
 		if !strings.Contains(text, title) {
