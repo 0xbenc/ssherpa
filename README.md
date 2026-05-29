@@ -109,14 +109,17 @@ watchdog, or state.
 
 ```sh
 brew tap 0xbenc/tap
-brew install ssherpa
+brew install --cask ssherpa
 ```
 
 Or install directly:
 
 ```sh
-brew install 0xbenc/tap/ssherpa
+brew install --cask 0xbenc/tap/ssherpa
 ```
+
+The Homebrew cask is published from the `0xbenc/tap` tap and is updated by
+the release workflow when a new version tag is pushed.
 
 ### Prebuilt binaries
 
