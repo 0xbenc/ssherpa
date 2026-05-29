@@ -290,7 +290,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m pickerModel) View() tea.View {
 	var b strings.Builder
-	width := clamp(m.width, 56, 140)
+	width := max(56, m.width)
 	theme := pickerTheme{theme: m.theme}
 
 	b.WriteString(m.renderHeader(width, theme))

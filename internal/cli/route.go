@@ -1367,6 +1367,42 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	return runForward(args, stdout, stderr)
 }
 
+// runForwardPreset handles a saved-forward row picked from the home
+// page. The catalog still supplies the actual --local/--remote/--through
+// values inside runForwardWith; this function only asks whether the
+// preset should run actively in the foreground or as the detached
+// background daemon.
+func runForwardPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr io.Writer) int {
+	action, ok, err := ui.ChooseForwardLaunchAction(context.Background(), ui.ForwardActionOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Name:        item.Title,
+		Description: item.Description,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: forward preset picker failed: %v\n", err)
+		return 1
+	}
+	if !ok || action == ui.ForwardActionCancel {
+		fmt.Fprintln(stderr, "[skipped] forward preset cancelled")
+		return 0
+	}
+	return runForward(savedForwardLaunchArgs(flags, item.Token, action), stdout, stderr)
+}
+
+func savedForwardLaunchArgs(flags connectFlags, name string, action ui.ForwardAction) []string {
+	args := []string{"--select", name}
+	if action == ui.ForwardActionBackground {
+		args = append(args, "--background")
+	}
+	args = append(args, connectFlagsAsForwardArgs(flags)...)
+	return args
+}
+
 // saveForwardFromBuilder writes the wizard's Save action into the
 // state catalog. The destination alias and ProxyJump live in
 // ~/.ssh/config under the alias the user picked — we don't write a

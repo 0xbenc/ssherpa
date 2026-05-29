@@ -49,6 +49,14 @@ func updateBuilder(m forwardBuilderModel, msgs ...tea.Msg) forwardBuilderModel {
 	return m
 }
 
+func updateForwardAction(m forwardActionModel, msgs ...tea.Msg) forwardActionModel {
+	for _, msg := range msgs {
+		newModel, _ := m.Update(msg)
+		m = newModel.(forwardActionModel)
+	}
+	return m
+}
+
 func typeText(text string) []tea.Msg {
 	msgs := make([]tea.Msg, 0, len(text))
 	for _, r := range text {
@@ -114,6 +122,37 @@ func TestForwardBuilderThroughHopAndBackground(t *testing.T) {
 	}
 	if m.result.Action != ForwardActionBackground {
 		t.Fatalf("action = %q, want background", m.result.Action)
+	}
+}
+
+func TestForwardPresetActionPickerDefaultsToActive(t *testing.T) {
+	m := newForwardActionModel(ForwardActionOptions{
+		Name:        "pngwin-pg-tunnel",
+		Description: "127.0.0.1:5433 -> 127.0.0.1:5432",
+	}, termstyle.Theme{})
+
+	m = updateForwardAction(m, keyPress(tea.KeyEnter, ""))
+
+	if m.canceled {
+		t.Fatalf("picker canceled unexpectedly")
+	}
+	if m.action != ForwardActionRun {
+		t.Fatalf("action = %q, want active run", m.action)
+	}
+}
+
+func TestForwardPresetActionPickerCanChooseBackground(t *testing.T) {
+	m := newForwardActionModel(ForwardActionOptions{
+		Name: "pngwin-pg-tunnel",
+	}, termstyle.Theme{})
+
+	m = updateForwardAction(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyEnter, ""))
+
+	if m.canceled {
+		t.Fatalf("picker canceled unexpectedly")
+	}
+	if m.action != ForwardActionBackground {
+		t.Fatalf("action = %q, want background", m.action)
 	}
 }
 

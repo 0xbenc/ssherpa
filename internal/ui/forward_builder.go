@@ -87,6 +87,22 @@ type BuildForwardOptions struct {
 	Aliases     []ForwardAlias
 }
 
+// ForwardActionOptions configures the compact picker shown when a
+// saved forward is launched from the home page. Saved forwards already
+// have a complete spec, so the user only needs to choose the launch
+// mode.
+type ForwardActionOptions struct {
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	NoColor     bool
+	Theme       termstyle.Theme
+	ThemeName   string
+	ThemeFile   string
+	Name        string
+	Description string
+}
+
 // BuildForward runs the multi-step wizard on the home-page picker's
 // Forward action. Returns (result, true, nil) on a successful build,
 // (zero, false, nil) on cancel, or (_, false, err) on a fatal program
@@ -128,6 +144,42 @@ func BuildForward(ctx context.Context, opts BuildForwardOptions) (ForwardResult,
 	return builder.result, true, nil
 }
 
+// ChooseForwardLaunchAction prompts for how to launch an already-saved
+// forward preset. It deliberately offers only the runtime choices that
+// make sense for a saved spec: active foreground supervision or the
+// detached background daemon.
+func ChooseForwardLaunchAction(ctx context.Context, opts ForwardActionOptions) (ForwardAction, bool, error) {
+	theme, err := resolvePickTheme(PickOptions{
+		Output:    opts.Output,
+		NoColor:   opts.NoColor,
+		Theme:     opts.Theme,
+		ThemeName: opts.ThemeName,
+		ThemeFile: opts.ThemeFile,
+	})
+	if err != nil {
+		return "", false, err
+	}
+
+	model := newForwardActionModel(opts, theme)
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	if opts.Input != nil {
+		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	}
+	if opts.Output != nil {
+		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	}
+
+	final, err := tea.NewProgram(model, programOptions...).Run()
+	if err != nil {
+		return "", false, err
+	}
+	chooser, ok := final.(forwardActionModel)
+	if !ok || chooser.canceled {
+		return "", false, nil
+	}
+	return chooser.action, true, nil
+}
+
 type builderStep int
 
 const (
@@ -160,6 +212,107 @@ var builderSummaryActions = []summaryAction{
 	{ForwardActionPrint, "Print command and exit"},
 	{ForwardActionSave, "Save as alias…"},
 	{ForwardActionCancel, "Cancel"},
+}
+
+var forwardLaunchActions = []summaryAction{
+	{ForwardActionRun, "Run active (foreground supervised)"},
+	{ForwardActionBackground, "Run in background (detached, auto-reconnect)"},
+	{ForwardActionCancel, "Cancel"},
+}
+
+type forwardActionModel struct {
+	name        string
+	description string
+	cursor      int
+	canceled    bool
+	action      ForwardAction
+	theme       termstyle.Theme
+	width       int
+	height      int
+}
+
+func newForwardActionModel(opts ForwardActionOptions, theme termstyle.Theme) forwardActionModel {
+	return forwardActionModel{
+		name:        opts.Name,
+		description: opts.Description,
+		theme:       theme,
+		width:       104,
+		height:      18,
+	}
+}
+
+func (m forwardActionModel) Init() tea.Cmd {
+	return tea.RequestWindowSize
+}
+
+func (m forwardActionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.canceled = true
+			return m, tea.Quit
+		case "up", "ctrl+p":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "ctrl+n":
+			if m.cursor < len(forwardLaunchActions)-1 {
+				m.cursor++
+			}
+		case "enter":
+			action := forwardLaunchActions[m.cursor].Action
+			if action == ForwardActionCancel {
+				m.canceled = true
+				return m, tea.Quit
+			}
+			m.action = action
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m forwardActionModel) View() tea.View {
+	width := clamp(m.width, 64, 140)
+	theme := pickerTheme{theme: m.theme}
+	var b strings.Builder
+
+	title := theme.logo("SSHERPA FORWARD PRESET")
+	b.WriteString(termstyle.PadRight(title, width))
+	b.WriteString("\n\n")
+	b.WriteString("  ")
+	b.WriteString(theme.summary("Pick how to launch this saved forward:"))
+	b.WriteString("\n\n")
+	previewKVLine(&b, theme, "preset", m.name)
+	if m.description != "" {
+		previewKVLine(&b, theme, "route", termstyle.Truncate(m.description, max(0, width-18)))
+	}
+	b.WriteByte('\n')
+	for i, action := range forwardLaunchActions {
+		cursor := "  "
+		if i == m.cursor {
+			cursor = "> "
+		}
+		row := cursor + action.Label
+		if i == m.cursor {
+			row = theme.rowTitle(row, true)
+		}
+		b.WriteString("  ")
+		b.WriteString(row)
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n  ")
+	b.WriteString(theme.muted("enter launch  /  up/down move  /  esc cancel"))
+	b.WriteByte('\n')
+	return tea.NewView(b.String())
 }
 
 // forwardBuilderModel is the bubbletea model for the wizard. One

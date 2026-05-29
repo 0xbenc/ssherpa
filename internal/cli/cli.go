@@ -222,71 +222,76 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		return 1
 	}
 
-	graph, inventory, err := loadInventory(flags.inventoryFlags)
-	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
-		return 2
-	}
-
-	item, alias, ok, code := selectConnectItem(flags, graph, inventory, stderr, build)
-	if !ok {
-		return code
-	}
-	switch item.Kind {
-	case ui.ItemAdd:
-		return runAdd(connectFlagsAsAddArgs(flags), stdout, stderr)
-	case ui.ItemEdit:
-		return runEdit(connectFlagsAsEditArgs(flags), stdout, stderr)
-	case ui.ItemProxy:
-		return runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
-	case ui.ItemJump:
-		return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
-	case ui.ItemForward:
-		return runForwardBuilder(flags, inventory, stdout, stderr)
-	case ui.ItemForwardSaved:
-		// One-tap launch: the catalog lookup precedence in
-		// runForwardWith fills in --local/--remote/--through from
-		// the saved spec when only --select is provided.
-		args := []string{"--select", item.Token}
-		args = append(args, connectFlagsAsForwardArgs(flags)...)
-		return runForward(args, stdout, stderr)
-	case ui.ItemForwardActive:
-		// One-tap stop: item.Token is the session ID; runForward
-		// dispatches to runForwardStop which SIGHUPs the daemon.
-		stopArgs := []string{"stop"}
-		if flags.StateDir != "" {
-			stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
+	for {
+		graph, inventory, err := loadInventory(flags.inventoryFlags)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 2
 		}
-		stopArgs = append(stopArgs, item.Token)
-		return runForward(stopArgs, stdout, stderr)
-	case ui.ItemAuthkeys:
-		return runAuthkeys(nil, stdout, stderr)
-	case ui.ItemSessions:
-		return runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
-	case ui.ItemTheme:
-		return runTheme(connectFlagsAsThemeArgs(flags), stdout, stderr)
-	}
 
-	base := resolveSSHCommand(flags)
-	metadata := session.Metadata{
-		TargetAlias: alias.Name,
-		Route:       []string{alias.Name},
-	}
-	cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
-
-	if flags.Print {
-		if flags.JSON {
-			if err := sshcmd.WritePrintJSON(stdout, cmd, alias.Name); err != nil {
-				fmt.Fprintf(stderr, "ssherpa: write JSON: %v\n", err)
-				return 1
+		item, alias, ok, code := selectConnectItem(flags, graph, inventory, stderr, build)
+		if !ok {
+			return code
+		}
+		switch item.Kind {
+		case ui.ItemAdd:
+			code := runAdd(connectFlagsAsAddArgs(flags), stdout, stderr)
+			if code != 0 || flags.Select != "" {
+				return code
 			}
+			continue
+		case ui.ItemEdit:
+			code := runEdit(connectFlagsAsEditArgs(flags), stdout, stderr)
+			if code != 0 || flags.Select != "" {
+				return code
+			}
+			continue
+		case ui.ItemProxy:
+			return runProxy(connectFlagsAsProxyArgs(flags), stdout, stderr)
+		case ui.ItemJump:
+			return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
+		case ui.ItemForward:
+			return runForwardBuilder(flags, inventory, stdout, stderr)
+		case ui.ItemForwardSaved:
+			return runForwardPreset(flags, item, stdout, stderr)
+		case ui.ItemForwardActive:
+			// One-tap stop: item.Token is the session ID; runForward
+			// dispatches to runForwardStop which SIGHUPs the daemon.
+			stopArgs := []string{"stop"}
+			if flags.StateDir != "" {
+				stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
+			}
+			stopArgs = append(stopArgs, item.Token)
+			return runForward(stopArgs, stdout, stderr)
+		case ui.ItemAuthkeys:
+			return runAuthkeys(nil, stdout, stderr)
+		case ui.ItemSessions:
+			return runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
+		case ui.ItemTheme:
+			return runTheme(connectFlagsAsThemeArgs(flags), stdout, stderr)
+		}
+
+		base := resolveSSHCommand(flags)
+		metadata := session.Metadata{
+			TargetAlias: alias.Name,
+			Route:       []string{alias.Name},
+		}
+		cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
+
+		if flags.Print {
+			if flags.JSON {
+				if err := sshcmd.WritePrintJSON(stdout, cmd, alias.Name); err != nil {
+					fmt.Fprintf(stderr, "ssherpa: write JSON: %v\n", err)
+					return 1
+				}
+				return 0
+			}
+			fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 			return 0
 		}
-		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
-		return 0
-	}
 
-	return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
+		return printOrRunSSH(cmd, flags.connectOptions(sshcmd.BuildProbe(base, metadata.TargetAlias, metadata.Hops)), metadata, stdout, stderr)
+	}
 }
 
 func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {

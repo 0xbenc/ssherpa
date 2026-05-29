@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
 // seedTunnelRecord writes a SessionRecord with Kind=tunnel for the
@@ -329,6 +330,23 @@ Host pgbox
 	}
 	if records[0].Forward == nil || records[0].Forward.SavedAlias != "pngwin-pg-tunnel" {
 		t.Fatalf("record.Forward.SavedAlias = %v, want pngwin-pg-tunnel", records[0].Forward)
+	}
+}
+
+func TestSavedForwardLaunchArgsCanBackgroundPreset(t *testing.T) {
+	args := savedForwardLaunchArgs(connectFlags{
+		inventoryFlags: inventoryFlags{Config: "/tmp/ssh_config"},
+		StateDir:       "/tmp/ssherpa-state",
+	}, "pngwin-pg-tunnel", ui.ForwardActionBackground)
+
+	want := []string{
+		"--select", "pngwin-pg-tunnel",
+		"--background",
+		"--config", "/tmp/ssh_config",
+		"--state-dir", "/tmp/ssherpa-state",
+	}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %v, want %v", args, want)
 	}
 }
 
