@@ -14,13 +14,12 @@ import (
 )
 
 const themeUsage = `Usage:
-  ssherpa theme [--theme NAME] [--theme-file PATH] [--no-color]
+  ssherpa theme [--theme-file PATH] [--no-color]
 
 Open the interactive theme editor. The editor previews the picker and
 overlay palette live, then writes a theme config when you press s.
 
 Theme Flags:
-  --theme NAME       Start from terminal or vivid
   --theme-file PATH  Edit this theme config path
   --no-color         Disable color styling while editing
 `
@@ -39,12 +38,6 @@ func runTheme(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags, ok := parseThemeFlags(args, stderr)
 	if !ok {
 		return 1
-	}
-	if flags.ThemeName != "" {
-		if _, ok := termstyle.BuiltinTheme(flags.ThemeName); !ok {
-			fmt.Fprintf(stderr, "ssherpa: unknown theme %q; available themes: terminal, vivid\n", flags.ThemeName)
-			return 1
-		}
 	}
 
 	path, err := termstyle.ThemeConfigPath(flags.ThemeFile, nil)
@@ -66,7 +59,6 @@ func runTheme(args []string, stdout io.Writer, stderr io.Writer) int {
 		NoColor:     flags.NoColor,
 		Config:      cfg,
 		ConfigPath:  path,
-		ThemeName:   flags.ThemeName,
 		Warning:     warning,
 	})
 	if err != nil {
@@ -104,13 +96,13 @@ func parseThemeFlags(args []string, stderr io.Writer) (themeFlags, bool) {
 		arg := args[i]
 		switch {
 		case arg == "--theme":
-			value, ok := nextArg(args, &i, stderr, "--theme")
-			if !ok {
+			if _, ok := nextArg(args, &i, stderr, "--theme"); !ok {
 				return flags, false
 			}
-			flags.ThemeName = value
 		case strings.HasPrefix(arg, "--theme="):
-			flags.ThemeName = strings.TrimPrefix(arg, "--theme=")
+			// Deprecated no-op. The theme config is now the single source of
+			// color styling; keep accepting the flag so older aliases/scripts do
+			// not fail just because they still pass --theme.
 		case arg == "--theme-file":
 			value, ok := nextArg(args, &i, stderr, "--theme-file")
 			if !ok {
@@ -149,15 +141,8 @@ func loadThemeConfig(path string) (termstyle.ThemeConfig, string, error) {
 
 func formatThemeConfig(cfg termstyle.ThemeConfig) []byte {
 	var b strings.Builder
-	base := strings.TrimSpace(cfg.BaseName)
-	if base == "" {
-		base = "terminal"
-	}
 	b.WriteString("# ssherpa theme config\n")
 	b.WriteString("# Edit with: ssherpa theme\n\n")
-	b.WriteString("theme = ")
-	b.WriteString(base)
-	b.WriteString("\n")
 	for _, role := range termstyle.Roles() {
 		spec := strings.TrimSpace(cfg.Specs[role])
 		if spec == "" {
@@ -173,9 +158,6 @@ func formatThemeConfig(cfg termstyle.ThemeConfig) []byte {
 
 func connectFlagsAsThemeArgs(flags connectFlags) []string {
 	var args []string
-	if flags.ThemeName != "" {
-		args = append(args, "--theme", flags.ThemeName)
-	}
 	if flags.ThemeFile != "" {
 		args = append(args, "--theme-file", flags.ThemeFile)
 	}

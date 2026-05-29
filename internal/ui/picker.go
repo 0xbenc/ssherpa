@@ -497,7 +497,7 @@ func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
 	}
 	lines = append(lines, "")
 	for _, line := range wrapPlain(selectionHint(item), width, 2) {
-		lines = append(lines, theme.muted(line))
+		lines = append(lines, theme.subtle(line))
 	}
 	return lines
 }
@@ -613,6 +613,10 @@ func (t pickerTheme) muted(value string) string {
 	return t.theme.Style(termstyle.RoleMuted, value)
 }
 
+func (t pickerTheme) subtle(value string) string {
+	return t.theme.Style(termstyle.RoleSubtle, value)
+}
+
 func (t pickerTheme) empty(value string) string {
 	return t.theme.Style(termstyle.RoleWarning, value)
 }
@@ -643,7 +647,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 	case ItemAlias:
 		role = termstyle.RoleSuccess
 	case ItemAdd:
-		role = termstyle.RolePrimary
+		role = termstyle.RoleSuccess
 	case ItemEdit:
 		role = termstyle.RoleWarning
 	case ItemJump:
@@ -651,17 +655,17 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 	case ItemProxy:
 		role = termstyle.RoleDanger
 	case ItemForward:
-		role = termstyle.RoleAccent
+		role = termstyle.RolePrimary
 	case ItemForwardSaved:
-		role = termstyle.RoleAccent
+		role = termstyle.RolePrimary
 	case ItemForwardActive:
-		role = termstyle.RoleWarning
+		role = termstyle.RoleDanger
 	case ItemAuthkeys:
-		role = termstyle.RoleSecondary
+		role = termstyle.RoleWarning
 	case ItemSessions:
-		role = termstyle.RoleSuccess
+		role = termstyle.RoleSecondary
 	case ItemTheme:
-		role = termstyle.RoleInfo
+		role = termstyle.RoleAccent
 	}
 	return t.theme.Style(role, value)
 }
@@ -692,8 +696,8 @@ func (t pickerTheme) previewTitle(value string) string {
 }
 
 func previewKV(theme pickerTheme, width int, key string, value string) string {
-	keyText := termstyle.PadRight(theme.muted(key), 8)
-	valueText := theme.rowDesc(termstyle.Truncate(value, max(0, width-9)), false)
+	keyText := termstyle.PadRight(theme.subtle(key), 8)
+	valueText := theme.subtle(termstyle.Truncate(value, max(0, width-9)))
 	return keyText + " " + valueText
 }
 
@@ -707,9 +711,9 @@ func previewKVLines(theme pickerTheme, width int, key string, value string, maxL
 	for i, line := range wrapped {
 		keyText := strings.Repeat(" ", 8)
 		if i == 0 {
-			keyText = theme.muted(key)
+			keyText = theme.subtle(key)
 		}
-		out = append(out, termstyle.PadRight(keyText, 8)+" "+theme.rowDesc(line, false))
+		out = append(out, termstyle.PadRight(keyText, 8)+" "+theme.subtle(line))
 	}
 	return out
 }

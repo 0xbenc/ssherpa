@@ -41,16 +41,14 @@ actions.
 ## Themes
 
 Phase 10 now uses semantic roles instead of hardcoded colors. The
-default `terminal` theme uses normal ANSI palette slots so the user's
-terminal emulator supplies the actual colors. The previous RGB design
-remains available as `vivid`.
+default theme uses normal ANSI palette slots so the user's terminal
+emulator supplies the actual colors.
 
 The first screen includes a `Theme and colors` action. The same editor
 is available directly:
 
 ```sh
 ssherpa theme
-ssherpa theme --theme vivid
 ssherpa theme --theme-file ~/.config/ssherpa/theme.conf
 ```
 
@@ -65,10 +63,9 @@ Key flow:
 
 ```text
 arrows / h l  change selection or value
-b             switch base theme
 e / enter     edit selected role as raw text
 d             clear a role override
-r             reset to terminal defaults
+r             reset to defaults
 s             save
 q / Esc       cancel
 ```
@@ -76,23 +73,19 @@ q / Esc       cancel
 Theme selection and overrides:
 
 ```sh
-ssherpa --theme terminal
-ssherpa --theme vivid
 ssherpa --theme-file ~/.config/ssherpa/theme.conf
-SSHERPA_THEME=vivid ssherpa
 SSHERPA_THEME_FILE=/tmp/ssherpa-theme.conf ssherpa
 ```
 
 Example config:
 
 ```text
-theme = terminal
 primary = cyan
 secondary = blue
 accent = yellow
 muted = bright-black
 foreground = default
-selected = bold white
+selected = foreground underline
 success = green
 warning = yellow
 danger = red
@@ -121,7 +114,6 @@ row alignment. Tests cover:
 SSHERPA_NO_ALT_SCREEN=1 ssherpa --no-color
 SSHERPA_NO_ALT_SCREEN=1 ssherpa
 SSHERPA_NO_ALT_SCREEN=1 ssherpa theme --theme-file /tmp/ssherpa-theme.conf
-SSHERPA_NO_ALT_SCREEN=1 ssherpa --theme vivid
 SSHERPA_NO_ALT_SCREEN=1 ssherpa --theme-file ~/.config/ssherpa/theme.conf
 ssherpa --select prod
 ```

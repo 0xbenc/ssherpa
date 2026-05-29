@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -93,5 +94,25 @@ func TestAddAliasFormPastesCustomIdentityPath(t *testing.T) {
 
 	if m.idBuf != "~/.ssh/prod key" {
 		t.Fatalf("idBuf = %q, want pasted identity path", m.idBuf)
+	}
+}
+
+func TestAddAliasFormUsesAccentForBreadcrumbAndLabels(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial: AddAliasResult{HostName: "prod.example.com", Alias: "prod"},
+	}, termstyle.TerminalTheme())
+
+	text := m.View().Content
+	for _, want := range []string{
+		"\x1b[33m[host] ->  alias  ->  user  ->  port  ->  identity  ->  custom  ->  auth  ->  review\x1b[0m",
+		"\x1b[33mHostName\x1b[0m",
+		"\x1b[39mprod.example.com|\x1b[0m",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view missing accented text %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\x1b[39;4mprod.example.com|") {
+		t.Fatalf("input value should not be underlined:\n%s", text)
 	}
 }

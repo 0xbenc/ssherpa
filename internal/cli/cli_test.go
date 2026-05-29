@@ -338,16 +338,6 @@ Host prod
 	}
 }
 
-func TestRunConnectRejectsInvalidThemeFlag(t *testing.T) {
-	var stderr bytes.Buffer
-	code := Run([]string{"--print", "--theme", "imaginary"}, nil, &stderr, BuildInfo{})
-
-	if code != 1 {
-		t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
-	}
-	assertContains(t, stderr.String(), "unknown theme")
-}
-
 func TestRunConnectPickerAddCarriesConfigFlag(t *testing.T) {
 	args := connectFlagsAsAddArgs(connectFlags{inventoryFlags: inventoryFlags{Config: "/tmp/config"}})
 
@@ -385,13 +375,12 @@ func TestRunConnectPickerRouteRowsCarryConnectFlags(t *testing.T) {
 		ComposerKeyName:   "Ctrl-R",
 		NoKitty:           true,
 		NoColor:           true,
-		ThemeName:         "vivid",
 		ThemeFile:         "/tmp/theme.conf",
 		SSHArgs:           []string{"-v"},
 	}
 
 	args := connectFlagsAsJumpArgs(flags)
-	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--composer-key\x00Ctrl-R\x00--no-kitty\x00--no-color\x00--theme\x00vivid\x00--theme-file\x00/tmp/theme.conf\x00--\x00-v"
+	want := "--all\x00--print\x00--filter\x00prod\x00--user\x00alice\x00--config\x00/tmp/config\x00--ssh-binary\x00/tmp/fake-ssh\x00--direct\x00--state-dir\x00/tmp/state\x00--latency-warn\x002s\x00--latency-disconnect\x0030s\x00--composer-key\x00Ctrl-R\x00--no-kitty\x00--no-color\x00--theme-file\x00/tmp/theme.conf\x00--\x00-v"
 	if got := strings.Join(args, "\x00"); got != want {
 		t.Fatalf("jump args = %#v, want %q", args, want)
 	}
@@ -450,21 +439,20 @@ func TestParseThemeCommandFlags(t *testing.T) {
 	if !ok {
 		t.Fatalf("parseThemeFlags failed: %s", stderr.String())
 	}
-	if flags.ThemeName != "vivid" || flags.ThemeFile != "/tmp/theme.conf" || !flags.NoColor {
-		t.Fatalf("flags = %#v, want vivid theme file and no color", flags)
+	if flags.ThemeName != "" || flags.ThemeFile != "/tmp/theme.conf" || !flags.NoColor {
+		t.Fatalf("flags = %#v, want theme file and no color", flags)
 	}
 }
 
 func TestFormatThemeConfig(t *testing.T) {
 	got := string(formatThemeConfig(termstyle.ThemeConfig{
-		BaseName: "terminal",
 		Specs: map[termstyle.Role]string{
 			termstyle.RolePrimary: "cyan",
 			termstyle.RolePill:    "bold reverse",
 		},
 	}))
 
-	assertContains(t, got, "theme = terminal")
+	assertNotContains(t, got, "theme =")
 	assertContains(t, got, "primary = cyan")
 	assertContains(t, got, "pill = bold reverse")
 }

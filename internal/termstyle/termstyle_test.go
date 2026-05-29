@@ -30,7 +30,7 @@ func TestPadRightUsesVisibleWidth(t *testing.T) {
 	}
 }
 
-func TestTerminalThemeUsesPaletteCodes(t *testing.T) {
+func TestDefaultThemeUsesPaletteCodes(t *testing.T) {
 	theme, err := ResolveTheme(ThemeOptions{Env: []string{}, SkipDefaultFile: true})
 	if err != nil {
 		t.Fatalf("ResolveTheme returned error: %v", err)
@@ -41,10 +41,10 @@ func TestTerminalThemeUsesPaletteCodes(t *testing.T) {
 		t.Fatalf("primary style = %q, want terminal palette cyan", got)
 	}
 	if strings.Contains(got, "38;2;") {
-		t.Fatalf("primary style = %q, want no truecolor in terminal theme", got)
+		t.Fatalf("primary style = %q, want no truecolor in default theme", got)
 	}
-	if got := theme.Style(RoleSelected, "prod"); !strings.Contains(got, "\x1b[30m") {
-		t.Fatalf("selected style = %q, want terminal palette black", got)
+	if got := theme.Style(RoleSelected, "prod"); !strings.Contains(got, "\x1b[39;4m") {
+		t.Fatalf("selected style = %q, want foreground underline", got)
 	}
 }
 
@@ -52,7 +52,6 @@ func TestResolveThemeParsesConfigOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "theme.conf")
 	data := []byte(`
-theme = terminal
 primary = magenta
 secondary = bright-blue
 pill = bold reverse
@@ -83,14 +82,14 @@ danger = 1;31
 	}
 }
 
-func TestResolveThemeSupportsVividBuiltin(t *testing.T) {
+func TestResolveThemeIgnoresDeprecatedThemeName(t *testing.T) {
 	theme, err := ResolveTheme(ThemeOptions{Name: "vivid", Env: []string{}, SkipDefaultFile: true})
 	if err != nil {
 		t.Fatalf("ResolveTheme returned error: %v", err)
 	}
 
-	if got := theme.Style(RolePrimary, "prod"); !strings.Contains(got, "38;2;") {
-		t.Fatalf("primary style = %q, want truecolor", got)
+	if got := theme.Style(RolePrimary, "prod"); !strings.Contains(got, "\x1b[36m") {
+		t.Fatalf("primary style = %q, want default palette cyan", got)
 	}
 }
 

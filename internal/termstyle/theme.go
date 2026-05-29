@@ -61,7 +61,7 @@ func TerminalTheme() Theme {
 			RoleMuted:      "90",
 			RoleSubtle:     "2",
 			RoleForeground: "39",
-			RoleSelected:   "30",
+			RoleSelected:   "39;4",
 			RoleBorder:     "90",
 			RoleSuccess:    "32",
 			RoleWarning:    "33",
@@ -147,21 +147,7 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 		}
 	}
 
-	name := "terminal"
-	if value := strings.TrimSpace(env["SSHERPA_THEME"]); value != "" {
-		name = value
-	}
-	if cfg.BaseName != "" {
-		name = cfg.BaseName
-	}
-	if strings.TrimSpace(opts.Name) != "" {
-		name = opts.Name
-	}
-
-	theme, ok := BuiltinTheme(name)
-	if !ok {
-		return Theme{}, fmt.Errorf("unknown theme %q; available themes: terminal, vivid", name)
-	}
+	theme := TerminalTheme().Normalized()
 	theme = theme.Normalized()
 	if len(cfg.Codes) > 0 {
 		theme.Name = "custom"
@@ -486,6 +472,8 @@ var styleTokenCodes = map[string]string{
 
 var colorTokenCodes = map[string]string{
 	"default":        "39",
+	"foreground":     "39",
+	"fg":             "39",
 	"black":          "30",
 	"red":            "31",
 	"green":          "32",

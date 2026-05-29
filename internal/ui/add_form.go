@@ -343,7 +343,7 @@ func (m addAliasModel) View() tea.View {
 	b.WriteString(termstyle.PadRight(title, width))
 	b.WriteByte('\n')
 	b.WriteString("  ")
-	b.WriteString(theme.muted(addBreadcrumb(m.step)))
+	b.WriteString(theme.label(addBreadcrumb(m.step)))
 	b.WriteString("\n\n")
 
 	switch m.step {
@@ -487,6 +487,8 @@ func addBreadcrumb(step addAliasStep) string {
 	for i, s := range steps {
 		if i == int(step) {
 			parts = append(parts, "["+s+"]")
+		} else if i == len(steps)-1 {
+			parts = append(parts, " "+s)
 		} else {
 			parts = append(parts, " "+s+" ")
 		}

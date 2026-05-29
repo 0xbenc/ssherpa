@@ -286,6 +286,32 @@ func TestPickerViewUsesCustomTheme(t *testing.T) {
 	}
 }
 
+func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
+	theme := pickerTheme{theme: termstyle.TerminalTheme()}
+	tests := []struct {
+		kind ItemKind
+		code string
+	}{
+		{ItemAdd, "\x1b[32m"},           // create
+		{ItemEdit, "\x1b[33m"},          // mutation/caution
+		{ItemJump, "\x1b[35m"},          // route builder
+		{ItemProxy, "\x1b[31m"},         // exposed local proxy
+		{ItemForward, "\x1b[36m"},       // tunnel builder
+		{ItemForwardSaved, "\x1b[36m"},  // tunnel launch
+		{ItemForwardActive, "\x1b[31m"}, // stop running tunnel
+		{ItemAuthkeys, "\x1b[33m"},      // security-sensitive
+		{ItemSessions, "\x1b[34m"},      // inspection
+		{ItemTheme, "\x1b[33m"},         // appearance/config
+	}
+
+	for _, tt := range tests {
+		got := theme.badge(tt.kind, "[X]")
+		if !strings.Contains(got, tt.code) {
+			t.Fatalf("badge(%s) = %q, want ANSI code %q", tt.kind, got, tt.code)
+		}
+	}
+}
+
 func TestPickerViewRendersWideSelectionPreview(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com", SourcePath: "/tmp/config", SourceLine: 12}}), PickOptions{
 		NoAltScreen: true,

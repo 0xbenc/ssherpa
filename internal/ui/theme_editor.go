@@ -56,7 +56,6 @@ func EditTheme(ctx context.Context, opts ThemeEditorOptions) (ThemeEditorResult,
 }
 
 type themeEditorModel struct {
-	base        string
 	values      map[termstyle.Role]string
 	cursor      int
 	noAltScreen bool
@@ -97,13 +96,6 @@ type stylePreset struct {
 }
 
 func newThemeEditorModel(opts ThemeEditorOptions) themeEditorModel {
-	base := strings.TrimSpace(opts.Config.BaseName)
-	if base == "" {
-		base = strings.TrimSpace(opts.ThemeName)
-	}
-	if _, ok := termstyle.BuiltinTheme(base); !ok {
-		base = "terminal"
-	}
 	values := make(map[termstyle.Role]string)
 	for role, spec := range opts.Config.Specs {
 		if strings.TrimSpace(spec) != "" {
@@ -116,7 +108,6 @@ func newThemeEditorModel(opts ThemeEditorOptions) themeEditorModel {
 		}
 	}
 	return themeEditorModel{
-		base:        base,
 		values:      values,
 		noAltScreen: opts.NoAltScreen,
 		noColor:     opts.NoColor,
@@ -159,8 +150,6 @@ func (m themeEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleCurrent(-1)
 		case "right", "l":
 			m.cycleCurrent(1)
-		case "b":
-			m.cycleBase(1)
 		case "e", "enter":
 			m.startEdit()
 		case "d", "delete":
@@ -294,10 +283,9 @@ func (m themeEditorModel) renderBody(width int, theme pickerTheme) []string {
 func (m themeEditorModel) renderEditorLines(width int, theme pickerTheme) []string {
 	lines := []string{
 		theme.groupHeader("Schema", width),
-		m.renderBaseRow(width, theme),
 	}
 	for i, meta := range themeRoles {
-		lines = append(lines, m.renderRoleRow(i+1, meta, width, theme))
+		lines = append(lines, m.renderRoleRow(i, meta, width, theme))
 	}
 	if m.editMode {
 		lines = append(lines, "")
@@ -307,29 +295,14 @@ func (m themeEditorModel) renderEditorLines(width int, theme pickerTheme) []stri
 	return lines
 }
 
-func (m themeEditorModel) renderBaseRow(width int, theme pickerTheme) string {
-	cursor := "  "
-	labelText := theme.muted("base")
-	valueText := theme.rowDesc(m.base, false)
-	if m.cursor == 0 {
-		cursor = ">>"
-		labelText = theme.rowTitle("base", true)
-		valueText = theme.rowTitle(m.base, true)
-	}
-	line := theme.cursor(cursor, m.cursor == 0) + " " +
-		termstyle.PadRight(labelText, 13) + " " +
-		valueText
-	return termstyle.PadRight(line, width)
-}
-
 func (m themeEditorModel) renderRoleRow(index int, meta themeRoleMeta, width int, theme pickerTheme) string {
 	selected := m.cursor == index
 	cursor := "  "
 	if selected {
 		cursor = ">>"
 	}
-	// Render the label and value in the role's own live color (base theme plus
-	// any unsaved/hot override) so each schema row doubles as a swatch. The
+	// Render the label and value in the role's own live color (defaults plus any
+	// unsaved/hot override) so each schema row doubles as a swatch. The
 	// selected row keeps the role color too — otherwise you could not see the
 	// change you are making on the very row you are editing; selection is shown
 	// by the >> cursor instead.
@@ -354,7 +327,7 @@ func (m themeEditorModel) renderPreviewLines(width int, theme pickerTheme) []str
 
 	lines := []string{
 		theme.groupHeader("Preview", width),
-		theme.logo("SSHERPA") + " " + theme.pill(strings.ToUpper(m.base)),
+		theme.logo("SSHERPA") + " " + theme.pill("SUPERVISED MODE"),
 		theme.summary(termstyle.Truncate("2 hosts  0 warnings  1 session  0 tunnels", width)),
 		theme.rule(width),
 		theme.label("FILTER") + "  " + theme.search("[prod                ]") + "  " + theme.counter("3/8"),
@@ -472,9 +445,8 @@ func (m *themeEditorModel) cycleTone() {
 
 func (m themeEditorModel) config() termstyle.ThemeConfig {
 	cfg := termstyle.ThemeConfig{
-		BaseName: m.base,
-		Codes:    make(map[termstyle.Role]string),
-		Specs:    make(map[termstyle.Role]string),
+		Codes: make(map[termstyle.Role]string),
+		Specs: make(map[termstyle.Role]string),
 	}
 	for _, meta := range themeRoles {
 		spec := strings.TrimSpace(m.values[meta.Role])
@@ -492,11 +464,7 @@ func (m themeEditorModel) config() termstyle.ThemeConfig {
 }
 
 func (m themeEditorModel) currentTheme() termstyle.Theme {
-	theme, ok := termstyle.BuiltinTheme(m.base)
-	if !ok {
-		theme = termstyle.TerminalTheme()
-	}
-	theme = theme.Normalized()
+	theme := termstyle.TerminalTheme().Normalized()
 	theme.NoColor = m.noColor
 	for _, meta := range themeRoles {
 		spec := strings.TrimSpace(m.values[meta.Role])
@@ -512,16 +480,12 @@ func (m themeEditorModel) currentTheme() termstyle.Theme {
 }
 
 func (m *themeEditorModel) move(delta int) {
-	rows := len(themeRoles) + 1
+	rows := len(themeRoles)
 	m.cursor = (m.cursor + delta + rows) % rows
 	m.message = ""
 }
 
 func (m *themeEditorModel) cycleCurrent(delta int) {
-	if m.cursor == 0 {
-		m.cycleBase(delta)
-		return
-	}
 	role, ok := m.selectedRole()
 	if !ok {
 		return
@@ -533,24 +497,7 @@ func (m *themeEditorModel) cycleCurrent(delta int) {
 	m.message = string(role) + " = " + stylePresets[next].Label
 }
 
-func (m *themeEditorModel) cycleBase(delta int) {
-	index := 0
-	for i, base := range themeBases {
-		if base == m.base {
-			index = i
-			break
-		}
-	}
-	index = (index + delta + len(themeBases)) % len(themeBases)
-	m.base = themeBases[index]
-	m.message = "base = " + m.base
-}
-
 func (m *themeEditorModel) startEdit() {
-	if m.cursor == 0 {
-		m.cycleBase(1)
-		return
-	}
 	role, ok := m.selectedRole()
 	if !ok {
 		return
@@ -563,18 +510,17 @@ func (m *themeEditorModel) startEdit() {
 func (m *themeEditorModel) clearCurrent() {
 	if role, ok := m.selectedRole(); ok {
 		delete(m.values, role)
-		m.message = string(role) + " inherits from " + m.base
+		m.message = string(role) + " inherits from defaults"
 	}
 }
 
 func (m *themeEditorModel) resetAll() {
-	m.base = "terminal"
 	m.values = make(map[termstyle.Role]string)
-	m.message = "reset to terminal defaults"
+	m.message = "reset to defaults"
 }
 
 func (m themeEditorModel) selectedRole() (termstyle.Role, bool) {
-	index := m.cursor - 1
+	index := m.cursor
 	if index < 0 || index >= len(themeRoles) {
 		return "", false
 	}
@@ -582,10 +528,7 @@ func (m themeEditorModel) selectedRole() (termstyle.Role, bool) {
 }
 
 func (m themeEditorModel) selectedLabel() string {
-	if m.cursor == 0 {
-		return "base"
-	}
-	index := m.cursor - 1
+	index := m.cursor
 	if index < 0 || index >= len(themeRoles) {
 		return ""
 	}
@@ -605,8 +548,6 @@ func presetIndex(spec string) int {
 func normalizeSpec(spec string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(spec)), " "))
 }
-
-var themeBases = []string{"terminal", "vivid"}
 
 var themeRoles = []themeRoleMeta{
 	{Role: termstyle.RoleTitle, Label: "title", Description: "app name and overlay titles"},

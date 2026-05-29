@@ -212,7 +212,6 @@ Flags override environment variables, which override the defaults.
 | `--ssh-binary PATH` | `SSHERPA_SSH_BINARY` | `ssh` (or `kitten ssh` under Kitty) |
 | `--state-dir PATH` | `SSHERPA_STATE_DIR` | platform state dir |
 | `--path PATH` (authkeys) | `SSHERPA_AUTHORIZED_KEYS_PATH` | `~/.ssh/authorized_keys` |
-| `--theme NAME` | `SSHERPA_THEME` | `terminal` (or `vivid`) |
 | `--theme-file PATH` | `SSHERPA_THEME_FILE` | `~/.config/ssherpa/theme.conf` |
 | `--no-color` | `SSHERPA_NO_COLOR`, `NO_COLOR` | color on |
 | `--no-kitty` | `SSHERPA_NO_KITTY` | Kitty detection on |
@@ -227,10 +226,9 @@ the picker) for a live editor where each row previews its own color, a palette
 panel shows the exact token to type for every color, and `t` toggles a
 high-contrast mode so the text stays readable on any background.
 
-Overrides can also live in `~/.config/ssherpa/theme.conf`:
+The color config lives in `~/.config/ssherpa/theme.conf`:
 
 ```text
-theme   = terminal
 primary = cyan
 accent  = yellow
 success = green
@@ -239,8 +237,7 @@ pill    = bold reverse
 ```
 
 Values are color names (`cyan`, `bright-blue`), style tokens (`bold`, `reverse`),
-or raw SGR codes (`38;2;96;221;255`). Use `--theme vivid` for an explicit
-truecolor palette.
+or raw SGR codes (`38;2;96;221;255`).
 
 ## What it does and doesn't do
 

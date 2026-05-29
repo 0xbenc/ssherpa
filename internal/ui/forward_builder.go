@@ -970,9 +970,9 @@ func (m forwardBuilderModel) viewSummary(b *strings.Builder, theme pickerTheme, 
 // inside the buffer text.
 func renderInput(b *strings.Builder, theme pickerTheme, label, buf string, cursor int, errStr string, width int) {
 	b.WriteString("  ")
-	b.WriteString(theme.muted(label))
+	b.WriteString(theme.label(label))
 	b.WriteString("  ")
-	b.WriteString(theme.previewTitle(insertCursor(buf, cursor)))
+	b.WriteString(theme.theme.Style(termstyle.RoleForeground, insertCursor(buf, cursor)))
 	b.WriteByte('\n')
 	if errStr != "" {
 		b.WriteString("  ")
@@ -999,7 +999,7 @@ func insertCursor(buf string, cursor int) string {
 
 func previewKVLine(b *strings.Builder, theme pickerTheme, key, value string) {
 	b.WriteString("  ")
-	b.WriteString(termstyle.PadRight(theme.muted(key), 14))
+	b.WriteString(termstyle.PadRight(theme.label(key), 14))
 	b.WriteString(theme.rowDesc(value, false))
 	b.WriteByte('\n')
 }

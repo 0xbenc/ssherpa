@@ -1310,11 +1310,9 @@ func connectFlagsAsForwardArgs(flags connectFlags) []string {
 // runForwardBuilder is the home-page picker's Forward action: launches
 // the TUI wizard, translates the resulting ForwardResult into a
 // `ssherpa forward …` argv (or, for Save, writes the catalog entry
-// directly), and re-enters runForward. Centralizing the translation
-// here means the wizard's output flows through the exact same parse
-// + validate + execute path as a hand-typed forward invocation — no
-// second source of truth for what a forward does.
-func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) int {
+// directly), and runs the requested action. The boolean return is true
+// when the caller should refresh and show the homepage again.
+func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
 	aliases := make([]ui.ForwardAlias, 0, len(inventory.Aliases))
 	for _, a := range inventory.Aliases {
 		aliases = append(aliases, ui.ForwardAlias{
@@ -1324,7 +1322,7 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	}
 	if len(aliases) == 0 {
 		fmt.Fprintln(stderr, "[skipped] no aliases available for forward")
-		return 0
+		return 0, false
 	}
 
 	result, ok, err := ui.BuildForward(context.Background(), ui.BuildForwardOptions{
@@ -1338,15 +1336,15 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: forward builder failed: %v\n", err)
-		return 1
+		return 1, false
 	}
 	if !ok || result.Action == ui.ForwardActionCancel {
 		fmt.Fprintln(stderr, "[skipped] forward builder cancelled")
-		return 0
+		return 0, false
 	}
 
 	if result.Action == ui.ForwardActionSave {
-		return saveForwardFromBuilder(flags, result, stdout, stderr)
+		return saveForwardFromBuilder(flags, result, stdout, stderr), true
 	}
 
 	args := []string{
@@ -1364,7 +1362,7 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 		args = append(args, "--print")
 	}
 	args = append(args, connectFlagsAsForwardArgs(flags)...)
-	return runForward(args, stdout, stderr)
+	return runForward(args, stdout, stderr), false
 }
 
 // runForwardPreset handles a saved-forward row picked from the home
@@ -1372,7 +1370,7 @@ func runForwardBuilder(flags connectFlags, inventory hostlist.Inventory, stdout 
 // values inside runForwardWith; this function only asks whether the
 // preset should run actively in the foreground or as the detached
 // background daemon.
-func runForwardPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr io.Writer) int {
+func runForwardPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr io.Writer) (int, bool) {
 	action, ok, err := ui.ChooseForwardLaunchAction(context.Background(), ui.ForwardActionOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
@@ -1385,13 +1383,13 @@ func runForwardPreset(flags connectFlags, item ui.Item, stdout io.Writer, stderr
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: forward preset picker failed: %v\n", err)
-		return 1
+		return 1, false
 	}
 	if !ok || action == ui.ForwardActionCancel {
 		fmt.Fprintln(stderr, "[skipped] forward preset cancelled")
-		return 0
+		return 0, false
 	}
-	return runForward(savedForwardLaunchArgs(flags, item.Token, action), stdout, stderr)
+	return runForward(savedForwardLaunchArgs(flags, item.Token, action), stdout, stderr), action == ui.ForwardActionBackground
 }
 
 func savedForwardLaunchArgs(flags connectFlags, name string, action ui.ForwardAction) []string {
@@ -1514,9 +1512,6 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.NoColor {
 		args = append(args, "--no-color")
-	}
-	if flags.ThemeName != "" {
-		args = append(args, "--theme", flags.ThemeName)
 	}
 	if flags.ThemeFile != "" {
 		args = append(args, "--theme-file", flags.ThemeFile)

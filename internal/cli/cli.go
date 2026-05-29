@@ -61,8 +61,7 @@ Connect Flags:
   --no-composer      Disable local queued-input composer
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
-  --theme NAME       Use UI theme: terminal or vivid
-  --theme-file PATH  Load UI theme role overrides from PATH
+  --theme-file PATH  Load UI theme config from PATH
 
 Mutation Commands:
   ssherpa add --alias NAME --host HOST [--user USER] [--port PORT] [--yes]
@@ -81,7 +80,7 @@ Route Commands:
   ssherpa forward stop SESSION_ID_OR_NAME [--state-dir PATH]
 
 Theme Commands:
-  ssherpa theme [--theme terminal|vivid] [--theme-file PATH]
+  ssherpa theme [--theme-file PATH]
 
 Authorized Keys Commands:
   ssherpa authkeys list [--json]
@@ -251,9 +250,17 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		case ui.ItemJump:
 			return runJump(connectFlagsAsJumpArgs(flags), stdout, stderr)
 		case ui.ItemForward:
-			return runForwardBuilder(flags, inventory, stdout, stderr)
+			code, returnHome := runForwardBuilder(flags, inventory, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemForwardSaved:
-			return runForwardPreset(flags, item, stdout, stderr)
+			code, returnHome := runForwardPreset(flags, item, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemForwardActive:
 			// One-tap stop: item.Token is the session ID; runForward
 			// dispatches to runForwardStop which SIGHUPs the daemon.
@@ -647,9 +654,6 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		scope = append(scope, "composer=off")
 	} else if flags.ComposerKeyName != "" {
 		scope = append(scope, "composer="+flags.ComposerKeyName)
-	}
-	if flags.ThemeName != "" {
-		scope = append(scope, "theme="+flags.ThemeName)
 	}
 	if flags.ThemeFile != "" {
 		scope = append(scope, "theme-file="+flags.ThemeFile)

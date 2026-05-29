@@ -30,7 +30,7 @@ func TestThemeEditorViewHonorsNoColor(t *testing.T) {
 
 func TestThemeEditorAcceptsRawRoleEdit(t *testing.T) {
 	model := newThemeEditorModel(ThemeEditorOptions{})
-	model.cursor = 2 // primary
+	model.cursor = 1 // primary
 	model.startEdit()
 	model.editBuffer = "bold magenta"
 
@@ -51,7 +51,7 @@ func TestThemeEditorAcceptsRawRoleEdit(t *testing.T) {
 
 func TestThemeEditorRejectsInvalidRawRoleEdit(t *testing.T) {
 	model := newThemeEditorModel(ThemeEditorOptions{})
-	model.cursor = 2 // primary
+	model.cursor = 1 // primary
 	model.startEdit()
 	model.editBuffer = "imaginary"
 
@@ -66,14 +66,9 @@ func TestThemeEditorRejectsInvalidRawRoleEdit(t *testing.T) {
 	}
 }
 
-func TestThemeEditorCyclesBaseAndRolePresets(t *testing.T) {
+func TestThemeEditorCyclesRolePresets(t *testing.T) {
 	model := newThemeEditorModel(ThemeEditorOptions{})
-	model.cycleBase(1)
-	if model.base != "vivid" {
-		t.Fatalf("base = %q, want vivid", model.base)
-	}
-
-	model.cursor = 2 // primary
+	model.cursor = 1 // primary
 	model.cycleCurrent(1)
 	if got := model.values[termstyle.RolePrimary]; got != "default" {
 		t.Fatalf("primary = %q, want default", got)
