@@ -129,14 +129,14 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 	}
 
 	items = append(items,
-		Item{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Description: "write a safe Host stanza", Group: "Actions", Badge: "add"},
-		Item{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Description: "update or remove config entries", Group: "Actions", Badge: "edit"},
-		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Description: "build a ProxyJump route", Group: "Actions", Badge: "jump"},
-		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Description: "bind a local SOCKS port", Group: "Actions", Badge: "proxy"},
-		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Description: "build an ssh -L tunnel through an alias", Group: "Actions", Badge: "forward"},
-		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Description: "add, merge, replace, or delete login keys", Group: "Actions", Badge: "keys"},
-		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Description: sessionDescription(opts), Group: "Actions", Badge: "map"},
-		Item{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Description: "preview and save UI palette", Group: "Actions", Badge: "theme"},
+		Item{Kind: ItemAdd, Token: "ADD", Title: "Add new alias", Group: "Actions", Badge: "add"},
+		Item{Kind: ItemEdit, Token: "EDIT", Title: "Edit aliases or delete", Group: "Actions", Badge: "edit"},
+		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Group: "Actions", Badge: "jump"},
+		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Group: "Actions", Badge: "proxy"},
+		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Group: "Actions", Badge: "forward"},
+		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
+		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
+		Item{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Group: "Actions", Badge: "theme"},
 	)
 
 	for _, alias := range aliases {
@@ -365,7 +365,10 @@ func (m pickerModel) renderBody(width int, theme pickerTheme) []string {
 	listWidth := width
 	previewWidth := 0
 	if width >= 100 && len(m.filtered) > 0 {
-		listWidth = clamp(width*62/100, 58, 88)
+		listWidth = max(requiredListWidth(m.items, m.filtered), clamp(width*45/100, 46, 72))
+		if listWidth > width-28 {
+			listWidth = width - 28
+		}
 		previewWidth = width - listWidth - 3
 	}
 
@@ -389,6 +392,26 @@ func (m pickerModel) renderBody(width int, theme pickerTheme) []string {
 		out = append(out, termstyle.PadRight(left, listWidth)+" "+divider+" "+right)
 	}
 	return out
+}
+
+func requiredListWidth(items []Item, filtered []int) int {
+	width := 46
+	for _, index := range filtered {
+		if index < 0 || index >= len(items) {
+			continue
+		}
+		item := items[index]
+		if item.Description != "" || item.Detail != "" {
+			continue
+		}
+		titleWidth := len([]rune(item.Title))
+		if titleWidth == 0 {
+			continue
+		}
+		// renderRow's fixed columns: cursor(2), separators(3), badge(10).
+		width = max(width, 15+titleWidth)
+	}
+	return width
 }
 
 func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
@@ -450,19 +473,21 @@ func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
 		theme.previewTitle(termstyle.Truncate(item.Title, width)),
 	}
 	if item.Badge != "" {
-		lines = append(lines, previewKV(theme, width, "Type", strings.ToUpper(item.Badge)))
+		lines = append(lines, previewKVLines(theme, width, "Type", strings.ToUpper(item.Badge), 2)...)
 	}
 	if item.Token != "" && item.Token != item.Title {
-		lines = append(lines, previewKV(theme, width, "Token", item.Token))
+		lines = append(lines, previewKVLines(theme, width, "Token", item.Token, 2)...)
 	}
 	if item.Description != "" {
-		lines = append(lines, previewKV(theme, width, "Target", item.Description))
+		lines = append(lines, previewKVLines(theme, width, "Target", item.Description, 2)...)
 	}
 	if item.Detail != "" {
-		lines = append(lines, previewKV(theme, width, "Source", item.Detail))
+		lines = append(lines, previewKVLines(theme, width, "Source", item.Detail, 2)...)
 	}
 	lines = append(lines, "")
-	lines = append(lines, theme.muted(termstyle.Truncate(selectionHint(item), width)))
+	for _, line := range wrapPlain(selectionHint(item), width, 2) {
+		lines = append(lines, theme.muted(line))
+	}
 	return lines
 }
 
@@ -500,9 +525,12 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 		badge = string(item.Kind)
 	}
 
-	titleWidth := clamp(width/3, 16, 28)
 	badgeWidth := 10
-	descWidth := max(10, width-len(cursor)-badgeWidth-titleWidth-8)
+	titleWidth := clamp(width/3, 16, 28)
+	if item.Description == "" && item.Detail == "" {
+		titleWidth = max(10, width-len(cursor)-badgeWidth-3)
+	}
+	descWidth := max(10, width-len(cursor)-badgeWidth-titleWidth-3)
 	title := termstyle.Truncate(item.Title, titleWidth)
 	desc := termstyle.Truncate(item.Description, descWidth)
 	if item.Detail != "" && descWidth > 24 {
@@ -653,12 +681,67 @@ func previewKV(theme pickerTheme, width int, key string, value string) string {
 	return keyText + " " + valueText
 }
 
+func previewKVLines(theme pickerTheme, width int, key string, value string, maxLines int) []string {
+	valueWidth := max(0, width-9)
+	wrapped := wrapPlain(value, valueWidth, maxLines)
+	if len(wrapped) == 0 {
+		wrapped = []string{""}
+	}
+	out := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		keyText := strings.Repeat(" ", 8)
+		if i == 0 {
+			keyText = theme.muted(key)
+		}
+		out = append(out, termstyle.PadRight(keyText, 8)+" "+theme.rowDesc(line, false))
+	}
+	return out
+}
+
+func wrapPlain(value string, width int, maxLines int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || width <= 0 || maxLines <= 0 {
+		return nil
+	}
+
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return nil
+	}
+
+	var lines []string
+	current := ""
+	for i := 0; i < len(words); i++ {
+		word := words[i]
+		if current == "" {
+			current = word
+		} else if len([]rune(current))+1+len([]rune(word)) <= width {
+			current += " " + word
+		} else {
+			lines = append(lines, current)
+			current = word
+			if len(lines) == maxLines-1 {
+				remaining := strings.Join(words[i:], " ")
+				lines = append(lines, termstyle.Truncate(remaining, width))
+				break
+			}
+		}
+	}
+	if current != "" && len(lines) < maxLines {
+		lines = append(lines, current)
+	}
+	for i, line := range lines {
+		lines[i] = termstyle.Truncate(line, width)
+	}
+	return lines
+}
+
 func selectionHint(item Item) string {
 	switch item.Kind {
 	case ItemAlias:
 		return "Connects with local OpenSSH under supervised mode."
 	case ItemAdd:
-		return "Creates a new Host stanza with safe write behavior."
+		return "Adds a new SSH alias to your config."
 	case ItemEdit:
 		return "Updates or removes existing Host entries."
 	case ItemJump:

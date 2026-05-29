@@ -69,8 +69,8 @@ func TestBuildItemsIncludesSessionCounts(t *testing.T) {
 	if session.Kind != ItemSessions {
 		t.Fatalf("items[6].Kind = %q, want sessions", session.Kind)
 	}
-	if session.Description != "2 active sessions (4 recorded)" {
-		t.Fatalf("session description = %q", session.Description)
+	if session.Description != "" {
+		t.Fatalf("session action description = %q, want empty", session.Description)
 	}
 }
 
@@ -118,6 +118,28 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 	}
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("view contains ANSI escapes with NoColor: %q", text)
+	}
+}
+
+func TestPickerViewOmitsActionRowDescriptions(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 120
+
+	text := model.View().Content
+	for _, unwanted := range []string{
+		"write a safe Host stanza",
+		"add, merge, replace, or delete login keys",
+		"preview and save UI palette",
+	} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("view contains action row description %q:\n%s", unwanted, text)
+		}
+	}
+	if !strings.Contains(text, "Adds a new SSH alias to your config.") {
+		t.Fatalf("selection detail missing:\n%s", text)
 	}
 }
 
@@ -209,5 +231,82 @@ func TestPickerViewRendersWideSelectionPreview(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view = %q, want substring %q", text, want)
 		}
+	}
+}
+
+func TestPickerWideLayoutGivesSelectionMoreWidth(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 120
+
+	text := model.View().Content
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "SELECTION") {
+			if got := strings.Index(line, "|"); got != 55 {
+				t.Fatalf("divider column = %d, want 55 in 120-column layout:\n%s", got, text)
+			}
+			return
+		}
+	}
+	t.Fatalf("selection column not rendered:\n%s", text)
+}
+
+func TestPickerWideLayoutKeepsActionTitlesComplete(t *testing.T) {
+	model := newPickerModel(BuildItems(nil), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 100
+
+	text := model.View().Content
+	for _, title := range []string{
+		"Edit aliases or delete",
+		"Jump via intermediate hops",
+		"Open port-forward tunnel",
+		"Sessions and route map",
+	} {
+		if !strings.Contains(text, title) {
+			t.Fatalf("missing full action title %q:\n%s", title, text)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "[EDIT]") || strings.Contains(line, "[JUMP]") || strings.Contains(line, "[FORWARD]") || strings.Contains(line, "[MAP]") {
+			if strings.Contains(line, "~") {
+				t.Fatalf("action title was truncated:\n%s", text)
+			}
+		}
+	}
+}
+
+func TestPickerSelectionHintWrapsToTwoLines(t *testing.T) {
+	model := newPickerModel(BuildItems(nil), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 120
+	model.cursor = 4 // Open port-forward tunnel
+
+	text := model.View().Content
+	if strings.Contains(text, "ports~") {
+		t.Fatalf("selection hint was truncated instead of wrapped:\n%s", text)
+	}
+	if !strings.Contains(text, "Builds an ssh -L port-forward tunnel") || !strings.Contains(text, "optional jump hop.") {
+		t.Fatalf("selection hint did not wrap across the preview pane:\n%s", text)
+	}
+}
+
+func TestPickerViewUsesFullAvailableWidth(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 180
+
+	text := model.View().Content
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 || len(lines[1]) != 180 {
+		t.Fatalf("rule width = %d, want 180:\n%s", len(lines[1]), text)
 	}
 }
