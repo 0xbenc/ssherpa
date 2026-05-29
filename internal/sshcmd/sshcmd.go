@@ -33,6 +33,7 @@ type SFTPTransfer struct {
 	Direction  SFTPTransferDirection
 	Alias      string
 	Config     string
+	Hops       []string
 	LocalPath  string
 	RemotePath string
 	Batch      string
@@ -150,6 +151,9 @@ func BuildSFTP(binary string, transfer SFTPTransfer) Command {
 	argv := []string{binary, "-b", "-"}
 	if strings.TrimSpace(transfer.Config) != "" {
 		argv = append(argv, "-F", transfer.Config)
+	}
+	if len(transfer.Hops) > 0 {
+		argv = append(argv, "-J", strings.Join(transfer.Hops, ","))
 	}
 	argv = append(argv, transfer.Alias)
 	return Command{Argv: argv}

@@ -78,6 +78,7 @@ type connectOptions struct {
 	Print     bool
 	Supervise bool
 	StateDir  string
+	Config    string
 	Watchdog  session.WatchdogOptions
 	Composer  session.ComposerOptions
 	Reconnect session.ReconnectOptions
@@ -96,6 +97,7 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 		Print:     flags.Print,
 		Supervise: !flags.Direct,
 		StateDir:  flags.StateDir,
+		Config:    flags.Config,
 		Watchdog: session.WatchdogOptions{
 			WarnThreshold:   flags.LatencyWarn,
 			DisconnectAfter: flags.LatencyDisconnect,
@@ -1348,6 +1350,7 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			Stderr:    stderr,
 			Watchdog:  options.Watchdog,
 			Composer:  options.Composer,
+			Overlay:   overlayTransferOptions(options, metadata, stdout, stderr),
 			Reconnect: options.Reconnect,
 			ThemeName: options.ThemeName,
 			ThemeFile: options.ThemeFile,

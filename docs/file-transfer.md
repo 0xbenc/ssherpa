@@ -5,8 +5,9 @@
 > markers, persist the latest observed state on the session record, and show it
 > in the session map. Public `send` / `receive` commands and the home-page
 > **Send file** action now cover the direct SFTP path, including local and
-> remote folder choosers plus a post-send confirmation for send. Overlay verbs
-> and deep in-band/wormhole transports are still design.
+> remote folder choosers plus a post-send confirmation for send. The session
+> overlay has a direct-SFTP `send` action wired for interactive sessions.
+> Overlay `receive` and deep in-band/wormhole transports are still design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -383,7 +384,9 @@ recorded lineage rather than an invisible side effect.
    the local picker and destination confirmation. Fast value, common topology.
    **Partially implemented:** public `send` / `receive` SFTP commands and the
    home-page **Send file** action exist, with local and remote folder choosers
-   plus a post-send confirmation for send; ControlMaster reuse is still pending.
+   plus a post-send confirmation for send. The `Ctrl-]` overlay can launch send
+   against the current interactive session and start the remote picker from the
+   tracked remote cwd. ControlMaster reuse is still pending.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa

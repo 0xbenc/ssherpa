@@ -99,6 +99,15 @@ func TestBuildSFTP(t *testing.T) {
 	}
 }
 
+func TestBuildSFTPWithJumpHops(t *testing.T) {
+	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", Hops: []string{"bastion", "edge"}})
+
+	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00-J\x00bastion,edge\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
 func TestBuildSFTPBatch(t *testing.T) {
 	send := SFTPTransfer{
 		Direction:  SFTPTransferSend,

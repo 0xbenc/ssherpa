@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
@@ -31,6 +32,7 @@ type transferFlags struct {
 	Select     string
 	LocalPath  string
 	RemotePath string
+	Hops       []string
 	SFTPBinary string
 	NoColor    bool
 	ThemeName  string
@@ -302,6 +304,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		Direction:  direction,
 		Alias:      alias.Name,
 		Config:     flags.Config,
+		Hops:       append([]string(nil), flags.Hops...),
 		LocalPath:  localPath,
 		RemotePath: remotePath,
 	}, true, 0
@@ -406,6 +409,92 @@ func showSendComplete(stderr io.Writer, flags connectFlags, transfer sshcmd.SFTP
 		RemotePath:  transfer.RemotePath,
 		Size:        humanBytes(size),
 	})
+}
+
+func overlayTransferOptions(options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) session.OverlayOptions {
+	if metadata.TargetAlias == "" || metadata.Kind != "" {
+		return session.OverlayOptions{}
+	}
+	return session.OverlayOptions{
+		Send: func(req session.OverlayTransferRequest) int {
+			return runOverlaySend(options, req, stdout, stderr)
+		},
+	}
+}
+
+func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, stdout io.Writer, stderr io.Writer) int {
+	alias := strings.TrimSpace(req.TargetAlias)
+	if alias == "" {
+		fmt.Fprintln(stderr, "ssherpa: overlay send requires a target alias")
+		return 1
+	}
+
+	flags := transferFlags{
+		inventoryFlags: inventoryFlags{Config: options.Config},
+		Hops:           append([]string(nil), req.Hops...),
+		NoColor:        options.NoColor,
+		ThemeName:      options.ThemeName,
+		ThemeFile:      options.ThemeFile,
+	}
+	localPath, ok, err := pickLocalFile(stderr, transferFilePickerOptions(flags), ".")
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: file picker failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stderr, "[skipped] send cancelled")
+		return 0
+	}
+	expanded, err := expandLocalPath(localPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	localInfo, err := os.Stat(expanded)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: local file %s: %v\n", expanded, err)
+		return 1
+	}
+	if localInfo.IsDir() {
+		fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not implemented yet\n", expanded)
+		return 1
+	}
+
+	start := strings.TrimSpace(req.RemoteCWD)
+	if start == "" {
+		start = "."
+	}
+	dir, ok, err := pickRemoteDirectory(stderr, transferFilePickerOptions(flags), flags, alias, start)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: remote folder picker failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stderr, "[skipped] send cancelled")
+		return 0
+	}
+
+	flags.LocalPath = expanded
+	flags.RemotePath = remoteJoin(dir, filepath.Base(expanded))
+	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, flags, hostlist.Alias{Name: alias}, stdout, stderr)
+	if code == 0 && attempted {
+		if err := ui.ShowTransferComplete(context.Background(), ui.TransferCompleteOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			NoColor:     options.NoColor,
+			ThemeName:   options.ThemeName,
+			ThemeFile:   options.ThemeFile,
+			LocalPath:   transfer.LocalPath,
+			Alias:       transfer.Alias,
+			RemotePath:  transfer.RemotePath,
+			Size:        humanBytes(localInfo.Size()),
+		}); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: send confirmation failed: %v\n", err)
+			return 1
+		}
+	}
+	return code
 }
 
 type filePickerOptions struct {
@@ -611,7 +700,7 @@ func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transfe
 }
 
 func listRemoteDirectories(flags transferFlags, alias string, dir string) (remoteDirectoryListing, error) {
-	transfer := sshcmd.SFTPTransfer{Alias: alias, Config: flags.Config}
+	transfer := sshcmd.SFTPTransfer{Alias: alias, Config: flags.Config, Hops: append([]string(nil), flags.Hops...)}
 	cmd := sshcmd.BuildSFTP(resolveSFTPBinary(flags), transfer)
 	batch := fmt.Sprintf("cd %s\npwd\nls -la\n", quoteSFTPBatchPath(dir))
 	var stdout, stderr strings.Builder

@@ -357,6 +357,92 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedOverlaySendActionDoesNotReachRemote(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{OverlayHotkey, 's', 'z'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	requests := make(chan OverlayTransferRequest, 1)
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=1 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod", Hops: []string{"bastion"}, Route: []string{"bastion", "prod"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+			Overlay: OverlayOptions{
+				Send: func(req OverlayTransferRequest) int {
+					requests <- req
+					return 0
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "z" {
+		t.Fatalf("remote input = %q, want only post-send byte", string(got))
+	}
+	select {
+	case req := <-requests:
+		if req.Direction != "send" || req.TargetAlias != "prod" || !reflect.DeepEqual(req.Hops, []string{"bastion"}) {
+			t.Fatalf("request = %#v, want send to prod through bastion", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("overlay send callback was not invoked")
+	}
+	if !strings.Contains(stdout.String(), "s send") {
+		t.Fatalf("stdout = %q, want send action in overlay help", stdout.String())
+	}
+}
+
+func TestOverlayTransferRequestIncludesRemoteState(t *testing.T) {
+	stateDir := t.TempDir()
+	record := state.SessionRecord{
+		ID:           "session-20260529T120000Z-abcdef",
+		TargetAlias:  "prod",
+		Hops:         []string{"bastion"},
+		Route:        []string{"bastion", "prod"},
+		RemoteHost:   "prod.example.com",
+		RemoteCWD:    "/srv/app",
+		RemotePrompt: state.RemotePromptPrompt,
+	}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("WriteRecord returned error: %v", err)
+	}
+
+	req := overlayTransferRequest("send", stateDir, record.ID, OverlayTransferRequest{})
+	if req.Direction != "send" || req.SessionID != record.ID || req.StateDir != stateDir {
+		t.Fatalf("request identity = %#v", req)
+	}
+	if req.TargetAlias != record.TargetAlias || req.RemoteHost != record.RemoteHost || req.RemoteCWD != record.RemoteCWD || req.RemotePrompt != record.RemotePrompt {
+		t.Fatalf("request remote state = %#v, want record values", req)
+	}
+	if !reflect.DeepEqual(req.Hops, record.Hops) || !reflect.DeepEqual(req.Route, record.Route) {
+		t.Fatalf("request route = hops %#v route %#v, want %#v %#v", req.Hops, req.Route, record.Hops, record.Route)
+	}
+}
+
 func TestRunSupervisedEscapeRopeTearsDownSession(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

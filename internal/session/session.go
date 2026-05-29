@@ -71,6 +71,7 @@ type Options struct {
 	Now       func() time.Time
 	Watchdog  WatchdogOptions
 	Composer  ComposerOptions
+	Overlay   OverlayOptions
 	Reconnect ReconnectOptions
 	Theme     termstyle.Theme
 	ThemeName string
@@ -165,6 +166,25 @@ func (c ComposerOptions) hotkeyName() string {
 	return c.HotkeyName
 }
 
+type OverlayTransferRequest struct {
+	Direction    string
+	SessionID    string
+	StateDir     string
+	TargetAlias  string
+	Hops         []string
+	Route        []string
+	RemoteHost   string
+	RemoteCWD    string
+	RemotePrompt string
+}
+
+type OverlayTransferFunc func(OverlayTransferRequest) int
+
+type OverlayOptions struct {
+	Send    OverlayTransferFunc
+	Receive OverlayTransferFunc
+}
+
 type WatchdogOptions struct {
 	WarnThreshold   time.Duration
 	DisconnectAfter time.Duration
@@ -218,18 +238,36 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		return 1
 	}
 	record := buildRecord(command, metadata, now(), env, opts.RecordID)
+	overlayBase := overlayTransferRequestFromRecord("", stateDir, record)
 	var recordMu sync.Mutex
 
 	// Detached mode has no PTY consumer — skip raw mode entirely.
 	// makeRawIfTerminal handles a non-tty stdin gracefully too, but
 	// explicitly skipping makes the daemon's intent obvious.
+	restoreTerminal := func() {}
+	suspendTerminal := func(fn func()) {
+		fn()
+	}
 	if !opts.Detached {
 		restore, err := makeRawIfTerminal(stdin)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
 			return 1
 		}
-		defer restore()
+		restoreTerminal = restore
+		defer func() { restoreTerminal() }()
+		suspendTerminal = func(fn func()) {
+			restoreTerminal()
+			defer func() {
+				restore, err := makeRawIfTerminal(stdin)
+				if err != nil {
+					fmt.Fprintf(stderr, "ssherpa: restore raw terminal mode: %v\n", err)
+					return
+				}
+				restoreTerminal = restore
+			}()
+			fn()
+		}
 	}
 
 	// The supervisor swaps these per attempt as the reconnect loop
@@ -294,7 +332,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		if !inputStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go copyInput(ptmxRefShared, stdin, output, stateDir, record.ID, opts.Composer, theme, pullRope, inputDone)
+		go copyInput(ptmxRefShared, stdin, output, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, suspendTerminal, inputDone)
 	}
 	if opts.Detached {
 		// In detached mode there is no stdin to forward and no
@@ -518,7 +556,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, pullRope func(), done <-chan struct{}) {
+func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir string, currentID string, overlayBase OverlayTransferRequest, composer ComposerOptions, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -528,7 +566,7 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir 
 		if n > 0 {
 			switch {
 			case buf[0] == OverlayHotkey:
-				showSessionOverlay(stdin, output, stateDir, currentID, theme, pullRope, time.Now())
+				showSessionOverlay(stdin, output, stateDir, currentID, overlayBase, overlay, theme, pullRope, suspendTerminal, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
 				if ptmx := ptmxRef.get(); ptmx != nil {
 					showComposer(stdin, output, ptmx, composer, theme)
@@ -548,12 +586,14 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir 
 	}
 }
 
-func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme, pullRope func(), openedAt time.Time) {
+func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, overlayBase OverlayTransferRequest, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), openedAt time.Time) {
 	output.mu.Lock()
 	defer output.mu.Unlock()
 
-	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
-	defer func() { clearSessionOverlay(output.w, frame) }()
+	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+	clearAndReturn := func() {
+		clearSessionOverlay(output.w, frame)
+	}
 
 	pull := func() {
 		if pullRope != nil {
@@ -582,11 +622,12 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 			// cancels back to the session map.
 			if key == 'X' {
 				pull()
+				clearAndReturn()
 				return
 			}
 			confirming = false
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
 			continue
 		}
 
@@ -596,10 +637,12 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 				lastTap = time.Now()
 				if taps >= escapeRopePanicTaps {
 					pull()
+					clearAndReturn()
 					return
 				}
 				continue
 			}
+			clearAndReturn()
 			return // a single, settled hotkey press closes the overlay
 		}
 		// Any other key breaks a panic-tap streak.
@@ -607,6 +650,7 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 
 		switch key {
 		case 'q', 'Q', '\r', '\n', 0x1b, 0x03:
+			clearAndReturn()
 			return
 		case 'X':
 			// Escape rope: confirm before tearing down every layer.
@@ -615,9 +659,55 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 			frame = drawEscapeConfirm(output.w, stdin, theme)
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+		case 's', 'S':
+			if overlay.Send == nil {
+				clearSessionOverlay(output.w, frame)
+				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa send", "send is not available for this session")
+				continue
+			}
+			clearSessionOverlay(output.w, frame)
+			runOverlayTransfer(overlay.Send, overlayTransferRequest("send", stateDir, currentID, overlayBase), suspendTerminal)
+			return
 		}
 	}
+}
+
+func runOverlayTransfer(fn OverlayTransferFunc, req OverlayTransferRequest, suspendTerminal func(func())) {
+	if suspendTerminal == nil {
+		_ = fn(req)
+		return
+	}
+	suspendTerminal(func() {
+		_ = fn(req)
+	})
+}
+
+func overlayTransferRequest(direction string, stateDir string, currentID string, fallback OverlayTransferRequest) OverlayTransferRequest {
+	req := fallback
+	req.Direction = direction
+	req.SessionID = currentID
+	req.StateDir = stateDir
+	record, err := state.ReadRecord(stateDir, currentID)
+	if err != nil {
+		return req
+	}
+	return overlayTransferRequestFromRecord(direction, stateDir, record)
+}
+
+func overlayTransferRequestFromRecord(direction string, stateDir string, record state.SessionRecord) OverlayTransferRequest {
+	req := OverlayTransferRequest{
+		Direction:    direction,
+		SessionID:    record.ID,
+		StateDir:     stateDir,
+		TargetAlias:  record.TargetAlias,
+		Hops:         append([]string(nil), record.Hops...),
+		Route:        append([]string(nil), record.Route...),
+		RemoteHost:   record.RemoteHost,
+		RemoteCWD:    record.RemoteCWD,
+		RemotePrompt: record.RemotePrompt,
+	}
+	return req
 }
 
 func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overlayFrame {
@@ -625,6 +715,15 @@ func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overl
 		overlayTitle("ssherpa escape rope", theme),
 		theme.Style(termstyle.RoleWarning, "Disconnect ALL nested sessions and return to the outermost shell?"),
 		overlayHelp("press X to confirm   any other key cancels", theme),
+	}
+	return drawBottomFrame(w, stdin, lines)
+}
+
+func drawOverlayNotice(w io.Writer, stdin *os.File, theme termstyle.Theme, title string, message string) overlayFrame {
+	lines := []string{
+		overlayTitle(title, theme),
+		theme.Style(termstyle.RoleWarning, message),
+		overlayHelp("press any key to return", theme),
 	}
 	return drawBottomFrame(w, stdin, lines)
 }
@@ -651,9 +750,17 @@ func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
 	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
 }
 
-func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
+func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, overlay OverlayOptions, theme termstyle.Theme) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
-	help := fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope   %sx3 panic   local only", OverlayHotkeyName, OverlayHotkeyName)
+	actions := []string{fmt.Sprintf("%s/q/Esc close", OverlayHotkeyName), "r refresh"}
+	if overlay.Send != nil {
+		actions = append(actions, "s send")
+	}
+	if overlay.Receive != nil {
+		actions = append(actions, "v receive")
+	}
+	actions = append(actions, "X escape rope", fmt.Sprintf("%sx3 panic", OverlayHotkeyName), "local only")
+	help := strings.Join(actions, "   ")
 	lines := sessionOverlayLines(stateDir, currentID, theme, width, height, help)
 
 	if !terminalOutput {
