@@ -1282,7 +1282,7 @@ func attemptOnce(ac attemptContext) error {
 
 	outputDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(ac.output, ptmx)
+		copyOutput(ac, ptmx)
 		close(outputDone)
 	}()
 
@@ -1301,11 +1301,40 @@ func attemptOnce(ac attemptContext) error {
 	stopWatchdog()
 	stopSignals()
 	// Close ptmx explicitly before waiting for the output-copy goroutine
-	// to drain — io.Copy(ac.output, ptmx) only returns when its source
-	// hits EOF, and a still-open ptmx never does.
+	// to drain. The reader only returns when its source hits EOF, and
+	// a still-open ptmx never does.
 	_ = ptmx.Close()
 	<-outputDone
 	return waitErr
+}
+
+func copyOutput(ac attemptContext, ptmx *os.File) {
+	tracker := newOSCTracker()
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := ptmx.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			observed, changed := tracker.Observe(chunk)
+			_, _ = ac.output.Write(chunk)
+			if changed {
+				recordRemoteState(ac, observed)
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func recordRemoteState(ac attemptContext, observed remoteState) {
+	ac.recordMu.Lock()
+	if applyRemoteStateToRecord(ac.record, observed) {
+		// Best effort: losing a live cwd/prompt update should not interrupt
+		// the user's SSH stream.
+		_ = state.WriteRecord(ac.stateDir, *ac.record)
+	}
+	ac.recordMu.Unlock()
 }
 
 // shouldRetry decides whether the supervisor's reconnect loop should

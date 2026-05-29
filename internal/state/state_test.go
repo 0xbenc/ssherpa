@@ -23,6 +23,9 @@ func TestWriteReadAndListRecords(t *testing.T) {
 		LocalPID:         100,
 		SSHPID:           101,
 		RunnerMode:       "supervised",
+		RemoteHost:       "prod.example.com",
+		RemoteCWD:        "/srv/app",
+		RemotePrompt:     RemotePromptPrompt,
 		DisconnectReason: "latency unhealthy for 30s",
 		Events: []SessionEvent{{
 			Time:            startedA.Add(time.Minute),
@@ -66,6 +69,9 @@ func TestWriteReadAndListRecords(t *testing.T) {
 	}
 	if got.DisconnectReason != first.DisconnectReason || len(got.Events) != 1 || got.Events[0].Type != "latency_disconnect" {
 		t.Fatalf("record health fields = %#v, want disconnect event", got)
+	}
+	if got.RemoteHost != first.RemoteHost || got.RemoteCWD != first.RemoteCWD || got.RemotePrompt != first.RemotePrompt {
+		t.Fatalf("record remote fields = %#v, want observed remote state", got)
 	}
 
 	records, err := ListRecords(dir)

@@ -187,6 +187,40 @@ func TestMapViewShowsProxyDetails(t *testing.T) {
 	}
 }
 
+func TestMapViewShowsRemoteCWDAndPrompt(t *testing.T) {
+	record := state.SessionRecord{
+		ID:           "remote-state",
+		TargetAlias:  "prod",
+		Route:        []string{"prod"},
+		StartedAt:    time.Unix(1700000000, 0),
+		RemoteHost:   "prod.example.com",
+		RemoteCWD:    "/srv/app",
+		RemotePrompt: state.RemotePromptPrompt,
+	}
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    96,
+		Height:   20,
+	})
+	for _, want := range []string{
+		"REMOTE cwd prod.example.com:/srv/app  prompt idle",
+	} {
+		if !strings.Contains(view.Content, want) {
+			t.Fatalf("view missing %q:\n%s", want, view.Content)
+		}
+	}
+}
+
+func TestRemoteSummaryShowsRunningPrompt(t *testing.T) {
+	record := state.SessionRecord{RemotePrompt: state.RemotePromptRunning}
+	if got, want := RemoteSummary(record), "prompt running"; got != want {
+		t.Fatalf("RemoteSummary = %q, want %q", got, want)
+	}
+}
+
 func TestFormatDisplayRouteKeepsInheritedOrigin(t *testing.T) {
 	if got := FormatDisplayRoute([]string{"laptop", "bastion", "prod"}); got != "here -> laptop -> bastion -> prod" {
 		t.Fatalf("FormatDisplayRoute = %q", got)

@@ -1,9 +1,9 @@
 # File Transfer ("Beam")
 
-> **Status: design.** Nothing in this document is implemented yet. It is the
-> agreed architecture for adding a file-transfer action to the supervised
-> session, reachable from the `Ctrl-]` overlay alongside the session map, the
-> composer, and the escape rope.
+> **Status: foundation in progress.** Phase 0 passive stream sniffing is
+> implemented: supervised sessions observe OSC 7 cwd markers and OSC 133 prompt
+> markers, persist the latest observed state on the session record, and show it
+> in the session map. File-transfer actions and transports are still design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -375,6 +375,7 @@ recorded lineage rather than an invisible side effect.
 
 0. **Sniffers.** OSC 7 (cwd) and OSC 133 (prompt state) passive trackers on the
    output stream. Low risk, independently useful, the foundation for everything.
+   **Implemented.**
 1. **Transport A.** scp/sftp over an auto-enabled `ControlMaster` socket, with
    the local picker and destination confirmation. Fast value, common topology.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated

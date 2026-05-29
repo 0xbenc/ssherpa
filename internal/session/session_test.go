@@ -117,6 +117,81 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedRecordsRemoteCWDAndPromptState(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '\033]7;file://deep.example.com/var/www/app\007\033]133;B\033\\ready'`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ready") {
+		t.Fatalf("stdout = %q, want remote stream preserved", stdout.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.RemoteHost != "deep.example.com" || record.RemoteCWD != "/var/www/app" || record.RemotePrompt != RemotePromptPrompt {
+		t.Fatalf("remote state = host %q cwd %q prompt %q, want observed OSC state", record.RemoteHost, record.RemoteCWD, record.RemotePrompt)
+	}
+}
+
+func TestRunSupervisedRecordsRunningPromptState(t *testing.T) {
+	var stdout bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '\033]133;C\007busy'`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0", code)
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].RemotePrompt != RemotePromptRunning {
+		t.Fatalf("records = %#v, want running prompt state", records)
+	}
+}
+
 // TestRunSupervisedDetachedMode validates Phase 2b's daemon path at
 // the session level: with Options.Detached the supervisor skips PTY
 // raw mode, never starts copyInput, accepts a pre-assigned RecordID,

@@ -35,6 +35,10 @@ const (
 	// lifecycle with tunnels but carries a ProxySpec instead of a
 	// ForwardSpec.
 	KindProxy = "proxy"
+
+	RemotePromptPrompt      = "prompt"
+	RemotePromptRunning     = "running"
+	RemotePromptPromptStart = "prompt_start"
 )
 
 type SessionRecord struct {
@@ -48,6 +52,9 @@ type SessionRecord struct {
 	Kind             string         `json:"kind,omitempty"`
 	Forward          *ForwardSpec   `json:"forward,omitempty"`
 	Proxy            *ProxySpec     `json:"proxy,omitempty"`
+	RemoteHost       string         `json:"remote_host,omitempty"`
+	RemoteCWD        string         `json:"remote_cwd,omitempty"`
+	RemotePrompt     string         `json:"remote_prompt,omitempty"`
 	StartedAt        time.Time      `json:"started_at"`
 	EndedAt          *time.Time     `json:"ended_at,omitempty"`
 	LocalPID         int            `json:"local_pid"`

@@ -326,6 +326,9 @@ func appendNodeLines(lines []string, node state.SessionNode, prefix string, last
 	if proxy := ProxySummary(record); proxy != "" {
 		lines = append(lines, fmt.Sprintf("%s   proxy: %s", prefix, proxy))
 	}
+	if remote := RemoteSummary(record); remote != "" {
+		lines = append(lines, fmt.Sprintf("%s   remote: %s", prefix, remote))
+	}
 	if health := HealthSummary(record); health != "" {
 		lines = append(lines, fmt.Sprintf("%s   health: %s", prefix, health))
 	}
@@ -378,6 +381,9 @@ func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string
 	}
 	if proxy := ProxySummary(record); proxy != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "PROXY ")+theme.Style(termstyle.RoleForeground, proxy), width))
+	}
+	if remote := RemoteSummary(record); remote != "" {
+		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "REMOTE ")+theme.Style(termstyle.RoleForeground, remote), width))
 	}
 	if health := HealthSummary(record); health != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleWarning, "health ")+theme.Style(termstyle.RoleForeground, health), width))
@@ -469,6 +475,34 @@ func ProxySummary(record state.SessionRecord) string {
 		summary += "  (" + strings.Join(parts, ", ") + ")"
 	}
 	return summary
+}
+
+func RemoteSummary(record state.SessionRecord) string {
+	var parts []string
+	if record.RemoteCWD != "" {
+		cwd := record.RemoteCWD
+		if record.RemoteHost != "" {
+			cwd = record.RemoteHost + ":" + cwd
+		}
+		parts = append(parts, "cwd "+cwd)
+	}
+	if prompt := promptSummary(record.RemotePrompt); prompt != "" {
+		parts = append(parts, "prompt "+prompt)
+	}
+	return strings.Join(parts, "  ")
+}
+
+func promptSummary(value string) string {
+	switch value {
+	case state.RemotePromptPrompt:
+		return "idle"
+	case state.RemotePromptRunning:
+		return "running"
+	case state.RemotePromptPromptStart:
+		return "drawing"
+	default:
+		return ""
+	}
 }
 
 func forwardEndpoint(host string, port int) string {
