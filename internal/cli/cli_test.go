@@ -1208,7 +1208,7 @@ func TestRunSessionListShowAndPrune(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("session show returned %d, want 0", code)
 	}
-	assertContains(t, showStdout.String(), "route:\tbastion -> prod")
+	assertContains(t, showStdout.String(), "route:\there -> bastion -> prod")
 	assertContains(t, showStdout.String(), "exit_code:\t0")
 	assertContains(t, showStdout.String(), "disconnect_reason:\tlatency unhealthy")
 	assertContains(t, showStdout.String(), "events:")
@@ -1279,8 +1279,8 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 		t.Fatalf("session map returned %d, want 0", code)
 	}
 	assertContains(t, stdout.String(), "Session route map")
-	assertContains(t, stdout.String(), "+- prod [active]")
-	assertContains(t, stdout.String(), "route: bastion -> prod")
+	assertContains(t, stdout.String(), "+- prod [jump] [active]")
+	assertContains(t, stdout.String(), "path: here -> bastion -> prod")
 	assertNotContains(t, stdout.String(), "bastion [exit 0]")
 
 	stdout.Reset()

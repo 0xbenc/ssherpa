@@ -206,7 +206,7 @@ ssherpa forward --select pgbox --local 5433 --remote db.internal:5432 --through 
 
 `forward` opens a local TCP port-forward (the `ssh -L` flag) and runs it
 under the same supervised PTY as the other commands — so the tunnel
-shows up in `ssherpa session map` with a `[tunnel]` badge and the
+shows up in `ssherpa session map` with a `[forward]` badge and the
 escape rope tears it down alongside any interactive sessions.
 
 Save reusable forward presets in ssherpa's state catalog:

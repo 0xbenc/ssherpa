@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/sessionview"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 const sessionUsage = `Usage:
@@ -128,6 +131,47 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	sessionview.WriteMapWithOptions(stdout, stateDir, records, sessionview.MapOptions{IncludeExited: flags.All})
 	return 0
+}
+
+func runSessionMapViewer(flags connectFlags, output io.Writer, stderr io.Writer) (int, bool) {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1, false
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: map sessions: %v\n", err)
+		return 1, false
+	}
+	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    flags.ThemeName,
+		File:    flags.ThemeFile,
+		NoColor: flags.NoColor,
+		Env:     os.Environ(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1, false
+	}
+	err = sessionview.ShowMap(context.Background(), sessionview.ShowOptions{
+		Input:       os.Stdin,
+		Output:      output,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		View: sessionview.ViewOptions{
+			Title:    "ssherpa session map",
+			StateDir: stateDir,
+			Records:  records,
+			Map:      sessionview.MapOptions{},
+			Theme:    theme.WithNoColor(theme.NoColor || flags.NoColor),
+			Help:     "press any key to return",
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: session map failed: %v\n", err)
+		return 1, false
+	}
+	return 0, true
 }
 
 func runSessionShow(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -264,7 +308,7 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 	fmt.Fprintf(stdout, "status:\t%s\n", record.Status())
 	fmt.Fprintf(stdout, "target:\t%s\n", defaultString(record.TargetAlias, "-"))
 	fmt.Fprintf(stdout, "depth:\t%d\n", record.Depth)
-	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatRoute(record.Route))
+	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatDisplayRoute(record.Route))
 	fmt.Fprintf(stdout, "hops:\t%s\n", sessionview.FormatRoute(record.Hops))
 	fmt.Fprintf(stdout, "started:\t%s\n", record.StartedAt.Local().Format(time.RFC3339))
 	fmt.Fprintf(stdout, "ended:\t%s\n", formatOptionalTime(record.EndedAt))

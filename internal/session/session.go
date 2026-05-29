@@ -641,13 +641,11 @@ func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
 
 func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
-	lines := sessionOverlayLines(stateDir, currentID)
-	lines = styleOverlayLines(lines, theme)
-	lines = append(lines, "", overlayHelp(fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope (quit all layers, confirm)   %sx3 panic   local only", OverlayHotkeyName, OverlayHotkeyName), theme))
+	help := fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope   %sx3 panic   local only", OverlayHotkeyName, OverlayHotkeyName)
+	lines := sessionOverlayLines(stateDir, currentID, theme, width, height, help)
 
 	if !terminalOutput {
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, overlayTitle("ssherpa session overlay", theme))
 		for _, line := range lines {
 			fmt.Fprintln(w, line)
 		}
@@ -786,27 +784,6 @@ func isComposerPrintable(key byte) bool {
 	return key == '\t' || (key >= 0x20 && key <= 0x7e)
 }
 
-func styleOverlayLines(lines []string, theme termstyle.Theme) []string {
-	styled := append([]string(nil), lines...)
-	for i, line := range styled {
-		switch {
-		case i == 0:
-			styled[i] = overlayTitle(line, theme)
-		case strings.HasPrefix(line, "state:"):
-			styled[i] = theme.Style(termstyle.RoleMuted, line)
-		case strings.HasPrefix(line, "active:"):
-			styled[i] = theme.Style(termstyle.RoleSuccess, line)
-		case strings.Contains(line, "[active]"):
-			styled[i] = theme.Style(termstyle.RoleSuccess, line)
-		case strings.Contains(line, "[exit"):
-			styled[i] = theme.Style(termstyle.RoleMuted, line)
-		case strings.Contains(line, "current"):
-			styled[i] = theme.Style(termstyle.RolePrimary, line)
-		}
-	}
-	return styled
-}
-
 func overlayTitle(value string, theme termstyle.Theme) string {
 	return theme.Style(termstyle.RoleTitle, value)
 }
@@ -819,20 +796,28 @@ func overlayHelp(value string, theme termstyle.Theme) string {
 	return theme.Style(termstyle.RoleMuted, value)
 }
 
-func sessionOverlayLines(stateDir string, currentID string) []string {
+func sessionOverlayLines(stateDir string, currentID string, theme termstyle.Theme, width int, height int, help string) []string {
 	records, err := state.ListRecords(stateDir)
 	if err != nil {
-		return []string{
-			"ssherpa session map (local overlay)",
-			"state: " + stateDir,
-			"error: " + err.Error(),
+		lines := []string{
+			overlayTitle("ssherpa session map", theme),
+			overlayField("state", stateDir, theme),
+			theme.Style(termstyle.RoleDanger, "error: "+err.Error()),
+			overlayHelp(help, theme),
 		}
+		return lines
 	}
-	lines := sessionview.MapLinesWithOptions(stateDir, records, sessionview.MapOptions{CurrentID: currentID})
-	if len(lines) > 0 {
-		lines[0] = "ssherpa session map (local overlay)"
-	}
-	return lines
+	view := sessionview.MapView(sessionview.ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: stateDir,
+		Records:  records,
+		Map:      sessionview.MapOptions{CurrentID: currentID},
+		Theme:    theme,
+		Width:    width,
+		Height:   height - 1,
+		Help:     help,
+	})
+	return strings.Split(view.Content, "\n")
 }
 
 const (

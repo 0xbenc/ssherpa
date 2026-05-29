@@ -311,8 +311,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			return code
 		case ui.ItemSessions:
-			code := runSession([]string{"map", "--state-dir", flags.StateDir}, stdout, stderr)
-			if code == 0 && flags.Select == "" {
+			code, returnHome := runSessionMapViewer(flags, stderr, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}
 			return code
