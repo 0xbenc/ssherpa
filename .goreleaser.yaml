@@ -57,6 +57,29 @@ nfpms:
       - src: man/ssherpa.1
         dst: /usr/share/man/man1/ssherpa.1
 
+homebrew_casks:
+  - name: ssherpa
+    ids:
+      - ssherpa
+    binaries:
+      - ssherpa
+    manpages:
+      - man/ssherpa.1
+    completions:
+      bash: completions/ssherpa.bash
+      zsh: completions/ssherpa.zsh
+      fish: completions/ssherpa.fish
+    homepage: https://github.com/0xbenc/ssherpa
+    description: A terminal UI for the SSH config you already have, with supervised sessions.
+    repository:
+      owner: 0xbenc
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: goreleaserbot@users.noreply.github.com
+
 checksum:
   name_template: checksums.txt
 
