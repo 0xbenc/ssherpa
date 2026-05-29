@@ -447,7 +447,7 @@ Host pgbox
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	got := strings.TrimSpace(readFile(t, logPath))
-	want := "-L 127.0.0.1:5433:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox"
+	want := "-o SendEnv=SSHERPA_* -L 127.0.0.1:5433:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox"
 	if got != want {
 		t.Fatalf("fake-ssh argv = %q, want %q", got, want)
 	}

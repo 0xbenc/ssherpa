@@ -467,6 +467,7 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 	} else if metadata.TargetAlias != "" {
 		route = append(route, metadata.TargetAlias)
 	}
+	originHost := state.LocalOriginHost(env)
 
 	var forward *state.ForwardSpec
 	if metadata.Forward != nil {
@@ -487,6 +488,7 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		ParentID:     parentID,
 		Depth:        depth,
 		Route:        route,
+		OriginHost:   originHost,
 		TargetAlias:  metadata.TargetAlias,
 		Hops:         append([]string(nil), metadata.Hops...),
 		SSHArgv:      append([]string(nil), command.Argv...),

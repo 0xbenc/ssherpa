@@ -72,6 +72,33 @@ func TestBuildJump(t *testing.T) {
 	}
 }
 
+func TestWithSessionEnvForwarding(t *testing.T) {
+	cmd := WithSessionEnvForwarding(Command{Argv: []string{"ssh", "-J", "bastion", "prod"}})
+
+	want := "ssh\x00-o\x00SendEnv=SSHERPA_*\x00-J\x00bastion\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestWithSessionEnvForwardingKeepsKittyPrefix(t *testing.T) {
+	cmd := WithSessionEnvForwarding(Command{Argv: []string{"kitten", "ssh", "prod"}})
+
+	want := "kitten\x00ssh\x00-o\x00SendEnv=SSHERPA_*\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestWithSessionEnvForwardingIsIdempotent(t *testing.T) {
+	cmd := WithSessionEnvForwarding(Command{Argv: []string{"ssh", "-o", "SendEnv=SSHERPA_*", "prod"}})
+
+	want := "ssh\x00-o\x00SendEnv=SSHERPA_*\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
 func TestBuildProxy(t *testing.T) {
 	cmd := BuildProxy(Command{Argv: []string{"ssh"}}, "prod", "127.0.0.1", 1080, []string{"-v"})
 

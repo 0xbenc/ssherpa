@@ -1329,6 +1329,10 @@ func resolveSSHCommand(flags connectFlags) sshcmd.Command {
 }
 
 func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) int {
+	if options.Supervise {
+		cmd = sshcmd.WithSessionEnvForwarding(cmd)
+	}
+
 	if options.Print {
 		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 		return 0

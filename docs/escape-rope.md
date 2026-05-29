@@ -104,11 +104,13 @@ reachable.**
 - **Non-supervised (direct) layers:** they cannot intercept the chord, but
   the `SIGHUP` cascade still flows *through* them. Only the outermost layer
   needs to be supervised for the rope to exist.
-- **Lineage metadata is for display only:** `SSHERPA_DEPTH` / `ROUTE` /
-  `PARENT` (`state.EnvForRecord`) only cross the ssh boundary if
-  `SendEnv`/`AcceptEnv SSHERPA_*` is configured, so the overlay's view may
-  not see remote depth. The rope's teardown is physical and does **not**
-  depend on this.
+- **Lineage metadata is for display only:** `SSHERPA_DEPTH`, `SSHERPA_ROUTE`,
+  `SSHERPA_PARENT_SESSION_ID`, and `SSHERPA_ORIGIN_HOST`
+  (`state.EnvForRecord`) only reach a remote login shell when the client
+  sends them and the server accepts them. ssherpa adds client-side
+  `SendEnv=SSHERPA_*` for supervised connections; each receiving sshd still
+  needs `AcceptEnv SSHERPA_*`. The rope's teardown is physical and does
+  **not** depend on this.
 
 ## Terminal safety
 

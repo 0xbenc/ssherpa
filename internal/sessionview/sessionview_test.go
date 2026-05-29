@@ -57,6 +57,98 @@ func TestMapViewCarriesRouteDetails(t *testing.T) {
 	}
 }
 
+func TestMapViewSynthesizesInheritedLineage(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "c-session",
+		ParentID:    "missing-b-session",
+		Depth:       2,
+		OriginHost:  "A",
+		TargetAlias: "C",
+		Route:       []string{"B", "C"},
+		StartedAt:   time.Unix(1700000000, 0),
+	}
+
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Map:      MapOptions{CurrentID: "c-session"},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    96,
+		Height:   20,
+	})
+
+	text := view.Content
+	for _, want := range []string{
+		"active 1",
+		"shown 1",
+		"recorded 1",
+		"+- A [inherited]",
+		"+- B [inherited]",
+		"+- C [jump] [active]",
+		"depth 2  id c-session  current",
+		"● A",
+		"└─▶ B",
+		"└─▶ C",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "+- A [inherited]") >= strings.Index(text, "+- B [inherited]") ||
+		strings.Index(text, "+- B [inherited]") >= strings.Index(text, "+- C [jump] [active]") {
+		t.Fatalf("inherited lineage is not ordered as a chain:\n%s", text)
+	}
+}
+
+func TestMapLinesSynthesizesInheritedLineage(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "c-session",
+		ParentID:    "missing-b-session",
+		Depth:       2,
+		OriginHost:  "A",
+		TargetAlias: "C",
+		Route:       []string{"B", "C"},
+		StartedAt:   time.Unix(1700000000, 0),
+	}
+
+	text := strings.Join(MapLines("/tmp/ssherpa-state", []state.SessionRecord{record}, "c-session"), "\n")
+	for _, want := range []string{
+		"active: 1",
+		"+- A [inherited]",
+		"+- B [inherited]",
+		"+- C [jump] [active] depth=2 id=c-session  current",
+		"path: A -> B -> C",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("map lines missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestMapForestMarksInheritedLineage(t *testing.T) {
+	record := state.SessionRecord{
+		ID:          "c-session",
+		ParentID:    "missing-b-session",
+		Depth:       2,
+		OriginHost:  "A",
+		TargetAlias: "C",
+		Route:       []string{"B", "C"},
+		StartedAt:   time.Unix(1700000000, 0),
+	}
+
+	roots := MapForest([]state.SessionRecord{record})
+	if len(roots) != 1 || !roots[0].Record.Inherited || roots[0].Record.TargetAlias != "A" {
+		t.Fatalf("roots = %#v, want inherited A root", roots)
+	}
+	if len(roots[0].Children) != 1 || !roots[0].Children[0].Record.Inherited || roots[0].Children[0].Record.TargetAlias != "B" {
+		t.Fatalf("children = %#v, want inherited B child", roots[0].Children)
+	}
+	if len(roots[0].Children[0].Children) != 1 || roots[0].Children[0].Children[0].Record.ID != "c-session" {
+		t.Fatalf("grandchildren = %#v, want real C record", roots[0].Children[0].Children)
+	}
+}
+
 func TestMapViewShowsLocalOriginForSingleHopRoute(t *testing.T) {
 	record := state.SessionRecord{
 		ID:          "root",

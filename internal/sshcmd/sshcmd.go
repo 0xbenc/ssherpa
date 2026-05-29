@@ -18,6 +18,8 @@ import (
 // `--local 127.0.0.1:5432`.
 const DefaultForwardBind = "127.0.0.1"
 
+const SessionEnvPattern = "SSHERPA_*"
+
 type Command struct {
 	Argv []string `json:"argv"`
 }
@@ -77,10 +79,44 @@ func Resolve(opts ResolveOptions) Command {
 	return Command{Argv: []string{"ssh"}}
 }
 
+func sshOptionInsertIndex(argv []string) int {
+	if len(argv) >= 2 && argv[0] == "kitten" && argv[1] == "ssh" {
+		return 2
+	}
+	if len(argv) >= 3 && argv[0] == "kitty" && argv[1] == "+kitten" && argv[2] == "ssh" {
+		return 3
+	}
+	return 1
+}
+
+func hasSessionEnvForwarding(argv []string) bool {
+	for i, arg := range argv {
+		if arg == "SendEnv="+SessionEnvPattern {
+			return true
+		}
+		if arg == "-o" && i+1 < len(argv) && argv[i+1] == "SendEnv="+SessionEnvPattern {
+			return true
+		}
+	}
+	return false
+}
+
 func BuildDirect(base Command, alias string, extraArgs []string) Command {
 	argv := append([]string(nil), base.Argv...)
 	argv = append(argv, alias)
 	argv = append(argv, extraArgs...)
+	return Command{Argv: argv}
+}
+
+func WithSessionEnvForwarding(command Command) Command {
+	if len(command.Argv) == 0 || hasSessionEnvForwarding(command.Argv) {
+		return command
+	}
+	insertAt := sshOptionInsertIndex(command.Argv)
+	argv := make([]string, 0, len(command.Argv)+2)
+	argv = append(argv, command.Argv[:insertAt]...)
+	argv = append(argv, "-o", "SendEnv="+SessionEnvPattern)
+	argv = append(argv, command.Argv[insertAt:]...)
 	return Command{Argv: argv}
 }
 

@@ -46,6 +46,7 @@ type SessionRecord struct {
 	ParentID         string         `json:"parent_id,omitempty"`
 	Depth            int            `json:"depth"`
 	Route            []string       `json:"route,omitempty"`
+	OriginHost       string         `json:"origin_host,omitempty"`
 	TargetAlias      string         `json:"target_alias,omitempty"`
 	Hops             []string       `json:"hops,omitempty"`
 	SSHArgv          []string       `json:"ssh_argv,omitempty"`
@@ -64,6 +65,7 @@ type SessionRecord struct {
 	Events           []SessionEvent `json:"events,omitempty"`
 	DisconnectReason string         `json:"disconnect_reason,omitempty"`
 	StateVersion     int            `json:"state_version"`
+	Inherited        bool           `json:"inherited,omitempty"`
 }
 
 // ForwardSpec captures the runtime shape of a port-forward tunnel
@@ -357,11 +359,29 @@ func EnvForRecord(record SessionRecord) []string {
 		"SSHERPA_PARENT_SESSION_ID=" + record.ParentID,
 		fmt.Sprintf("SSHERPA_DEPTH=%d", record.Depth),
 		"SSHERPA_ROUTE=" + route,
+		"SSHERPA_ORIGIN_HOST=" + record.OriginHost,
 	}
 }
 
 func InheritedMetadata(target string) (parentID string, depth int, route []string) {
 	return InheritedMetadataFromEnv(os.Environ(), target)
+}
+
+func OriginHostFromEnv(env []string) string {
+	return strings.TrimSpace(envValue(env, "SSHERPA_ORIGIN_HOST"))
+}
+
+func LocalOriginHost(env []string) string {
+	if origin := OriginHostFromEnv(env); origin != "" {
+		return origin
+	}
+	if label := strings.TrimSpace(envValue(env, "SSHERPA_HOST_LABEL")); label != "" {
+		return label
+	}
+	if hostname, err := os.Hostname(); err == nil {
+		return strings.TrimSpace(hostname)
+	}
+	return ""
 }
 
 func InheritedMetadataFromEnv(env []string, target string) (parentID string, depth int, route []string) {

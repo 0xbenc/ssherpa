@@ -191,9 +191,11 @@ through the PTY, and send the bytes over the network via a relay.
 
 - **The receiver is already installed.** Nested supervision *already requires
   ssherpa on every hop* — that is how the session lineage (`SSHERPA_DEPTH` /
-  `ROUTE` / `PARENT`, see `state.EnvForRecord`) propagates. The same install
-  that draws the session map provides `ssherpa recv`. **No chicken-and-egg, no
-  external Python, no "is wormhole on this box."**
+  `ROUTE` / `PARENT` / `ORIGIN_HOST`, see `state.EnvForRecord`) propagates
+  when supervised ssh's automatic `SendEnv=SSHERPA_*` meets server-side
+  `AcceptEnv SSHERPA_*`. The same install that draws the session map provides
+  `ssherpa recv`. **No chicken-and-egg, no external Python, no "is wormhole on
+  this box."**
 - **We own the relay configuration.** Default to the public rendezvous/transit
   relay, but expose `--rendezvous-url` / `--transit-relay` and a config setting
   so regulated environments self-host. On-brand with ssherpa's "everything

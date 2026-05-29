@@ -144,7 +144,7 @@ Host prod web
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh prod -L 8080:localhost:8080")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' prod -L 8080:localhost:8080")
 }
 
 func TestRunConnectPrintJSON(t *testing.T) {
@@ -167,7 +167,7 @@ Host prod
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal returned error: %v\n%s", err, stdout.String())
 	}
-	if strings.Join(got.Argv, "\x00") != "ssh\x00prod" || got.Alias != "prod" {
+	if strings.Join(got.Argv, "\x00") != "ssh\x00-o\x00SendEnv=SSHERPA_*\x00prod" || got.Alias != "prod" {
 		t.Fatalf("print JSON = %#v", got)
 	}
 }
@@ -184,7 +184,7 @@ Host prod
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0", code)
 	}
-	assertContains(t, stdout.String(), "[print] ssh prod --help")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' prod --help")
 }
 
 func TestRunSendPrintsSFTPCommandAndBatch(t *testing.T) {
@@ -334,6 +334,9 @@ Host prod
 	}
 	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "prod\x00-v") {
 		t.Fatalf("record argv = %#v", record.SSHArgv)
+	}
+	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "SendEnv=SSHERPA_*") {
+		t.Fatalf("record argv = %#v, want session env forwarding", record.SSHArgv)
 	}
 }
 
@@ -584,7 +587,7 @@ Host edge
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -J bastion,edge prod -A")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -J bastion,edge prod -A")
 }
 
 func TestRunJumpExecutesFakeSSH(t *testing.T) {
@@ -660,7 +663,7 @@ Host prod
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
 }
 
 func TestRunProxyPrintCustomBindPortAndPassthrough(t *testing.T) {
@@ -676,7 +679,7 @@ Host prod
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
 }
 
 func TestRunProxyExecutesFakeSSH(t *testing.T) {
@@ -746,7 +749,7 @@ Host pgbox
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
 }
 
 func TestRunForwardPrintCustomBindThroughAndPassthrough(t *testing.T) {
@@ -765,7 +768,7 @@ Host bastion
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
 }
 
 func TestRunForwardAcceptsPositionalAlias(t *testing.T) {
@@ -781,7 +784,7 @@ Host pgbox
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
 }
 
 func TestRunForwardExecutesFakeSSH(t *testing.T) {

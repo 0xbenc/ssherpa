@@ -389,14 +389,18 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
 
 		if flags.Print {
+			printCmd := cmd
+			if !flags.Direct {
+				printCmd = sshcmd.WithSessionEnvForwarding(printCmd)
+			}
 			if flags.JSON {
-				if err := sshcmd.WritePrintJSON(stdout, cmd, alias.Name); err != nil {
+				if err := sshcmd.WritePrintJSON(stdout, printCmd, alias.Name); err != nil {
 					fmt.Fprintf(stderr, "ssherpa: write JSON: %v\n", err)
 					return 1
 				}
 				return 0
 			}
-			fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
+			fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(printCmd.Argv))
 			return 0
 		}
 

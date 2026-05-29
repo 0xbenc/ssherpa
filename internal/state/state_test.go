@@ -232,10 +232,40 @@ func TestInheritedMetadata(t *testing.T) {
 	t.Setenv("SSHERPA_SESSION_ID", "parent")
 	t.Setenv("SSHERPA_DEPTH", "2")
 	t.Setenv("SSHERPA_ROUTE", "laptop,bastion")
+	t.Setenv("SSHERPA_ORIGIN_HOST", "workstation")
 
 	parentID, depth, route := InheritedMetadata("prod")
 	if parentID != "parent" || depth != 3 || !reflect.DeepEqual(route, []string{"laptop", "bastion", "prod"}) {
 		t.Fatalf("metadata = %q %d %#v", parentID, depth, route)
+	}
+	if got := OriginHostFromEnv(os.Environ()); got != "workstation" {
+		t.Fatalf("OriginHostFromEnv = %q, want workstation", got)
+	}
+	if got := LocalOriginHost(os.Environ()); got != "workstation" {
+		t.Fatalf("LocalOriginHost = %q, want workstation", got)
+	}
+}
+
+func TestEnvForRecordIncludesOriginHost(t *testing.T) {
+	env := EnvForRecord(SessionRecord{
+		ID:         "child",
+		ParentID:   "parent",
+		Depth:      2,
+		Route:      []string{"bastion", "prod"},
+		OriginHost: "workstation",
+	})
+
+	got := strings.Join(env, "\n")
+	for _, want := range []string{
+		"SSHERPA_SESSION_ID=child",
+		"SSHERPA_PARENT_SESSION_ID=parent",
+		"SSHERPA_DEPTH=2",
+		"SSHERPA_ROUTE=bastion,prod",
+		"SSHERPA_ORIGIN_HOST=workstation",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("EnvForRecord missing %q in:\n%s", want, got)
+		}
 	}
 }
 
