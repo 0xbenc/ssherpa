@@ -738,7 +738,7 @@ func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (stri
 			ThemeFile:   opts.ThemeFile,
 			Title:       "Send file: choose local file",
 			Subtitle:    cwd,
-			Footer:      "enter open/select  /  q cancel",
+			Footer:      "enter open/select  /  Q cancel",
 		})
 		if err != nil || !ok {
 			return "", ok, err
@@ -782,7 +782,7 @@ func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, title string, 
 			ThemeFile:   opts.ThemeFile,
 			Title:       title,
 			Subtitle:    cwd,
-			Footer:      "enter open/use  /  q cancel",
+			Footer:      "enter open/use  /  Q cancel",
 		})
 		if err != nil || !ok {
 			return "", ok, err
@@ -1002,7 +1002,7 @@ func pickRemoteFile(stderr io.Writer, opts filePickerOptions, flags transferFlag
 			ThemeFile:   opts.ThemeFile,
 			Title:       "Receive file: choose remote file",
 			Subtitle:    alias + ":" + current,
-			Footer:      "enter open/select  /  q cancel",
+			Footer:      "enter open/select  /  Q cancel",
 		})
 		if err != nil || !ok {
 			return "", ok, err
@@ -1039,7 +1039,7 @@ func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transfe
 			ThemeFile:   opts.ThemeFile,
 			Title:       "Send file: choose remote folder",
 			Subtitle:    alias + ":" + current,
-			Footer:      "enter open/use  /  q cancel",
+			Footer:      "enter open/use  /  Q cancel",
 		})
 		if err != nil || !ok {
 			return "", ok, err

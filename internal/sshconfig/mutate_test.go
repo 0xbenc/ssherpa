@@ -40,6 +40,28 @@ func TestPlanAddOrUpdateAddsToMissingConfig(t *testing.T) {
 	}
 }
 
+func TestPlanAddOrUpdateLowercasesAliasName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".ssh", "config")
+
+	plan, err := PlanAddOrUpdate(path, AliasSpec{
+		Alias:    "Prod-WEST",
+		HostName: "prod.example.com",
+	})
+	if err != nil {
+		t.Fatalf("PlanAddOrUpdate returned error: %v", err)
+	}
+	// Policy: alias names are always written lowercase.
+	if got := string(plan.NewData); !strings.Contains(got, "Host prod-west\n") {
+		t.Fatalf("NewData = %q, want lowercased Host stanza", got)
+	}
+	if strings.Contains(string(plan.NewData), "Prod-WEST") {
+		t.Fatalf("NewData leaked mixed-case alias: %q", string(plan.NewData))
+	}
+	if plan.Alias != "prod-west" {
+		t.Fatalf("plan.Alias = %q, want lowercased", plan.Alias)
+	}
+}
+
 func TestPlanAddOrUpdateAppendsToExistingConfig(t *testing.T) {
 	path := writeTempConfig(t, "# mine\nHost old\n  HostName old.example.com\n")
 

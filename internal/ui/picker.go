@@ -35,6 +35,10 @@ const (
 	ItemDocs          ItemKind = "docs"
 	ItemConfirmDelete ItemKind = "confirm_delete"
 	ItemConfirmCancel ItemKind = "confirm_cancel"
+	// ItemRefresh is a synthetic result returned by Pick when the
+	// operator presses "R" on the home page. It carries no selection —
+	// the caller reloads the inventory and re-renders the picker.
+	ItemRefresh ItemKind = "refresh"
 )
 
 // SavedForwardItem is the picker-facing projection of a saved
@@ -87,6 +91,12 @@ type PickOptions struct {
 	Subtitle string
 	Summary  []string
 	Footer   string
+	// Refreshable marks the home-page picker. When set, "R" returns an
+	// ItemRefresh result (caller reloads the inventory and re-renders)
+	// and the quit key is the capital "Q" so lowercase letters stay
+	// available for filtering. Sub-pickers leave this false and keep
+	// the plain lowercase "q" to quit/cancel/back.
+	Refreshable bool
 }
 
 type BuildItemsOptions struct {
@@ -232,7 +242,13 @@ func Pick(ctx context.Context, items []Item, opts PickOptions) (Item, bool, erro
 	}
 
 	picker, ok := finalModel.(pickerModel)
-	if !ok || picker.canceled || picker.selected < 0 {
+	if !ok {
+		return Item{}, false, nil
+	}
+	if picker.refresh {
+		return Item{Kind: ItemRefresh}, true, nil
+	}
+	if picker.canceled || picker.selected < 0 {
 		return Item{}, false, nil
 	}
 	return picker.items[picker.selected], true, nil
@@ -245,6 +261,8 @@ type pickerModel struct {
 	query       string
 	selected    int
 	canceled    bool
+	refresh     bool
+	refreshable bool
 	noAltScreen bool
 	theme       termstyle.Theme
 	title       string
@@ -268,6 +286,7 @@ func newPickerModelWithTheme(items []Item, opts PickOptions, theme termstyle.The
 	model := pickerModel{
 		items:       append([]Item(nil), items...),
 		selected:    -1,
+		refreshable: opts.Refreshable,
 		noAltScreen: opts.NoAltScreen,
 		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),
 		title:       opts.Title,
@@ -307,8 +326,15 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc", "q":
+		key := msg.String()
+		// Home page only: "R" reloads the inventory. Elsewhere it falls
+		// through to the filter like any other letter.
+		if m.refreshable && key == "R" {
+			m.refresh = true
+			return m, tea.Quit
+		}
+		switch key {
+		case "ctrl+c", "esc", "Q":
 			m.canceled = true
 			return m, tea.Quit
 		case "enter":
@@ -331,7 +357,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applyFilter()
 			}
 		default:
-			if msg.Text != "" && !isControlKey(msg.String()) {
+			if msg.Text != "" && !isControlKey(key) {
 				m.query += msg.Text
 				m.applyFilter()
 			}
@@ -354,7 +380,11 @@ func (m pickerModel) View() tea.View {
 
 	footer := m.footer
 	if footer == "" {
-		footer = "enter select  /  type filter  /  arrows move  /  q quit"
+		if m.refreshable {
+			footer = "enter select  /  type filter  /  arrows move  /  R refresh  /  Q quit"
+		} else {
+			footer = "enter select  /  type filter  /  arrows move  /  Q quit"
+		}
 	}
 	b.WriteString(theme.rule(width))
 	b.WriteByte('\n')

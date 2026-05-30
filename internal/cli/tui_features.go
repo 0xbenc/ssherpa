@@ -35,7 +35,7 @@ func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Check reachability",
-		Footer:      "enter select  /  q back",
+		Footer:      "enter select  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: check picker failed: %v\n", err)
@@ -191,7 +191,7 @@ func runDocsPicker(stdout io.Writer, stderr io.Writer, flags connectFlags) (int,
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Completions and manpage",
-		Footer:      "enter show path  /  q back",
+		Footer:      "enter show path  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: docs picker failed: %v\n", err)

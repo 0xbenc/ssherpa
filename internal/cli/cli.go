@@ -267,6 +267,10 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			return code
 		}
 		switch item.Kind {
+		case ui.ItemRefresh:
+			// "R" on the home page: re-loop to reload the inventory
+			// and live session/tunnel state, then re-render the picker.
+			continue
 		case ui.ItemAdd:
 			code := runAdd(connectFlagsAsAddArgs(flags), stdout, stderr)
 			if code != 0 || flags.Select != "" {
@@ -693,6 +697,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		Version:     pickerVersionLabel(build),
 		Subtitle:    pickerMode(flags),
 		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)+len(activeProxies)),
+		Refreshable: true,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)

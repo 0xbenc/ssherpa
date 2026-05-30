@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -102,6 +104,71 @@ func TestFuzzyMatch(t *testing.T) {
 		if got := fuzzyMatch(tt.value, tt.query); got != tt.want {
 			t.Fatalf("fuzzyMatch(%q, %q) = %t, want %t", tt.value, tt.query, got, tt.want)
 		}
+	}
+}
+
+func TestPickerRefreshKeyReturnsRefreshResult(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		Refreshable: true,
+	})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	picker := updated.(pickerModel)
+	if !picker.refresh {
+		t.Fatalf("refresh = false, want true after pressing R on home page")
+	}
+	if picker.canceled {
+		t.Fatalf("canceled = true, want false")
+	}
+}
+
+func TestPickerRefreshKeyIsPlainFilterWhenNotRefreshable(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+	})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	picker := updated.(pickerModel)
+	if picker.refresh {
+		t.Fatalf("refresh = true, want false when picker is not refreshable")
+	}
+	if picker.query != "R" {
+		t.Fatalf("query = %q, want %q (R types into the filter)", picker.query, "R")
+	}
+}
+
+func TestPickerCapitalQQuits(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		Refreshable: true,
+	})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'Q', Text: "Q"})
+	picker := updated.(pickerModel)
+	if !picker.canceled {
+		t.Fatalf("canceled = false, want true after pressing Q")
+	}
+
+	// Lowercase q is now a filter character, not a quit key.
+	typed, _ := model.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if typedModel := typed.(pickerModel); typedModel.canceled || typedModel.query != "q" {
+		t.Fatalf("lowercase q: canceled=%v query=%q, want canceled=false query=%q", typedModel.canceled, typedModel.query, "q")
+	}
+}
+
+func TestPickerHomeFooterAdvertisesRefreshAndCapitalQuit(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		Refreshable: true,
+	})
+	text := model.View().Content
+	if !strings.Contains(text, "R refresh") {
+		t.Fatalf("home footer missing 'R refresh':\n%s", text)
+	}
+	if !strings.Contains(text, "Q quit") {
+		t.Fatalf("home footer missing 'Q quit':\n%s", text)
 	}
 }
 

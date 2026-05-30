@@ -258,7 +258,10 @@ func validateAliasName(alias string, allowPattern bool) error {
 }
 
 func normalizeAliasSpec(spec AliasSpec) AliasSpec {
-	spec.Alias = strings.TrimSpace(spec.Alias)
+	// Policy: alias names are always written lowercase. Folding here
+	// (the single chokepoint before any Host stanza is rendered)
+	// guarantees compliance regardless of how the name was entered.
+	spec.Alias = strings.ToLower(strings.TrimSpace(spec.Alias))
 	spec.HostName = strings.TrimSpace(spec.HostName)
 	spec.User = strings.TrimSpace(spec.User)
 	spec.Port = strings.TrimSpace(spec.Port)
