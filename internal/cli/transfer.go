@@ -34,17 +34,19 @@ const (
 
 type transferFlags struct {
 	inventoryFlags
-	Print        bool
-	Select       string
-	LocalPath    string
-	RemotePath   string
-	Hops         []string
-	ControlPath  string
-	PickLocalDir bool
-	SFTPBinary   string
-	NoColor      bool
-	ThemeName    string
-	ThemeFile    string
+	Print            bool
+	Force            bool
+	Select           string
+	LocalPath        string
+	RemotePath       string
+	Hops             []string
+	ControlPath      string
+	PickLocalDir     bool
+	ConfirmOverwrite bool
+	SFTPBinary       string
+	NoColor          bool
+	ThemeName        string
+	ThemeFile        string
 }
 
 func runSend(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -82,6 +84,8 @@ func parseTransferFlags(args []string, stderr io.Writer, direction sshcmd.SFTPTr
 			i = len(args)
 		case arg == "--print":
 			flags.Print = true
+		case arg == "--force":
+			flags.Force = true
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -206,13 +210,18 @@ func executeSFTPTransfer(direction sshcmd.SFTPTransferDirection, flags transferF
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1, transfer, false
 	}
-	transfer.Batch = sshcmd.BuildSFTPBatch(transfer)
 	cmd := sshcmd.BuildSFTP(resolveSFTPBinary(flags), transfer)
 	if flags.Print {
+		transfer.Batch = sshcmd.BuildSFTPBatch(transfer)
 		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 		fmt.Fprintf(stdout, "[batch]\n%s", transfer.Batch)
 		return 0, transfer, true
 	}
+	proceed, code := confirmTransferSafety(flags, transfer, cmd, stderr)
+	if !proceed {
+		return code, transfer, false
+	}
+	transfer.Batch = sshcmd.BuildSFTPBatch(transfer)
 	return runSFTPCommand(cmd, transfer.Batch, stdout, stderr), transfer, true
 }
 
@@ -265,7 +274,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		if info.IsDir() {
-			fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not implemented yet\n", expanded)
+			fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not supported yet. Choose a file or archive the directory first.\n", expanded)
 			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		localPath = expanded
@@ -368,6 +377,135 @@ func runSFTPCommand(cmd sshcmd.Command, batch string, stdout io.Writer, stderr i
 	return 1
 }
 
+func confirmTransferSafety(flags transferFlags, transfer sshcmd.SFTPTransfer, cmd sshcmd.Command, stderr io.Writer) (bool, int) {
+	switch transfer.Direction {
+	case sshcmd.SFTPTransferSend:
+		info, err := remotePathInfo(cmd, transfer.RemotePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: cannot verify remote destination %s:%s: %v\n", transfer.Alias, transfer.RemotePath, err)
+			return false, 1
+		}
+		if info.Exists {
+			return confirmOverwrite(flags, stderr, fmt.Sprintf("Remote destination %s:%s already exists. Overwrite it?", transfer.Alias, transfer.RemotePath))
+		}
+	case sshcmd.SFTPTransferReceive:
+		info, err := remotePathInfo(cmd, transfer.RemotePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: cannot verify remote source %s:%s: %v\n", transfer.Alias, transfer.RemotePath, err)
+			return false, 1
+		}
+		if !info.Exists {
+			fmt.Fprintf(stderr, "ssherpa: remote source %s:%s does not exist\n", transfer.Alias, transfer.RemotePath)
+			return false, 1
+		}
+		if info.IsDir {
+			fmt.Fprintf(stderr, "ssherpa: remote path %s:%s is a directory; directory transfer is not supported yet. Choose a file or archive the directory first.\n", transfer.Alias, transfer.RemotePath)
+			return false, 1
+		}
+		if _, err := os.Stat(transfer.LocalPath); err == nil {
+			return confirmOverwrite(flags, stderr, fmt.Sprintf("Local destination %s already exists. Overwrite it?", transfer.LocalPath))
+		} else if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(stderr, "ssherpa: cannot verify local destination %s: %v\n", transfer.LocalPath, err)
+			return false, 1
+		}
+	}
+	return true, 0
+}
+
+func confirmOverwrite(flags transferFlags, stderr io.Writer, message string) (bool, int) {
+	if flags.Force {
+		return true, 0
+	}
+	if !flags.ConfirmOverwrite {
+		fmt.Fprintf(stderr, "ssherpa: %s Use --force to overwrite.\n", strings.TrimSuffix(message, " Overwrite it?"))
+		return false, 1
+	}
+	confirmed, answered, err := ui.Confirm(context.Background(), ui.ConfirmOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Overwrite destination",
+		Message:     message,
+		Danger:      true,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: overwrite confirmation failed: %v\n", err)
+		return false, 1
+	}
+	if !answered || !confirmed {
+		fmt.Fprintln(stderr, "[skipped] transfer cancelled")
+		return false, 0
+	}
+	return true, 0
+}
+
+type remotePathStat struct {
+	Exists bool
+	IsDir  bool
+}
+
+func remotePathInfo(cmd sshcmd.Command, remotePath string) (remotePathStat, error) {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "/" {
+		return remotePathStat{Exists: true, IsDir: true}, nil
+	}
+	parent := remotePathParent(remotePath)
+	base := remoteBase(remotePath)
+	if base == "" || base == "download" {
+		return remotePathStat{}, fmt.Errorf("cannot resolve remote path name")
+	}
+	batch := fmt.Sprintf("cd %s\npwd\nls -la\n", quoteSFTPBatchPath(parent))
+	var stdout, stderr strings.Builder
+	code := runSFTPCommand(cmd, batch, &stdout, &stderr)
+	if code != 0 {
+		msg := strings.TrimSpace(stderr.String())
+		if isRemoteMissingMessage(msg) {
+			return remotePathStat{}, nil
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("sftp exited with code %d", code)
+		}
+		return remotePathStat{}, fmt.Errorf("%s", msg)
+	}
+	listing := parseRemoteListing(stdout.String())
+	if listing.CWD == "" && len(listing.Entries) == 0 {
+		return remotePathStat{}, fmt.Errorf("sftp did not return a parseable listing")
+	}
+	for _, entry := range listing.Entries {
+		if entry.Name == base {
+			return remotePathStat{Exists: true, IsDir: entry.IsDir}, nil
+		}
+	}
+	return remotePathStat{}, nil
+}
+
+func isRemoteMissingMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "no such file") ||
+		strings.Contains(message, "not found") ||
+		strings.Contains(message, "couldn't stat") ||
+		strings.Contains(message, "cannot stat")
+}
+
+func remotePathParent(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "."
+	}
+	cleaned := pathpkg.Clean(path)
+	if cleaned == "/" {
+		return "/"
+	}
+	parent := pathpkg.Dir(cleaned)
+	if parent == "" {
+		return "."
+	}
+	return parent
+}
+
 func runTransferFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
 	direction, ok, err := chooseTransferDirection(flags, stderr)
 	if err != nil {
@@ -456,7 +594,7 @@ func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout
 		fmt.Fprintf(stderr, "ssherpa: local file %s: %v\n", expanded, err)
 		return 1, true
 	} else if info.IsDir() {
-		fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not implemented yet\n", expanded)
+		fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not supported yet. Choose a file or archive the directory first.\n", expanded)
 		return 1, true
 	} else {
 		localInfo = info
@@ -473,6 +611,7 @@ func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout
 	}
 
 	transferFlags := transferFlagsFromConnect(flags)
+	transferFlags.ConfirmOverwrite = true
 	transferFlags.LocalPath = expanded
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, transferFlags, alias, stdout, stderr)
 	if code == 0 && attempted && !transferFlags.Print {
@@ -501,6 +640,7 @@ func runReceiveFileBuilder(flags connectFlags, inventory hostlist.Inventory, std
 
 	transferFlags := transferFlagsFromConnect(flags)
 	transferFlags.PickLocalDir = true
+	transferFlags.ConfirmOverwrite = true
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferReceive, transferFlags, alias, stdout, stderr)
 	if code == 0 && attempted && !transferFlags.Print {
 		size := receivedSize(transfer)
@@ -522,11 +662,12 @@ func runReceiveFileBuilder(flags connectFlags, inventory hostlist.Inventory, std
 
 func transferFlagsFromConnect(flags connectFlags) transferFlags {
 	return transferFlags{
-		inventoryFlags: flags.inventoryFlags,
-		Print:          flags.Print,
-		NoColor:        flags.NoColor,
-		ThemeName:      flags.ThemeName,
-		ThemeFile:      flags.ThemeFile,
+		inventoryFlags:   flags.inventoryFlags,
+		Print:            flags.Print,
+		ConfirmOverwrite: true,
+		NoColor:          flags.NoColor,
+		ThemeName:        flags.ThemeName,
+		ThemeFile:        flags.ThemeFile,
 	}
 }
 
@@ -618,7 +759,7 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 		return 1
 	}
 	if localInfo.IsDir() {
-		fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not implemented yet\n", expanded)
+		fmt.Fprintf(stderr, "ssherpa: local path %s is a directory; directory transfer is not supported yet. Choose a file or archive the directory first.\n", expanded)
 		return 1
 	}
 
@@ -638,6 +779,7 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 
 	flags.LocalPath = expanded
 	flags.RemotePath = remoteJoin(dir, filepath.Base(expanded))
+	flags.ConfirmOverwrite = true
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, flags, hostlist.Alias{Name: alias}, stdout, stderr)
 	if code == 0 && attempted {
 		recordTransferEvent(req.StateDir, req.SessionID, transfer)
@@ -695,6 +837,7 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 	}
 	flags.RemotePath = remotePath
 	flags.LocalPath = filepath.Join(dir, remoteBase(remotePath))
+	flags.ConfirmOverwrite = true
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferReceive, flags, hostlist.Alias{Name: alias}, stdout, stderr)
 	if code == 0 && attempted {
 		recordTransferEvent(req.StateDir, req.SessionID, transfer)

@@ -102,6 +102,7 @@ _ssherpa() {
             '--remote[remote destination path]:remote path' \
             '--config[read SSH config]:path:_files' \
             '--sftp-binary[SFTP binary]:path:_files' \
+            '--force[overwrite existing destination]' \
             '--print[print command]'
           ;;
         receive|recv)
@@ -111,6 +112,7 @@ _ssherpa() {
             '--local[local destination path]:path:_files' \
             '--config[read SSH config]:path:_files' \
             '--sftp-binary[SFTP binary]:path:_files' \
+            '--force[overwrite existing destination]' \
             '--print[print command]'
           ;;
         session)

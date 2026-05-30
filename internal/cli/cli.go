@@ -96,8 +96,8 @@ Route Commands:
   ssherpa forward saved edit NAME [--select ALIAS] [--local ...] [--remote ...] [--through HOP|--clear-through] [--description TEXT|--clear-description]
   ssherpa forward saved delete NAME [--yes]
   ssherpa forward saved rename OLD NEW [--yes]
-  ssherpa send LOCAL_FILE --select ALIAS [--remote REMOTE_PATH] [--print]
-  ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--print]
+  ssherpa send LOCAL_FILE --select ALIAS [--remote REMOTE_PATH] [--force] [--print]
+  ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--force] [--print]
 
 Check Commands:
   ssherpa check ALIAS... [--json] [--timeout 5s] [--icmp-timeout 2s] [--no-icmp]

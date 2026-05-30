@@ -70,11 +70,11 @@ _ssherpa()
             return
             ;;
         send)
-            COMPREPLY=( $(compgen -W "--select --remote --config --sftp-binary --print --filter --user --all --no-color --theme-file" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--select --remote --config --sftp-binary --force --print --filter --user --all --no-color --theme-file" -- "$cur") )
             return
             ;;
         receive|recv)
-            COMPREPLY=( $(compgen -W "--select --local --config --sftp-binary --print --filter --user --all --no-color --theme-file" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--select --local --config --sftp-binary --force --print --filter --user --all --no-color --theme-file" -- "$cur") )
             return
             ;;
         authkeys)

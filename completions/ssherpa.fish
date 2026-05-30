@@ -30,12 +30,14 @@ complete -c ssherpa -n '__fish_seen_subcommand_from send' -l select -r -d 'SSH a
 complete -c ssherpa -n '__fish_seen_subcommand_from send' -l remote -r -d 'Remote destination path'
 complete -c ssherpa -n '__fish_seen_subcommand_from send' -l config -r -d 'Read SSH config'
 complete -c ssherpa -n '__fish_seen_subcommand_from send' -l sftp-binary -r -d 'Use this SFTP binary'
+complete -c ssherpa -n '__fish_seen_subcommand_from send' -l force -d 'Overwrite existing destination'
 complete -c ssherpa -n '__fish_seen_subcommand_from send' -l print -d 'Print command'
 
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l select -r -d 'SSH alias'
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l local -r -d 'Local destination path'
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l config -r -d 'Read SSH config'
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l sftp-binary -r -d 'Use this SFTP binary'
+complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l force -d 'Overwrite existing destination'
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l print -d 'Print command'
 
 complete -c ssherpa -n '__fish_seen_subcommand_from forward' -a 'list status stop saved'

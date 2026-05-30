@@ -4,13 +4,16 @@
 > implemented: supervised sessions observe OSC 7 cwd markers and OSC 133 prompt
 > markers, persist the latest observed state on the session record, and show it
 > in the session map. Public `send` / `receive` commands and the home-page
-> **Send file** / **Receive file** actions now cover the direct SFTP path,
+> **Transfer file** action now covers the direct SFTP path,
 > including local and remote file/folder choosers plus post-transfer
-> confirmations for the home actions and overlay transfers. The session
+> confirmations for the home actions and overlay transfers. Direct SFTP
+> transfers refuse destination overwrites unless confirmed or forced, and
+> directory selections are rejected with explicit file-only guidance. The session
 > overlay has direct-SFTP `send` and `receive` actions for interactive sessions,
 > reusing the supervised SSH connection's ControlMaster socket when available
 > and recording overlay transfer audit events. Deep in-band/wormhole transports
-> are still design.
+> are still design; Transport C now has a pure protocol package for command
+> generation and verification, but is not wired into live PTY streaming yet.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -398,6 +401,9 @@ recorded lineage rather than an invisible side effect.
    ControlMaster socket, and record overlay transfer audit events.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
+   **Started:** protocol command generation, size capping, shell quoting, and
+   completion verification exist as pure code. Live PTY streaming is not wired
+   yet.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa
    recv`; wire the inject-the-receiver orchestration and relay configuration.
    The marquee feature.

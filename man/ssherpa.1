@@ -15,10 +15,10 @@ ssherpa \- terminal UI and supervisor for OpenSSH configs
 \fIcommand\fR [\fIflags\fR]
 .br
 .B ssherpa send
-\fILOCAL_FILE\fR --select \fIALIAS\fR [--remote \fIREMOTE_PATH\fR]
+\fILOCAL_FILE\fR --select \fIALIAS\fR [--remote \fIREMOTE_PATH\fR] [--force]
 .br
 .B ssherpa receive
-\fIREMOTE_PATH\fR --select \fIALIAS\fR [--local \fILOCAL_PATH\fR]
+\fIREMOTE_PATH\fR --select \fIALIAS\fR [--local \fILOCAL_PATH\fR] [--force]
 .SH DESCRIPTION
 .B ssherpa
 reads OpenSSH config, lets you pick and connect to aliases, supervises SSH
@@ -46,6 +46,9 @@ Send one local file to an SSH alias with OpenSSH SFTP.
 .TP
 .B receive
 Receive one remote file from an SSH alias with OpenSSH SFTP.
+Both transfer commands refuse to overwrite an existing destination unless
+.B --force
+is set.
 .TP
 .B forward saved
 Manage saved forward catalog entries with list, show, save, edit, delete, and rename.

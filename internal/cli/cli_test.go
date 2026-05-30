@@ -239,6 +239,51 @@ Host prod
 	}
 }
 
+func TestRunSendRefusesExistingRemoteDestinationWithoutForce(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	fakeSFTP, _, _ := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/var/log/app.log", "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "already exists")
+	assertContains(t, stderr.String(), "Use --force to overwrite")
+}
+
+func TestRunSendForceAllowsExistingRemoteDestination(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/var/log/app.log", "--config", config, "--sftp-binary", fakeSFTP, "--force"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := readFile(t, batchLog); got != "put "+local+" /var/log/app.log\n" {
+		t.Fatalf("fake sftp batch = %q", got)
+	}
+}
+
 func TestRunReceiveExecutesFakeSFTP(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -258,6 +303,71 @@ Host prod
 	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
 		t.Fatalf("fake sftp batch = %q, want local dir expanded", got)
 	}
+}
+
+func TestRunReceiveRefusesExistingLocalDestinationWithoutForce(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "app.log"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write existing local file: %v", err)
+	}
+	fakeSFTP, _, _ := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "already exists")
+	assertContains(t, stderr.String(), "Use --force to overwrite")
+}
+
+func TestRunReceiveForceAllowsExistingLocalDestination(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "app.log"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write existing local file: %v", err)
+	}
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP, "--force"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	wantLocal := filepath.Join(localDir, "app.log")
+	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
+		t.Fatalf("fake sftp batch = %q, want forced receive batch", got)
+	}
+}
+
+func TestRunReceiveRejectsRemoteDirectory(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	fakeSFTP, _, _ := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/logs", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "is a directory")
+	assertContains(t, stderr.String(), "Choose a file or archive the directory first")
 }
 
 func TestRunReceiveDefaultsLocalPathToRemoteBasename(t *testing.T) {
@@ -2229,8 +2339,13 @@ func writeFakeSFTP(t *testing.T, exitCode int) (string, string, string) {
 	path := filepath.Join(dir, "fake-sftp")
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" > " + shellQuote(argvLog) + "\n" +
-		"cat > " + shellQuote(batchLog) + "\n" +
-		"printf '%s\\n' 'fake sftp stdout'\n" +
+		"batch=$(cat)\n" +
+		"printf '%s\\n' \"$batch\" > " + shellQuote(batchLog) + "\n" +
+		"case \"$batch\" in\n" +
+		"  *'cd /var/log'*'ls -la'*) printf '%s\\n' 'Remote working directory: /var/log' 'drwxr-xr-x    2 root root     4096 May 29 10:10 logs' '-rw-r--r--    1 root root      120 May 29 10:11 app.log' ;;\n" +
+		"  *'ls -la'*) printf '%s\\n' 'Remote working directory: /tmp' '-rw-r--r--    1 root root      120 May 29 10:11 other.log' ;;\n" +
+		"  *) printf '%s\\n' 'fake sftp stdout' ;;\n" +
+		"esac\n" +
 		"exit " + strconv.Itoa(exitCode) + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("os.WriteFile returned error: %v", err)
