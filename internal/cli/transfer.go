@@ -368,6 +368,70 @@ func runSFTPCommand(cmd sshcmd.Command, batch string, stdout io.Writer, stderr i
 	return 1
 }
 
+func runTransferFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
+	direction, ok, err := chooseTransferDirection(flags, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: transfer direction picker failed: %v\n", err)
+		return 1, false
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] file transfer cancelled")
+		return 0, true
+	}
+	switch direction {
+	case sshcmd.SFTPTransferSend:
+		return runSendFileBuilder(flags, inventory, stdout, stderr)
+	case sshcmd.SFTPTransferReceive:
+		return runReceiveFileBuilder(flags, inventory, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "ssherpa: unknown transfer direction %q\n", direction)
+		return 1, false
+	}
+}
+
+func chooseTransferDirection(flags connectFlags, stderr io.Writer) (sshcmd.SFTPTransferDirection, bool, error) {
+	items := []ui.Item{
+		{
+			Kind:        ui.ItemSendFile,
+			Token:       string(sshcmd.SFTPTransferSend),
+			Title:       "Send file",
+			Description: "local to remote",
+			Badge:       "send",
+		},
+		{
+			Kind:        ui.ItemReceiveFile,
+			Token:       string(sshcmd.SFTPTransferReceive),
+			Title:       "Receive file",
+			Description: "remote to local",
+			Badge:       "recv",
+		},
+	}
+	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "File transfer",
+		Footer:      "enter select  /  Q back",
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	switch item.Kind {
+	case ui.ItemSendFile:
+		return sshcmd.SFTPTransferSend, true, nil
+	case ui.ItemReceiveFile:
+		return sshcmd.SFTPTransferReceive, true, nil
+	default:
+		return "", false, fmt.Errorf("unexpected transfer direction item %q", item.Kind)
+	}
+}
+
 func runSendFileBuilder(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
 	if len(inventory.Aliases) == 0 {
 		fmt.Fprintln(stderr, "[skipped] no aliases available for file transfer")

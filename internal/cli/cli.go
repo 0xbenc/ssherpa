@@ -301,14 +301,8 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 				continue
 			}
 			return code
-		case ui.ItemSendFile:
-			code, returnHome := runSendFileBuilder(flags, inventory, stdout, stderr)
-			if returnHome && code == 0 && flags.Select == "" {
-				continue
-			}
-			return code
-		case ui.ItemReceiveFile:
-			code, returnHome := runReceiveFileBuilder(flags, inventory, stdout, stderr)
+		case ui.ItemTransferFile:
+			code, returnHome := runTransferFileBuilder(flags, inventory, stdout, stderr)
 			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}

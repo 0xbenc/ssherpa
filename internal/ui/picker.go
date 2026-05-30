@@ -22,6 +22,7 @@ const (
 	ItemProxy         ItemKind = "proxy"
 	ItemJump          ItemKind = "jump"
 	ItemForward       ItemKind = "forward"
+	ItemTransferFile  ItemKind = "transfer_file"
 	ItemSendFile      ItemKind = "send_file"
 	ItemReceiveFile   ItemKind = "receive_file"
 	ItemForwardSaved  ItemKind = "forward_saved"
@@ -192,8 +193,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Group: "Actions", Badge: "jump"},
 		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Group: "Actions", Badge: "proxy"},
 		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Group: "Actions", Badge: "forward"},
-		Item{Kind: ItemSendFile, Token: "SEND_FILE", Title: "Send file", Group: "Actions", Badge: "send"},
-		Item{Kind: ItemReceiveFile, Token: "RECEIVE_FILE", Title: "Receive file", Group: "Actions", Badge: "recv"},
+		Item{Kind: ItemTransferFile, Token: "TRANSFER_FILE", Title: "Transfer file", Group: "Actions", Badge: "transfer"},
 		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
@@ -732,7 +732,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 	switch kind {
 	case ItemAlias:
 		role = termstyle.RoleSuccess
-	case ItemAdd:
+	case ItemAdd, ItemTransferFile:
 		role = termstyle.RoleSuccess
 	case ItemEdit:
 		role = termstyle.RoleWarning
@@ -870,6 +870,8 @@ func selectionHint(item Item) string {
 		return "Stops every live tracked session: tunnels, proxies, jumps, and supervised direct SSH."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
+	case ItemTransferFile:
+		return "Chooses whether to send or receive one file using SFTP."
 	case ItemSendFile:
 		return "Sends one local file to a selected SSH alias using SFTP."
 	case ItemReceiveFile:
