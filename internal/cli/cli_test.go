@@ -14,6 +14,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
@@ -426,6 +427,105 @@ func TestRecordTransferEventWritesAuditDetails(t *testing.T) {
 	assertContains(t, event.Message, `remote="prod:/tmp/payload.txt"`)
 	assertContains(t, event.Message, `bytes=5`)
 	assertContains(t, event.Message, `sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824`)
+}
+
+func TestRecordInbandTransferEventWritesAuditDetails(t *testing.T) {
+	stateDir := t.TempDir()
+	record := state.SessionRecord{ID: "session-1", TargetAlias: "prod"}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("WriteRecord returned error: %v", err)
+	}
+
+	recordInbandTransferEvent(stateDir, record.ID, session.InbandSendResult{
+		LocalPath:  "/tmp/local.txt",
+		RemotePath: "/srv/remote.txt",
+		Size:       42,
+		SHA256:     "abc123",
+	})
+
+	got, err := state.ReadRecord(stateDir, record.ID)
+	if err != nil {
+		t.Fatalf("ReadRecord returned error: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %#v, want one transfer event", got.Events)
+	}
+	event := got.Events[0]
+	if event.Type != "transfer_send" {
+		t.Fatalf("event type = %q, want transfer_send", event.Type)
+	}
+	assertContains(t, event.Message, `transport=inband`)
+	assertContains(t, event.Message, `local="/tmp/local.txt"`)
+	assertContains(t, event.Message, `remote="/srv/remote.txt"`)
+	assertContains(t, event.Message, `bytes=42`)
+	assertContains(t, event.Message, `sha256=abc123`)
+}
+
+func TestValidateOverlayInbandSendRequiresIdlePromptAndCWD(t *testing.T) {
+	send := func(session.InbandSendRequest) (session.InbandSendResult, error) {
+		return session.InbandSendResult{}, nil
+	}
+	tests := []struct {
+		name string
+		req  session.OverlayTransferRequest
+		want string
+	}{
+		{
+			name: "missing sender",
+			req: session.OverlayTransferRequest{
+				RemotePrompt: state.RemotePromptPrompt,
+				RemoteCWD:    "/srv",
+			},
+			want: "sender is not available",
+		},
+		{
+			name: "unknown prompt",
+			req: session.OverlayTransferRequest{
+				InbandSend: send,
+				RemoteCWD:  "/srv",
+			},
+			want: "remote prompt state is unknown",
+		},
+		{
+			name: "busy prompt",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptRunning,
+				RemoteCWD:    "/srv",
+			},
+			want: "not idle",
+		},
+		{
+			name: "unknown cwd",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPrompt,
+			},
+			want: "remote cwd is unknown",
+		},
+		{
+			name: "ready",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPrompt,
+				RemoteCWD:    "/srv",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOverlayInbandSend(tt.req)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("validateOverlayInbandSend returned error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestRunConnectDirectExecutesFakeSSH(t *testing.T) {

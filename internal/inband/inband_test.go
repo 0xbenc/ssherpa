@@ -43,12 +43,12 @@ func TestNewSendPlanBuildsHardenedCommands(t *testing.T) {
 	if plan.TempPath != "/srv/app/it's here.bin.ssherpa.testnonce.tmp" {
 		t.Fatalf("TempPath = %q", plan.TempPath)
 	}
-	for _, want := range []string{"stty -echo -ixon -icanon", "head -c 8", "base64 -d", ShellQuote(plan.TempPath)} {
+	for _, want := range []string{"stty -echo -ixon -icanon", ReadyPrefix, "head -c 8", "base64 -d", ShellQuote(plan.TempPath)} {
 		if !strings.Contains(plan.ReceiverCommand, want) {
 			t.Fatalf("receiver command = %q, want substring %q", plan.ReceiverCommand, want)
 		}
 	}
-	for _, want := range []string{"sha256sum", "shasum -a 256", "openssl dgst -sha256", "mv", DonePrefix, ShellQuote("/srv/app/it's here.bin")} {
+	for _, want := range []string{"sha256sum", "shasum -a 256", "openssl dgst -sha256", "rc=73", "mv", DonePrefix, ShellQuote("/srv/app/it's here.bin")} {
 		if !strings.Contains(plan.CommitCommand, want) {
 			t.Fatalf("commit command = %q, want substring %q", plan.CommitCommand, want)
 		}
@@ -81,6 +81,9 @@ func TestParseCompletion(t *testing.T) {
 	}
 	if ok, err := ParseCompletion("SSHERPA_C_DONE 1 "+hash+"\n", hash); ok || err == nil || !strings.Contains(err.Error(), "status 1") {
 		t.Fatalf("failure returned ok=%v err=%v, want status error", ok, err)
+	}
+	if ok, err := ParseCompletion("SSHERPA_C_DONE 73 "+hash+"\n", hash); ok || err == nil || !strings.Contains(err.Error(), "status 73") {
+		t.Fatalf("overwrite refusal returned ok=%v err=%v, want status 73 error", ok, err)
 	}
 }
 

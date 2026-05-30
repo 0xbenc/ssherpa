@@ -673,6 +673,112 @@ func TestRunSupervisedOverlayReceiveActionDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedOverlayInbandSendWritesRemoteFile(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	localPath := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(localPath, []byte("hello over pty"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	remotePath := filepath.Join(t.TempDir(), "remote payload.txt")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := append([]byte{OverlayHotkey, 's'}, []byte("exit\n")...)
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	results := make(chan InbandSendResult, 1)
+	callbackErrs := make(chan string, 1)
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-i"}},
+		Metadata{TargetAlias: "prod", Route: []string{"prod"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+			Overlay: OverlayOptions{
+				Send: func(req OverlayTransferRequest) int {
+					if req.InbandSend == nil {
+						callbackErrs <- "InbandSend is nil"
+						return 1
+					}
+					result, err := req.InbandSend(InbandSendRequest{LocalPath: localPath, RemotePath: remotePath})
+					if err != nil {
+						callbackErrs <- "InbandSend returned error: " + err.Error()
+						return 1
+					}
+					results <- result
+					return 0
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	select {
+	case err := <-callbackErrs:
+		t.Fatalf("overlay callback error: %s; stderr=%q stdout=%q", err, stderr.String(), stdout.String())
+	default:
+	}
+	got, err := os.ReadFile(remotePath)
+	if err != nil {
+		t.Fatalf("read remote payload: %v", err)
+	}
+	if string(got) != "hello over pty" {
+		t.Fatalf("remote payload = %q", got)
+	}
+	select {
+	case result := <-results:
+		if result.RemotePath != remotePath || result.Size != int64(len("hello over pty")) || result.SHA256 == "" {
+			t.Fatalf("result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("in-band result was not reported")
+	}
+	if strings.Contains(stdout.String(), "aGVsbG8") {
+		t.Fatalf("stdout leaked base64 payload: %q", stdout.String())
+	}
+}
+
+func TestOutputTapStopDetachesWithoutClosingChannel(t *testing.T) {
+	tap := &outputTap{}
+	ch, stop := tap.start(true)
+	if !tap.observe([]byte("one")) {
+		t.Fatalf("observe returned false, want suppression")
+	}
+	select {
+	case got := <-ch:
+		if string(got) != "one" {
+			t.Fatalf("tap chunk = %q, want one", got)
+		}
+	default:
+		t.Fatalf("tap did not receive observed chunk")
+	}
+
+	stop()
+	if tap.observe([]byte("two")) {
+		t.Fatalf("observe returned true after stop")
+	}
+	select {
+	case _, ok := <-ch:
+		if !ok {
+			t.Fatalf("stop closed tap channel; this can race with the PTY reader")
+		}
+	default:
+	}
+}
+
 func TestOverlayTransferRequestIncludesRemoteState(t *testing.T) {
 	stateDir := t.TempDir()
 	record := state.SessionRecord{

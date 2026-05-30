@@ -11,9 +11,9 @@
 > directory selections are rejected with explicit file-only guidance. The session
 > overlay has direct-SFTP `send` and `receive` actions for interactive sessions,
 > reusing the supervised SSH connection's ControlMaster socket when available
-> and recording overlay transfer audit events. Deep in-band/wormhole transports
-> are still design; Transport C now has a pure protocol package for command
-> generation and verification, but is not wired into live PTY streaming yet.
+> and recording overlay transfer audit events. Transport C now provides a
+> prompt-gated, send-only in-band fallback for overlay sends when direct SFTP
+> cannot reach the remote cwd. Wormhole transport remains design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -401,9 +401,11 @@ recorded lineage rather than an invisible side effect.
    ControlMaster socket, and record overlay transfer audit events.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
-   **Started:** protocol command generation, size capping, shell quoting, and
-   completion verification exist as pure code. Live PTY streaming is not wired
-   yet.
+   **Send fallback implemented:** overlay send can stream one local file through
+   the live PTY to the tracked remote cwd when direct SFTP is unavailable, with
+   a ready sentinel, size cap, echo suppression, checksum verification, and
+   temp-file commit that refuses to overwrite an existing destination. Receive
+   and directory support remain out of scope.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa
    recv`; wire the inject-the-receiver orchestration and relay configuration.
    The marquee feature.

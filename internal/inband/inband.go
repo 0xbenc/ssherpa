@@ -13,6 +13,7 @@ const (
 	DefaultMaxBytes = 5 * 1024 * 1024
 	DonePrefix      = "SSHERPA_C_DONE"
 	ProbePrefix     = "SSHERPA_C_PROBE"
+	ReadyPrefix     = "SSHERPA_C_READY"
 )
 
 type SendOptions struct {
@@ -71,7 +72,7 @@ func NewSendPlan(opts SendOptions) (SendPlan, error) {
 		Base64Length:    b64Len,
 		SHA256:          hash,
 		ProbeCommand:    ProbeCommand(),
-		ReceiverCommand: receiverCommand(temp, b64Len),
+		ReceiverCommand: receiverCommand(temp, dest, hash, b64Len),
 		CommitCommand:   commitCommand(temp, dest, hash),
 		ResetCommand:    ResetCommand(),
 	}, nil
@@ -133,9 +134,9 @@ func ParseCompletion(output string, expectedSHA256 string) (bool, error) {
 	return false, errors.New("completion sentinel not found")
 }
 
-func receiverCommand(tempPath string, b64Len int64) string {
+func receiverCommand(tempPath string, destination string, expectedSHA256 string, b64Len int64) string {
 	tmp := ShellQuote(tempPath)
-	return fmt.Sprintf("( stty -echo -ixon -icanon 2>/dev/null; head -c %d | base64 -d > %s; rc=$?; stty sane 2>/dev/null; exit $rc )", b64Len, tmp)
+	return fmt.Sprintf("( stty -echo -ixon -icanon 2>/dev/null; printf '"+ReadyPrefix+"\\n'; head -c %d | base64 -d > %s; decode_rc=$?; stty sane 2>/dev/null; if [ \"$decode_rc\" -eq 0 ]; then %s; else printf '"+DonePrefix+" %%s %%s\\n' \"$decode_rc\" \"\"; fi )", b64Len, tmp, commitCommand(tempPath, destination, expectedSHA256))
 }
 
 func commitCommand(tempPath string, destination string, expectedSHA256 string) string {
@@ -145,7 +146,7 @@ func commitCommand(tempPath string, destination string, expectedSHA256 string) s
 	return "hash=$(sha256sum " + tmp + " 2>/dev/null | awk '{print $1}'); " +
 		"if [ -z \"$hash\" ] && command -v shasum >/dev/null 2>&1; then hash=$(shasum -a 256 " + tmp + " | awk '{print $1}'); fi; " +
 		"if [ -z \"$hash\" ] && command -v openssl >/dev/null 2>&1; then hash=$(openssl dgst -sha256 " + tmp + " | awk '{print $NF}'); fi; " +
-		"if [ \"$hash\" = " + hash + " ]; then mv " + tmp + " " + dest + "; rc=$?; else rc=1; fi; " +
+		"if [ \"$hash\" != " + hash + " ]; then rc=1; elif [ -e " + dest + " ] || [ -L " + dest + " ]; then rc=73; else mv " + tmp + " " + dest + "; rc=$?; fi; " +
 		"printf '" + DonePrefix + " %s %s\\n' \"$rc\" \"$hash\"; " +
 		"stty sane 2>/dev/null"
 }

@@ -767,20 +767,29 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 	if start == "" {
 		start = "."
 	}
+	remotePath := ""
+	directAvailable := true
 	dir, ok, err := pickRemoteDirectory(stderr, transferFilePickerOptions(flags), flags, alias, start)
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: remote folder picker failed: %v\n", err)
-		return 1
-	}
-	if !ok {
+		directAvailable = false
+		remotePath = remoteJoin(start, filepath.Base(expanded))
+		fmt.Fprintf(stderr, "ssherpa: direct SFTP folder picker failed: %v\n", err)
+	} else if !ok {
 		fmt.Fprintln(stderr, "[skipped] send cancelled")
 		return 0
+	} else {
+		remotePath = remoteJoin(dir, filepath.Base(expanded))
 	}
 
-	flags.LocalPath = expanded
-	flags.RemotePath = remoteJoin(dir, filepath.Base(expanded))
-	flags.ConfirmOverwrite = true
-	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferSend, flags, hostlist.Alias{Name: alias}, stdout, stderr)
+	var code int
+	var transfer sshcmd.SFTPTransfer
+	var attempted bool
+	if directAvailable {
+		flags.LocalPath = expanded
+		flags.RemotePath = remotePath
+		flags.ConfirmOverwrite = true
+		code, transfer, attempted = executeSFTPTransfer(sshcmd.SFTPTransferSend, flags, hostlist.Alias{Name: alias}, stdout, stderr)
+	}
 	if code == 0 && attempted {
 		recordTransferEvent(req.StateDir, req.SessionID, transfer)
 		if err := showTransferComplete(stderr, transferCompleteOptions{
@@ -796,7 +805,47 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 			return 1
 		}
 	}
-	return code
+	if code == 0 && attempted {
+		return 0
+	}
+	if directAvailable && !attempted {
+		return code
+	}
+	if req.InbandSend == nil {
+		return defaultNonZero(code)
+	}
+	if err := validateOverlayInbandSend(req); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: in-band send unavailable: %v\n", err)
+		return defaultNonZero(code)
+	}
+	fmt.Fprintf(stderr, "ssherpa: using in-band PTY transfer to %s\n", remotePath)
+	result, err := req.InbandSend(session.InbandSendRequest{
+		LocalPath:  expanded,
+		RemotePath: remotePath,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: in-band send failed: %v\n", err)
+		return 1
+	}
+	recordInbandTransferEvent(req.StateDir, req.SessionID, result)
+	if err := showTransferComplete(stderr, transferCompleteOptions{
+		NoColor:   options.NoColor,
+		ThemeName: options.ThemeName,
+		ThemeFile: options.ThemeFile,
+		Transfer: sshcmd.SFTPTransfer{
+			Direction:  sshcmd.SFTPTransferSend,
+			Alias:      alias,
+			LocalPath:  result.LocalPath,
+			RemotePath: result.RemotePath,
+		},
+		Size:        humanBytes(result.Size),
+		Direction:   "send",
+		ReturnLabel: "press any key to return to session",
+	}); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: send confirmation failed: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func runOverlayReceive(options connectOptions, req session.OverlayTransferRequest, stdout io.Writer, stderr io.Writer) int {
@@ -857,6 +906,29 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 	return code
 }
 
+func validateOverlayInbandSend(req session.OverlayTransferRequest) error {
+	if req.InbandSend == nil {
+		return fmt.Errorf("in-band sender is not available")
+	}
+	if strings.TrimSpace(req.RemotePrompt) != state.RemotePromptPrompt {
+		if strings.TrimSpace(req.RemotePrompt) == "" {
+			return fmt.Errorf("remote prompt state is unknown; open a normal shell prompt and try again")
+		}
+		return fmt.Errorf("remote prompt state is %q, not idle", req.RemotePrompt)
+	}
+	if strings.TrimSpace(req.RemoteCWD) == "" {
+		return fmt.Errorf("remote cwd is unknown")
+	}
+	return nil
+}
+
+func defaultNonZero(code int) int {
+	if code == 0 {
+		return 1
+	}
+	return code
+}
+
 func recordTransferEvent(stateDir string, sessionID string, transfer sshcmd.SFTPTransfer) {
 	stateDir = strings.TrimSpace(stateDir)
 	sessionID = strings.TrimSpace(sessionID)
@@ -873,6 +945,25 @@ func recordTransferEvent(stateDir string, sessionID string, transfer sshcmd.SFTP
 	record.Events = append(record.Events, state.SessionEvent{
 		Time:    time.Now().UTC(),
 		Type:    "transfer_" + string(transfer.Direction),
+		Message: message,
+	})
+	_ = state.WriteRecord(stateDir, record)
+}
+
+func recordInbandTransferEvent(stateDir string, sessionID string, result session.InbandSendResult) {
+	stateDir = strings.TrimSpace(stateDir)
+	sessionID = strings.TrimSpace(sessionID)
+	if stateDir == "" || sessionID == "" {
+		return
+	}
+	record, err := state.ReadRecord(stateDir, sessionID)
+	if err != nil {
+		return
+	}
+	message := fmt.Sprintf("transport=inband local=%q remote=%q bytes=%d sha256=%s", result.LocalPath, result.RemotePath, result.Size, result.SHA256)
+	record.Events = append(record.Events, state.SessionEvent{
+		Time:    time.Now().UTC(),
+		Type:    "transfer_send",
 		Message: message,
 	})
 	_ = state.WriteRecord(stateDir, record)
