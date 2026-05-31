@@ -822,7 +822,7 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 	if req.InbandSend == nil {
 		return defaultNonZero(code)
 	}
-	if err := validateOverlayInbandSend(req); err != nil {
+	if err := validateOverlayInbandSend(req, forceInband); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: in-band send unavailable: %v\n", err)
 		return defaultNonZero(code)
 	}
@@ -914,15 +914,20 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 	return code
 }
 
-func validateOverlayInbandSend(req session.OverlayTransferRequest) error {
+func validateOverlayInbandSend(req session.OverlayTransferRequest, allowPromptStart bool) error {
 	if req.InbandSend == nil {
 		return fmt.Errorf("in-band sender is not available")
 	}
-	if strings.TrimSpace(req.RemotePrompt) != state.RemotePromptPrompt {
-		if strings.TrimSpace(req.RemotePrompt) == "" {
+	prompt := strings.TrimSpace(req.RemotePrompt)
+	if prompt != state.RemotePromptPrompt {
+		if allowPromptStart && prompt == state.RemotePromptPromptStart {
+			// Forced in-band mode exists for live Transport C testing on shells
+			// that emit OSC 133 prompt-start but never publish prompt-complete.
+		} else if prompt == "" {
 			return fmt.Errorf("remote prompt state is unknown; open a normal shell prompt and try again")
+		} else {
+			return fmt.Errorf("remote prompt state is %q, not idle", req.RemotePrompt)
 		}
-		return fmt.Errorf("remote prompt state is %q, not idle", req.RemotePrompt)
 	}
 	if strings.TrimSpace(req.RemoteCWD) == "" {
 		return fmt.Errorf("remote cwd is unknown")

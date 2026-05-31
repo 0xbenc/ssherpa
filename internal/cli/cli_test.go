@@ -466,9 +466,10 @@ func TestValidateOverlayInbandSendRequiresIdlePromptAndCWD(t *testing.T) {
 		return session.InbandSendResult{}, nil
 	}
 	tests := []struct {
-		name string
-		req  session.OverlayTransferRequest
-		want string
+		name             string
+		req              session.OverlayTransferRequest
+		allowPromptStart bool
+		want             string
 	}{
 		{
 			name: "missing sender",
@@ -487,13 +488,32 @@ func TestValidateOverlayInbandSendRequiresIdlePromptAndCWD(t *testing.T) {
 			want: "remote prompt state is unknown",
 		},
 		{
-			name: "busy prompt",
+			name: "prompt start normally blocked",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPromptStart,
+				RemoteCWD:    "/srv",
+			},
+			want: "not idle",
+		},
+		{
+			name: "prompt start allowed for forced transport tests",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPromptStart,
+				RemoteCWD:    "/srv",
+			},
+			allowPromptStart: true,
+		},
+		{
+			name: "running prompt blocked even when prompt start allowed",
 			req: session.OverlayTransferRequest{
 				InbandSend:   send,
 				RemotePrompt: state.RemotePromptRunning,
 				RemoteCWD:    "/srv",
 			},
-			want: "not idle",
+			allowPromptStart: true,
+			want:             "not idle",
 		},
 		{
 			name: "unknown cwd",
@@ -514,7 +534,7 @@ func TestValidateOverlayInbandSendRequiresIdlePromptAndCWD(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateOverlayInbandSend(tt.req)
+			err := validateOverlayInbandSend(tt.req, tt.allowPromptStart)
 			if tt.want == "" {
 				if err != nil {
 					t.Fatalf("validateOverlayInbandSend returned error: %v", err)

@@ -240,7 +240,9 @@ above a size cap (target ~2–5 MB) and recommend A or B instead.
 skip direct SFTP and the remote SFTP folder picker. The destination becomes the
 tracked remote cwd plus the local file basename, so launch `ssherpa` with this
 environment variable from the local side and test from an idle prompt in the
-target directory.
+target directory. In this forced mode only, ssherpa also accepts an OSC-133
+`prompt_start` state for shells that never publish the prompt-complete marker;
+normal automatic fallback still requires a fully idle `prompt` state.
 
 **Protocol.**
 
