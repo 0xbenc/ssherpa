@@ -242,7 +242,9 @@ tracked remote cwd plus the local file basename, so launch `ssherpa` with this
 environment variable from the local side and test from an idle prompt in the
 target directory. In this forced mode only, ssherpa also accepts an OSC-133
 `prompt_start` state for shells that never publish the prompt-complete marker;
-normal automatic fallback still requires a fully idle `prompt` state.
+if OSC 7 cwd tracking is unavailable, it writes to `./<basename>` relative to
+the live shell. Normal automatic fallback still requires both a fully idle
+`prompt` state and a tracked remote cwd.
 
 **Protocol.**
 

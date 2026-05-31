@@ -914,13 +914,13 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 	return code
 }
 
-func validateOverlayInbandSend(req session.OverlayTransferRequest, allowPromptStart bool) error {
+func validateOverlayInbandSend(req session.OverlayTransferRequest, forcedMode bool) error {
 	if req.InbandSend == nil {
 		return fmt.Errorf("in-band sender is not available")
 	}
 	prompt := strings.TrimSpace(req.RemotePrompt)
 	if prompt != state.RemotePromptPrompt {
-		if allowPromptStart && prompt == state.RemotePromptPromptStart {
+		if forcedMode && prompt == state.RemotePromptPromptStart {
 			// Forced in-band mode exists for live Transport C testing on shells
 			// that emit OSC 133 prompt-start but never publish prompt-complete.
 		} else if prompt == "" {
@@ -929,7 +929,7 @@ func validateOverlayInbandSend(req session.OverlayTransferRequest, allowPromptSt
 			return fmt.Errorf("remote prompt state is %q, not idle", req.RemotePrompt)
 		}
 	}
-	if strings.TrimSpace(req.RemoteCWD) == "" {
+	if strings.TrimSpace(req.RemoteCWD) == "" && !forcedMode {
 		return fmt.Errorf("remote cwd is unknown")
 	}
 	return nil
