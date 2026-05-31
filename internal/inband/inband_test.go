@@ -43,7 +43,7 @@ func TestNewSendPlanBuildsHardenedCommands(t *testing.T) {
 	if plan.TempPath != "/srv/app/it's here.bin.ssherpa.testnonce.tmp" {
 		t.Fatalf("TempPath = %q", plan.TempPath)
 	}
-	for _, want := range []string{"stty -echo -ixon -icanon", ReadyPrefix, "head -c 8", "base64 -d", ShellQuote(plan.TempPath)} {
+	for _, want := range []string{"stty -echo -ixon -icanon", ReadyPrefix, "head -c 8", "base64 -d", "base64 -D", ShellQuote(plan.TempPath), ShellQuote(plan.TempPath + ".b64")} {
 		if !strings.Contains(plan.ReceiverCommand, want) {
 			t.Fatalf("receiver command = %q, want substring %q", plan.ReceiverCommand, want)
 		}

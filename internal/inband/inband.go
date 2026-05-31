@@ -136,7 +136,9 @@ func ParseCompletion(output string, expectedSHA256 string) (bool, error) {
 
 func receiverCommand(tempPath string, destination string, expectedSHA256 string, b64Len int64) string {
 	tmp := ShellQuote(tempPath)
-	return fmt.Sprintf("( stty -echo -ixon -icanon 2>/dev/null; printf '"+ReadyPrefix+"\\n'; head -c %d | base64 -d > %s; decode_rc=$?; stty sane 2>/dev/null; if [ \"$decode_rc\" -eq 0 ]; then %s; else printf '"+DonePrefix+" %%s %%s\\n' \"$decode_rc\" \"\"; fi )", b64Len, tmp, commitCommand(tempPath, destination, expectedSHA256))
+	encoded := ShellQuote(tempPath + ".b64")
+	commit := commitCommand(tempPath, destination, expectedSHA256)
+	return fmt.Sprintf("( stty -echo -ixon -icanon 2>/dev/null; printf '"+ReadyPrefix+"\\n'; head -c %d > %s; read_rc=$?; stty sane 2>/dev/null; if [ \"$read_rc\" -eq 0 ]; then if base64 -d < %s > %s 2>/dev/null || base64 -D < %s > %s 2>/dev/null; then rm -f %s; %s; else decode_rc=$?; rm -f %s %s; printf '"+DonePrefix+" %%s %%s\\n' \"$decode_rc\" \"\"; fi; else rm -f %s; printf '"+DonePrefix+" %%s %%s\\n' \"$read_rc\" \"\"; fi )", b64Len, encoded, encoded, tmp, encoded, tmp, encoded, commit, encoded, tmp, encoded)
 }
 
 func commitCommand(tempPath string, destination string, expectedSHA256 string) string {
