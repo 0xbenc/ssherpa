@@ -303,10 +303,12 @@ Add new variables:
 | `SSHERPA_PARENT_SESSION_ID` | Parent session ID for nested route tracking |
 | `SSHERPA_ROUTE` | Comma-separated route metadata |
 | `SSHERPA_DEPTH` | Nested session depth |
+| `SSHERPA_ORIGIN_HOST` | Origin host label for cross-machine route maps |
 
 Remote propagation of `SSHERPA_*` variables should be best effort via
-OpenSSH options such as `SendEnv` and `SetEnv`, but it must not be
-required for local functionality.
+OpenSSH options. Supervised ssh commands add `SendEnv=SSHERPA_*`
+automatically, but server-side `AcceptEnv SSHERPA_*` must allow the
+variables before a remote login shell can see them.
 
 ### Exit Codes
 
@@ -934,8 +936,11 @@ Nested route awareness:
   record it as parent.
 - Increment `SSHERPA_DEPTH`.
 - Append target alias to `SSHERPA_ROUTE`.
-- Attempt to propagate metadata to remote sessions with OpenSSH env
-  options, but do not depend on it.
+- Preserve `SSHERPA_ORIGIN_HOST` so a downstream map can synthesize
+  display-only inherited ancestors even when ancestor JSON records live
+  on another machine.
+- Propagate metadata to remote sessions with OpenSSH env options, but
+  do not depend on it.
 
 State location:
 

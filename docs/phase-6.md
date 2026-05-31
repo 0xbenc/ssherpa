@@ -57,6 +57,7 @@ Each record captures:
 - parent session ID when the local process is launched from an existing
   supervised session;
 - depth;
+- origin host;
 - route and hops;
 - target alias;
 - exact SSH argv;
@@ -73,11 +74,15 @@ SSHERPA_SESSION_ID
 SSHERPA_PARENT_SESSION_ID
 SSHERPA_DEPTH
 SSHERPA_ROUTE
+SSHERPA_ORIGIN_HOST
 ```
 
-OpenSSH server-side `AcceptEnv` policy decides whether that metadata
-survives to a remote login shell. Local nested invocations record parent
-and depth reliably.
+Supervised ssherpa-launched ssh commands add `-o SendEnv=SSHERPA_*`
+automatically. OpenSSH server-side `AcceptEnv SSHERPA_*` policy still
+decides whether that metadata survives to a remote login shell. Local
+nested invocations record parent and depth reliably; remote nested
+invocations can reconstruct inherited ancestors in the map when the
+environment survives each hop.
 
 ## Terminal Behavior
 

@@ -29,6 +29,8 @@ Available Commands:
   jump       Connect through one or more ProxyJump hops
   proxy      Start a local SOCKS proxy through an SSH alias
   forward    Open a local TCP port-forward (-L) tunnel through an SSH alias
+  send       Send a local file to an SSH alias with SFTP
+  receive    Receive a remote file from an SSH alias with SFTP
   check      Test SSH aliases and saved forwards
   authkeys   Manage authorized_keys on this device
   theme      Build and save the terminal UI color schema
@@ -94,6 +96,8 @@ Route Commands:
   ssherpa forward saved edit NAME [--select ALIAS] [--local ...] [--remote ...] [--through HOP|--clear-through] [--description TEXT|--clear-description]
   ssherpa forward saved delete NAME [--yes]
   ssherpa forward saved rename OLD NEW [--yes]
+  ssherpa send LOCAL_FILE --select ALIAS [--remote REMOTE_PATH] [--force] [--print]
+  ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--force] [--print]
 
 Check Commands:
   ssherpa check ALIAS... [--json] [--timeout 5s] [--icmp-timeout 2s] [--no-icmp]
@@ -172,6 +176,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runProxy(args[1:], stdout, stderr)
 	case "forward":
 		return runForward(args[1:], stdout, stderr)
+	case "send":
+		return runSend(args[1:], stdout, stderr)
+	case "receive", "recv":
+		return runReceive(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
 	case "list":
@@ -259,6 +267,10 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			return code
 		}
 		switch item.Kind {
+		case ui.ItemRefresh:
+			// "R" on the home page: re-loop to reload the inventory
+			// and live session/tunnel state, then re-render the picker.
+			continue
 		case ui.ItemAdd:
 			code := runAdd(connectFlagsAsAddArgs(flags), stdout, stderr)
 			if code != 0 || flags.Select != "" {
@@ -285,6 +297,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			return code
 		case ui.ItemForward:
 			code, returnHome := runForwardBuilder(flags, inventory, stdout, stderr)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemTransferFile:
+			code, returnHome := runTransferFileBuilder(flags, inventory, stdout, stderr)
 			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}
@@ -375,14 +393,18 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
 
 		if flags.Print {
+			printCmd := cmd
+			if !flags.Direct {
+				printCmd = sshcmd.WithSessionEnvForwarding(printCmd)
+			}
 			if flags.JSON {
-				if err := sshcmd.WritePrintJSON(stdout, cmd, alias.Name); err != nil {
+				if err := sshcmd.WritePrintJSON(stdout, printCmd, alias.Name); err != nil {
 					fmt.Fprintf(stderr, "ssherpa: write JSON: %v\n", err)
 					return 1
 				}
 				return 0
 			}
-			fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
+			fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(printCmd.Argv))
 			return 0
 		}
 
@@ -669,6 +691,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		Version:     pickerVersionLabel(build),
 		Subtitle:    pickerMode(flags),
 		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)+len(activeProxies)),
+		Refreshable: true,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -780,11 +803,20 @@ func pickerSessionCounts(stateDir string) (total int, active int) {
 		return 0, 0
 	}
 	for _, record := range records {
+		if record.RemoteMirror {
+			continue
+		}
 		if record.Status() == "active" {
 			active++
 		}
 	}
-	return len(records), active
+	total = 0
+	for _, record := range records {
+		if !record.RemoteMirror {
+			total++
+		}
+	}
+	return total, active
 }
 
 func pickerStoppableSessionCount(stateDir string) int {

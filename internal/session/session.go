@@ -2,18 +2,23 @@ package session
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/0xbenc/ssherpa/internal/inband"
 	"github.com/0xbenc/ssherpa/internal/sessionview"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
@@ -71,6 +76,7 @@ type Options struct {
 	Now       func() time.Time
 	Watchdog  WatchdogOptions
 	Composer  ComposerOptions
+	Overlay   OverlayOptions
 	Reconnect ReconnectOptions
 	Theme     termstyle.Theme
 	ThemeName string
@@ -165,6 +171,42 @@ func (c ComposerOptions) hotkeyName() string {
 	return c.HotkeyName
 }
 
+type OverlayTransferRequest struct {
+	Direction    string
+	SessionID    string
+	StateDir     string
+	TargetAlias  string
+	Hops         []string
+	Route        []string
+	ControlPath  string
+	RemoteHost   string
+	RemoteCWD    string
+	RemotePrompt string
+	InbandSend   InbandSendFunc
+}
+
+type OverlayTransferFunc func(OverlayTransferRequest) int
+
+type InbandSendRequest struct {
+	LocalPath  string
+	RemotePath string
+	MaxBytes   int64
+}
+
+type InbandSendResult struct {
+	LocalPath  string
+	RemotePath string
+	Size       int64
+	SHA256     string
+}
+
+type InbandSendFunc func(InbandSendRequest) (InbandSendResult, error)
+
+type OverlayOptions struct {
+	Send    OverlayTransferFunc
+	Receive OverlayTransferFunc
+}
+
 type WatchdogOptions struct {
 	WarnThreshold   time.Duration
 	DisconnectAfter time.Duration
@@ -218,18 +260,48 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		return 1
 	}
 	record := buildRecord(command, metadata, now(), env, opts.RecordID)
+	if controlPath, ok, err := prepareControlMaster(stateDir, record.ID, metadata); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: prepare SSH control socket: %v\n", err)
+		return 1
+	} else if ok {
+		controlled := sshcmd.WithControlMaster(command, controlPath)
+		if !sameStrings(controlled.Argv, command.Argv) {
+			command = controlled
+			record.SSHArgv = append([]string(nil), command.Argv...)
+			record.ControlPath = controlPath
+			defer func() { _ = os.Remove(controlPath) }()
+		}
+	}
+	overlayBase := overlayTransferRequestFromRecord("", stateDir, record)
 	var recordMu sync.Mutex
 
 	// Detached mode has no PTY consumer — skip raw mode entirely.
 	// makeRawIfTerminal handles a non-tty stdin gracefully too, but
 	// explicitly skipping makes the daemon's intent obvious.
+	restoreTerminal := func() {}
+	suspendTerminal := func(fn func()) {
+		fn()
+	}
 	if !opts.Detached {
 		restore, err := makeRawIfTerminal(stdin)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
 			return 1
 		}
-		defer restore()
+		restoreTerminal = restore
+		defer func() { restoreTerminal() }()
+		suspendTerminal = func(fn func()) {
+			restoreTerminal()
+			defer func() {
+				restore, err := makeRawIfTerminal(stdin)
+				if err != nil {
+					fmt.Fprintf(stderr, "ssherpa: restore raw terminal mode: %v\n", err)
+					return
+				}
+				restoreTerminal = restore
+			}()
+			fn()
+		}
 	}
 
 	// The supervisor swaps these per attempt as the reconnect loop
@@ -287,6 +359,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	}
 
 	output := &lockedWriter{w: stdout}
+	tap := &outputTap{}
 	inputDone := make(chan struct{})
 	defer close(inputDone)
 	var inputStarted atomic.Bool
@@ -294,7 +367,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		if !inputStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go copyInput(ptmxRefShared, stdin, output, stateDir, record.ID, opts.Composer, theme, pullRope, inputDone)
+		go copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, suspendTerminal, inputDone)
 	}
 	if opts.Detached {
 		// In detached mode there is no stdin to forward and no
@@ -318,6 +391,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			ptmxRef:     ptmxRefShared,
 			procRef:     procRefShared,
 			output:      output,
+			outputTap:   tap,
 			watchdog:    opts.Watchdog,
 			stderr:      stderr,
 			now:         now,
@@ -387,12 +461,17 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	record.EndedAt = &endedAt
 	record.ExitCode = &exitCode
 	err = state.WriteRecord(stateDir, record)
+	recordForTelemetry := record
 	recordMu.Unlock()
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: update session record: %v\n", err)
 		if exitCode == 0 {
 			return 1
 		}
+	}
+	if err == nil {
+		finalizeRemoteMirrors(stateDir, recordForTelemetry, endedAt, exitCode)
+		emitSessionTelemetry(output, recordForTelemetry, env)
 	}
 	return exitCode
 }
@@ -429,6 +508,7 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 	} else if metadata.TargetAlias != "" {
 		route = append(route, metadata.TargetAlias)
 	}
+	originHost := state.LocalOriginHost(env)
 
 	var forward *state.ForwardSpec
 	if metadata.Forward != nil {
@@ -449,6 +529,7 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		ParentID:     parentID,
 		Depth:        depth,
 		Route:        route,
+		OriginHost:   originHost,
 		TargetAlias:  metadata.TargetAlias,
 		Hops:         append([]string(nil), metadata.Hops...),
 		SSHArgv:      append([]string(nil), command.Argv...),
@@ -460,6 +541,24 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 		RunnerMode:   RunnerModeSupervised,
 		StateVersion: state.StateVersion,
 	}
+}
+
+func prepareControlMaster(stateDir string, recordID string, metadata Metadata) (string, bool, error) {
+	if strings.TrimSpace(recordID) == "" || !interactiveSessionKind(metadata.Kind) {
+		return "", false, nil
+	}
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("ssherpa-%d", os.Getuid()), "cm")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, err
+	}
+	sum := sha1.Sum([]byte(stateDir + "\x00" + recordID))
+	path := filepath.Join(dir, hex.EncodeToString(sum[:8])+".sock")
+	return path, true, nil
+}
+
+func interactiveSessionKind(kind string) bool {
+	kind = strings.TrimSpace(kind)
+	return kind == "" || kind == state.KindInteractive
 }
 
 func sessionEnv(env []string, record state.SessionRecord) []string {
@@ -512,13 +611,61 @@ func (w *lockedWriter) Write(data []byte) (int, error) {
 	return w.w.Write(data)
 }
 
+type outputTap struct {
+	mu     sync.Mutex
+	active *activeOutputTap
+}
+
+type activeOutputTap struct {
+	ch       chan []byte
+	suppress bool
+}
+
+func (t *outputTap) start(suppress bool) (<-chan []byte, func()) {
+	if t == nil {
+		ch := make(chan []byte)
+		close(ch)
+		return ch, func() {}
+	}
+	active := &activeOutputTap{ch: make(chan []byte, 1024), suppress: suppress}
+	t.mu.Lock()
+	t.active = active
+	t.mu.Unlock()
+	stop := func() {
+		t.mu.Lock()
+		if t.active == active {
+			t.active = nil
+		}
+		t.mu.Unlock()
+	}
+	return active.ch, stop
+}
+
+func (t *outputTap) observe(data []byte) bool {
+	if t == nil || len(data) == 0 {
+		return false
+	}
+	t.mu.Lock()
+	active := t.active
+	t.mu.Unlock()
+	if active == nil {
+		return false
+	}
+	copied := append([]byte(nil), data...)
+	select {
+	case active.ch <- copied:
+	default:
+	}
+	return active.suppress
+}
+
 type overlayFrame struct {
 	terminal bool
 	startRow int
 	lines    int
 }
 
-func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir string, currentID string, composer ComposerOptions, theme termstyle.Theme, pullRope func(), done <-chan struct{}) {
+func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, composer ComposerOptions, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -528,7 +675,7 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir 
 		if n > 0 {
 			switch {
 			case buf[0] == OverlayHotkey:
-				showSessionOverlay(stdin, output, stateDir, currentID, theme, pullRope, time.Now())
+				showSessionOverlay(ptmxRef, stdin, output, tap, stateDir, currentID, overlayBase, overlay, theme, pullRope, suspendTerminal, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
 				if ptmx := ptmxRef.get(); ptmx != nil {
 					showComposer(stdin, output, ptmx, composer, theme)
@@ -548,12 +695,24 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, stateDir 
 	}
 }
 
-func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, currentID string, theme termstyle.Theme, pullRope func(), openedAt time.Time) {
+func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), openedAt time.Time) {
 	output.mu.Lock()
-	defer output.mu.Unlock()
+	_, stopOverlayTap := tap.start(true)
+	unlocked := false
+	unlock := func() {
+		if unlocked {
+			return
+		}
+		stopOverlayTap()
+		output.mu.Unlock()
+		unlocked = true
+	}
+	defer unlock()
 
-	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
-	defer func() { clearSessionOverlay(output.w, frame) }()
+	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+	clearAndReturn := func() {
+		clearSessionOverlay(output.w, frame)
+	}
 
 	pull := func() {
 		if pullRope != nil {
@@ -582,11 +741,12 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 			// cancels back to the session map.
 			if key == 'X' {
 				pull()
+				clearAndReturn()
 				return
 			}
 			confirming = false
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
 			continue
 		}
 
@@ -596,10 +756,12 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 				lastTap = time.Now()
 				if taps >= escapeRopePanicTaps {
 					pull()
+					clearAndReturn()
 					return
 				}
 				continue
 			}
+			clearAndReturn()
 			return // a single, settled hotkey press closes the overlay
 		}
 		// Any other key breaks a panic-tap streak.
@@ -607,6 +769,7 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 
 		switch key {
 		case 'q', 'Q', '\r', '\n', 0x1b, 0x03:
+			clearAndReturn()
 			return
 		case 'X':
 			// Escape rope: confirm before tearing down every layer.
@@ -615,9 +778,225 @@ func showSessionOverlay(stdin *os.File, output *lockedWriter, stateDir string, c
 			frame = drawEscapeConfirm(output.w, stdin, theme)
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, theme)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+		case 's', 'S':
+			if overlay.Send == nil {
+				clearSessionOverlay(output.w, frame)
+				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa send", "send is not available for this session")
+				continue
+			}
+			clearSessionOverlay(output.w, frame)
+			req := overlayTransferRequest("send", stateDir, currentID, overlayBase)
+			req.InbandSend = newInbandSendFunc(ptmxRef, tap)
+			unlock()
+			runOverlayTransfer(overlay.Send, req, suspendTerminal)
+			return
+		case 'v', 'V':
+			if overlay.Receive == nil {
+				clearSessionOverlay(output.w, frame)
+				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa receive", "receive is not available for this session")
+				continue
+			}
+			clearSessionOverlay(output.w, frame)
+			unlock()
+			runOverlayTransfer(overlay.Receive, overlayTransferRequest("receive", stateDir, currentID, overlayBase), suspendTerminal)
+			return
 		}
 	}
+}
+
+func runOverlayTransfer(fn OverlayTransferFunc, req OverlayTransferRequest, suspendTerminal func(func())) {
+	if suspendTerminal == nil {
+		_ = fn(req)
+		return
+	}
+	suspendTerminal(func() {
+		_ = fn(req)
+	})
+}
+
+func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
+	return func(req InbandSendRequest) (InbandSendResult, error) {
+		localPath := strings.TrimSpace(req.LocalPath)
+		remotePath := strings.TrimSpace(req.RemotePath)
+		if localPath == "" {
+			return InbandSendResult{}, errors.New("local path is required")
+		}
+		if remotePath == "" {
+			return InbandSendResult{}, errors.New("remote path is required")
+		}
+		file, err := os.Open(localPath)
+		if err != nil {
+			return InbandSendResult{}, fmt.Errorf("open local file: %w", err)
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			return InbandSendResult{}, fmt.Errorf("stat local file: %w", err)
+		}
+		if info.IsDir() {
+			return InbandSendResult{}, fmt.Errorf("local path %s is a directory", localPath)
+		}
+		plan, payload, err := inband.NewSendPlanFromReader(remotePath, state.NewSessionID(time.Now().UTC()), file, req.MaxBytes)
+		if err != nil {
+			return InbandSendResult{}, err
+		}
+		encoded := make([]byte, base64.StdEncoding.EncodedLen(len(payload)))
+		base64.StdEncoding.Encode(encoded, payload)
+
+		ptmx := ptmxRef.get()
+		if ptmx == nil {
+			return InbandSendResult{}, errors.New("session PTY is not available")
+		}
+		output, stopTap := tap.start(true)
+		defer stopTap()
+
+		writeLine := func(line string) error {
+			_, err := ptmx.Write([]byte(line + "\n"))
+			return err
+		}
+		if err := writeLine(plan.ProbeCommand); err != nil {
+			return InbandSendResult{}, fmt.Errorf("write capability probe: %w", err)
+		}
+		probe, err := waitForInbandOutput(output, 5*time.Second, func(text string) (bool, error) {
+			switch {
+			case strings.Contains(text, inband.ProbePrefix+" ok"):
+				return true, nil
+			case strings.Contains(text, inband.ProbePrefix+" fail"):
+				return false, errors.New("remote shell lacks base64, checksum, or stty support")
+			default:
+				return false, nil
+			}
+		})
+		if err != nil {
+			return InbandSendResult{}, fmt.Errorf("capability probe failed: %w", err)
+		}
+		if !probe {
+			return InbandSendResult{}, errors.New("capability probe did not complete")
+		}
+
+		if err := writeLine(plan.ReceiverCommand); err != nil {
+			return InbandSendResult{}, fmt.Errorf("write receiver command: %w", err)
+		}
+		ready, err := waitForInbandOutput(output, 5*time.Second, func(text string) (bool, error) {
+			return strings.Contains(text, inband.ReadyPrefix), nil
+		})
+		if err != nil {
+			_, _ = ptmx.Write([]byte{0x03})
+			_ = writeLine(plan.ResetCommand)
+			return InbandSendResult{}, fmt.Errorf("receiver did not become ready: %w", err)
+		}
+		if !ready {
+			_, _ = ptmx.Write([]byte{0x03})
+			_ = writeLine(plan.ResetCommand)
+			return InbandSendResult{}, errors.New("receiver did not become ready")
+		}
+		for len(encoded) > 0 {
+			n := min(len(encoded), 4096)
+			if _, err := ptmx.Write(encoded[:n]); err != nil {
+				_, _ = ptmx.Write([]byte{0x03})
+				_ = writeLine(plan.ResetCommand)
+				return InbandSendResult{}, fmt.Errorf("stream payload: %w", err)
+			}
+			encoded = encoded[n:]
+		}
+		done, err := waitForInbandOutput(output, 30*time.Second, func(text string) (bool, error) {
+			ok, parseErr := inband.ParseCompletion(text, plan.SHA256)
+			if parseErr == nil && ok {
+				return true, nil
+			}
+			if parseErr != nil && !strings.Contains(parseErr.Error(), "completion sentinel not found") {
+				return false, parseErr
+			}
+			return false, nil
+		})
+		if err != nil {
+			_, _ = ptmx.Write([]byte{0x03})
+			_ = writeLine(plan.ResetCommand)
+			return InbandSendResult{}, fmt.Errorf("in-band transfer failed: %w", err)
+		}
+		if !done {
+			_, _ = ptmx.Write([]byte{0x03})
+			_ = writeLine(plan.ResetCommand)
+			return InbandSendResult{}, errors.New("in-band transfer did not complete")
+		}
+		return InbandSendResult{
+			LocalPath:  localPath,
+			RemotePath: remotePath,
+			Size:       plan.Size,
+			SHA256:     plan.SHA256,
+		}, nil
+	}
+}
+
+func waitForInbandOutput(ch <-chan []byte, timeout time.Duration, done func(string) (bool, error)) (bool, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var b strings.Builder
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				return false, errors.New("output tap closed")
+			}
+			b.Write(chunk)
+			if b.Len() > 64*1024 {
+				text := b.String()
+				b.Reset()
+				if len(text) > 32*1024 {
+					b.WriteString(text[len(text)-32*1024:])
+				}
+			}
+			okDone, err := done(b.String())
+			if err != nil || okDone {
+				return okDone, err
+			}
+		case <-timer.C:
+			return false, errors.New("timed out waiting for remote response")
+		}
+	}
+}
+
+func overlayTransferRequest(direction string, stateDir string, currentID string, fallback OverlayTransferRequest) OverlayTransferRequest {
+	req := fallback
+	req.Direction = direction
+	req.SessionID = currentID
+	req.StateDir = stateDir
+	record, err := state.ReadRecord(stateDir, currentID)
+	if err != nil {
+		return req
+	}
+	next := overlayTransferRequestFromRecord(direction, stateDir, record)
+	next.InbandSend = fallback.InbandSend
+	return next
+}
+
+func overlayTransferRequestFromRecord(direction string, stateDir string, record state.SessionRecord) OverlayTransferRequest {
+	req := OverlayTransferRequest{
+		Direction:    direction,
+		SessionID:    record.ID,
+		StateDir:     stateDir,
+		TargetAlias:  record.TargetAlias,
+		Hops:         append([]string(nil), record.Hops...),
+		Route:        append([]string(nil), record.Route...),
+		ControlPath:  record.ControlPath,
+		RemoteHost:   record.RemoteHost,
+		RemoteCWD:    record.RemoteCWD,
+		RemotePrompt: record.RemotePrompt,
+	}
+	return req
+}
+
+func sameStrings(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overlayFrame {
@@ -625,6 +1004,15 @@ func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overl
 		overlayTitle("ssherpa escape rope", theme),
 		theme.Style(termstyle.RoleWarning, "Disconnect ALL nested sessions and return to the outermost shell?"),
 		overlayHelp("press X to confirm   any other key cancels", theme),
+	}
+	return drawBottomFrame(w, stdin, lines)
+}
+
+func drawOverlayNotice(w io.Writer, stdin *os.File, theme termstyle.Theme, title string, message string) overlayFrame {
+	lines := []string{
+		overlayTitle(title, theme),
+		theme.Style(termstyle.RoleWarning, message),
+		overlayHelp("press any key to return", theme),
 	}
 	return drawBottomFrame(w, stdin, lines)
 }
@@ -651,9 +1039,17 @@ func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
 	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
 }
 
-func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
+func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, overlay OverlayOptions, theme termstyle.Theme) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
-	help := fmt.Sprintf("%s/q/Esc close   r refresh   X escape rope   %sx3 panic   local only", OverlayHotkeyName, OverlayHotkeyName)
+	actions := []string{fmt.Sprintf("%s/q/Esc close", OverlayHotkeyName), "r refresh"}
+	if overlay.Send != nil {
+		actions = append(actions, "s send")
+	}
+	if overlay.Receive != nil {
+		actions = append(actions, "v receive")
+	}
+	actions = append(actions, "X escape rope", fmt.Sprintf("%sx3 panic", OverlayHotkeyName), "local only")
+	help := strings.Join(actions, "   ")
 	lines := sessionOverlayLines(stateDir, currentID, theme, width, height, help)
 
 	if !terminalOutput {
@@ -1220,24 +1616,25 @@ func (r *procRef) get() *os.Process {
 // per-attempt scratch (proc, ptmx) or a long-lived pointer that the
 // shared state (record, refs) writes through.
 type attemptContext struct {
-	command  sshcmd.Command
-	stateDir string
-	record   *state.SessionRecord
-	recordMu *sync.Mutex
-	env      []string
-	stdin    *os.File
-	ptmxRef  *ptmxRef
-	procRef  *procRef
-	output   *lockedWriter
-	watchdog WatchdogOptions
-	stderr   io.Writer
-	now      func() time.Time
-	// onPtmxReady, if non-nil, is invoked once per attempt right
-	// after ptmxRef has been set to the freshly-started PTY. The
-	// supervisor uses this to start the long-lived copyInput
-	// goroutine on the first attempt — before then a fixture-driven
-	// test's stdin bytes could race ahead of the first set and get
-	// dropped by ptmxRef.write's nil fallback.
+	command   sshcmd.Command
+	stateDir  string
+	record    *state.SessionRecord
+	recordMu  *sync.Mutex
+	env       []string
+	stdin     *os.File
+	ptmxRef   *ptmxRef
+	procRef   *procRef
+	output    *lockedWriter
+	outputTap *outputTap
+	watchdog  WatchdogOptions
+	stderr    io.Writer
+	now       func() time.Time
+	// onPtmxReady, if non-nil, is invoked once per attempt after ptmxRef
+	// points at the freshly-started PTY and the active record has been
+	// written. The supervisor uses this to start the long-lived copyInput
+	// goroutine on the first attempt; opening the input path after the
+	// record write keeps an immediate overlay from racing ahead of the
+	// current session's state file.
 	onPtmxReady func()
 	// pullRope, if non-nil, is the supervisor's escape-rope handle.
 	// forwardSignals invokes it on external SIGTERM/SIGHUP/SIGQUIT
@@ -1265,13 +1662,11 @@ func attemptOnce(ac attemptContext) error {
 		ac.procRef.set(nil)
 		ac.ptmxRef.set(nil)
 	}()
-	if ac.onPtmxReady != nil {
-		ac.onPtmxReady()
-	}
 
 	ac.recordMu.Lock()
 	ac.record.SSHPID = proc.Process.Pid
 	writeErr := state.WriteRecord(ac.stateDir, *ac.record)
+	recordForTelemetry := *ac.record
 	ac.recordMu.Unlock()
 	if writeErr != nil {
 		_ = proc.Process.Kill()
@@ -1279,10 +1674,15 @@ func attemptOnce(ac attemptContext) error {
 		_ = ptmx.Close()
 		return fmt.Errorf("write session record: %w", writeErr)
 	}
+	emitSessionTelemetry(ac.output, recordForTelemetry, ac.env)
+
+	if ac.onPtmxReady != nil {
+		ac.onPtmxReady()
+	}
 
 	outputDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(ac.output, ptmx)
+		copyOutput(ac, ptmx)
 		close(outputDone)
 	}()
 
@@ -1301,11 +1701,196 @@ func attemptOnce(ac attemptContext) error {
 	stopWatchdog()
 	stopSignals()
 	// Close ptmx explicitly before waiting for the output-copy goroutine
-	// to drain — io.Copy(ac.output, ptmx) only returns when its source
-	// hits EOF, and a still-open ptmx never does.
+	// to drain. The reader only returns when its source hits EOF, and
+	// a still-open ptmx never does.
 	_ = ptmx.Close()
 	<-outputDone
 	return waitErr
+}
+
+func copyOutput(ac attemptContext, ptmx *os.File) {
+	tracker := newOSCTracker()
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := ptmx.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			observed, clean := tracker.ObserveAndFilter(chunk)
+			if len(clean) > 0 {
+				suppress := false
+				if ac.outputTap != nil {
+					suppress = ac.outputTap.observe(clean)
+				}
+				if !suppress {
+					_, _ = ac.output.Write(clean)
+				}
+			}
+			if observed.RemoteChanged {
+				recordRemoteState(ac, observed.Remote)
+			}
+			for _, mirror := range observed.Mirrors {
+				mirrorRemoteSessionRecord(ac, mirror)
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func emitSessionTelemetry(output io.Writer, record state.SessionRecord, env []string) {
+	if output == nil || record.RemoteMirror || !shouldEmitSessionTelemetry(record, env) {
+		return
+	}
+	payload, ok := sessionTelemetryOSC(record)
+	if ok {
+		_, _ = output.Write(payload)
+	}
+	frame, ok := sessionTelemetryFrame(record)
+	if ok {
+		_, _ = output.Write(frame)
+	}
+}
+
+func shouldEmitSessionTelemetry(record state.SessionRecord, env []string) bool {
+	if record.ParentID != "" {
+		return true
+	}
+	return sessionEnvValue(env, "SSH_CONNECTION") != "" || sessionEnvValue(env, "SSH_TTY") != ""
+}
+
+func sessionEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func mirrorRemoteSessionRecord(ac attemptContext, record state.SessionRecord) {
+	parent := *ac.record
+	record, ok := remoteMirrorRecord(parent, record)
+	if !ok {
+		return
+	}
+	_ = state.WriteRecord(ac.stateDir, record)
+}
+
+func finalizeRemoteMirrors(stateDir string, parent state.SessionRecord, endedAt time.Time, exitCode int) {
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		return
+	}
+	finalized := map[string]bool{parent.ID: true}
+	for {
+		changed := false
+		for _, record := range records {
+			if !record.RemoteMirror || record.EndedAt != nil || !finalized[record.ParentID] {
+				continue
+			}
+			record.EndedAt = &endedAt
+			record.ExitCode = &exitCode
+			if parent.DisconnectReason != "" && record.DisconnectReason == "" {
+				record.DisconnectReason = parent.DisconnectReason
+			}
+			if err := state.WriteRecord(stateDir, record); err == nil {
+				finalized[record.ID] = true
+				changed = true
+			}
+		}
+		if !changed {
+			return
+		}
+		records, err = state.ListRecords(stateDir)
+		if err != nil {
+			return
+		}
+	}
+}
+
+func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (state.SessionRecord, bool) {
+	if child.ID == "" || child.ID == parent.ID || child.RemoteMirror {
+		return state.SessionRecord{}, false
+	}
+	if child.ParentID == "" {
+		child.ParentID = parent.ID
+		child.Depth = parent.Depth + 1
+		child.OriginHost = firstNonEmpty(parent.OriginHost, child.OriginHost)
+		child.Route = appendRoute(parent.Route, child.Route, child.TargetAlias)
+	} else if !isDescendantTelemetry(parent, child) {
+		return state.SessionRecord{}, false
+	}
+	child.RemoteMirror = true
+	child.Inherited = false
+	child.LocalPID = 0
+	child.SSHPID = 0
+	if child.StateVersion == 0 {
+		child.StateVersion = state.StateVersion
+	}
+	return child, true
+}
+
+func isDescendantTelemetry(parent state.SessionRecord, child state.SessionRecord) bool {
+	if child.ID == "" || child.ID == parent.ID || child.ParentID == "" {
+		return false
+	}
+	if child.ParentID == parent.ID {
+		return true
+	}
+	if len(parent.Route) == 0 || len(child.Route) <= len(parent.Route) {
+		return false
+	}
+	for i, part := range parent.Route {
+		if child.Route[i] != part {
+			return false
+		}
+	}
+	if parent.OriginHost != "" && child.OriginHost != "" && parent.OriginHost != child.OriginHost {
+		return false
+	}
+	return true
+}
+
+func appendRoute(parentRoute []string, childRoute []string, fallbackTarget string) []string {
+	route := append([]string(nil), parentRoute...)
+	appendPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		if len(route) > 0 && route[len(route)-1] == part {
+			return
+		}
+		route = append(route, part)
+	}
+	for _, part := range childRoute {
+		appendPart(part)
+	}
+	if len(route) == len(parentRoute) {
+		appendPart(fallbackTarget)
+	}
+	return route
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func recordRemoteState(ac attemptContext, observed remoteState) {
+	ac.recordMu.Lock()
+	if applyRemoteStateToRecord(ac.record, observed) {
+		// Best effort: losing a live cwd/prompt update should not interrupt
+		// the user's SSH stream.
+		_ = state.WriteRecord(ac.stateDir, *ac.record)
+	}
+	ac.recordMu.Unlock()
 }
 
 // shouldRetry decides whether the supervisor's reconnect loop should

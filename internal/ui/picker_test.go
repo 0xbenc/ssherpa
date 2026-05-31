@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -18,14 +20,14 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 		},
 	})
 
-	// Expected order: Active Tunnels, Saved Forwards, Actions (10), Hosts.
-	if len(items) != 1+1+10+1 {
-		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+10+1)
+	// Expected order: Active Tunnels, Saved Forwards, Actions (11), Hosts.
+	if len(items) != 1+1+11+1 {
+		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+11+1)
 	}
 	want := []ItemKind{
 		ItemForwardActive, // active tunnel row
 		ItemForwardSaved,  // saved forward row
-		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs,
+		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemTransferFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs,
 		ItemAlias, // host
 	}
 	for i, kind := range want {
@@ -60,27 +62,27 @@ func TestBuildItemsIncludesStopAllActiveAction(t *testing.T) {
 func TestBuildItemsPrependsSyntheticRows(t *testing.T) {
 	items := BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}})
 
-	if len(items) != 11 {
-		t.Fatalf("len(items) = %d, want 11", len(items))
+	if len(items) != 12 {
+		t.Fatalf("len(items) = %d, want 12", len(items))
 	}
 
-	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs, ItemAlias}
+	want := []ItemKind{ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemTransferFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs, ItemAlias}
 	for i, kind := range want {
 		if items[i].Kind != kind {
 			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
 		}
 	}
-	if items[10].Token != "prod" || items[10].Description != "prod.example.com" || items[10].Group != "Hosts" {
-		t.Fatalf("alias item = %#v", items[10])
+	if items[11].Token != "prod" || items[11].Description != "prod.example.com" || items[11].Group != "Hosts" {
+		t.Fatalf("alias item = %#v", items[11])
 	}
 }
 
 func TestBuildItemsIncludesSessionCounts(t *testing.T) {
 	items := BuildItemsWithOptions(nil, BuildItemsOptions{SessionCount: 4, ActiveSessionCount: 2})
 
-	session := items[7]
+	session := items[8]
 	if session.Kind != ItemSessions {
-		t.Fatalf("items[6].Kind = %q, want sessions", session.Kind)
+		t.Fatalf("items[8].Kind = %q, want sessions", session.Kind)
 	}
 	if session.Description != "" {
 		t.Fatalf("session action description = %q, want empty", session.Description)
@@ -105,6 +107,71 @@ func TestFuzzyMatch(t *testing.T) {
 	}
 }
 
+func TestPickerRefreshKeyReturnsRefreshResult(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		Refreshable: true,
+	})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	picker := updated.(pickerModel)
+	if !picker.refresh {
+		t.Fatalf("refresh = false, want true after pressing R on home page")
+	}
+	if picker.canceled {
+		t.Fatalf("canceled = true, want false")
+	}
+}
+
+func TestPickerRefreshKeyIsPlainFilterWhenNotRefreshable(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+	})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	picker := updated.(pickerModel)
+	if picker.refresh {
+		t.Fatalf("refresh = true, want false when picker is not refreshable")
+	}
+	if picker.query != "R" {
+		t.Fatalf("query = %q, want %q (R types into the filter)", picker.query, "R")
+	}
+}
+
+func TestPickerCapitalQQuits(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		Refreshable: true,
+	})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'Q', Text: "Q"})
+	picker := updated.(pickerModel)
+	if !picker.canceled {
+		t.Fatalf("canceled = false, want true after pressing Q")
+	}
+
+	// Lowercase q is now a filter character, not a quit key.
+	typed, _ := model.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if typedModel := typed.(pickerModel); typedModel.canceled || typedModel.query != "q" {
+		t.Fatalf("lowercase q: canceled=%v query=%q, want canceled=false query=%q", typedModel.canceled, typedModel.query, "q")
+	}
+}
+
+func TestPickerHomeFooterAdvertisesRefreshAndCapitalQuit(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		Refreshable: true,
+	})
+	text := model.View().Content
+	if !strings.Contains(text, "R refresh") {
+		t.Fatalf("home footer missing 'R refresh':\n%s", text)
+	}
+	if !strings.Contains(text, "Q quit") {
+		t.Fatalf("home footer missing 'Q quit':\n%s", text)
+	}
+}
+
 func TestPickerViewHonorsNoAltScreen(t *testing.T) {
 	model := newPickerModel([]Item{{Kind: ItemAlias, Token: "prod", Title: "prod"}}, PickOptions{NoAltScreen: true})
 
@@ -121,6 +188,7 @@ func TestPickerViewRendersHeaderGroupsAndRows(t *testing.T) {
 		Subtitle:    "exec mode",
 		Summary:     []string{"1 host  0 warnings"},
 	})
+	model.height = 40
 	view := model.View()
 	text := view.Content
 
@@ -237,7 +305,7 @@ func TestPickerHostRowsOnlyShowNickname(t *testing.T) {
 		NoColor:     true,
 	})
 	model.width = 120
-	model.cursor = 10
+	model.cursor = 11
 
 	text := model.View().Content
 	for _, line := range strings.Split(text, "\n") {
@@ -345,6 +413,9 @@ func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
 		{ItemJump, "\x1b[35m"},          // route builder
 		{ItemProxy, "\x1b[31m"},         // exposed local proxy
 		{ItemForward, "\x1b[36m"},       // tunnel builder
+		{ItemTransferFile, "\x1b[32m"},  // file transfer entry point
+		{ItemSendFile, "\x1b[36m"},      // file transfer
+		{ItemReceiveFile, "\x1b[36m"},   // file transfer
 		{ItemForwardSaved, "\x1b[36m"},  // tunnel launch
 		{ItemForwardActive, "\x1b[31m"}, // stop running tunnel
 		{ItemProxyActive, "\x1b[31m"},   // stop running proxy
@@ -408,6 +479,7 @@ func TestPickerWideLayoutKeepsActionTitlesComplete(t *testing.T) {
 		"Edit aliases and forwards",
 		"Jump via intermediate hops",
 		"Open port-forward tunnel",
+		"Transfer file",
 		"Sessions and route map",
 	} {
 		if !strings.Contains(text, title) {

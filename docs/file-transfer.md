@@ -1,9 +1,21 @@
 # File Transfer ("Beam")
 
-> **Status: design.** Nothing in this document is implemented yet. It is the
-> agreed architecture for adding a file-transfer action to the supervised
-> session, reachable from the `Ctrl-]` overlay alongside the session map, the
-> composer, and the escape rope.
+> **Status: foundation in progress.** Phase 0 passive stream sniffing is
+> implemented: supervised sessions observe OSC 7 cwd markers and OSC 133 prompt
+> markers, persist the latest observed state on the session record, and show it
+> in the session map. Public `send` / `receive` commands and the home-page
+> **Transfer file** action now covers the direct SFTP path,
+> including local and remote file/folder choosers plus post-transfer
+> confirmations for the home actions and overlay transfers. Direct SFTP
+> transfers refuse destination overwrites unless confirmed or forced, and
+> directory selections are rejected with explicit file-only guidance. The session
+> overlay has direct-SFTP `send` and `receive` actions for interactive sessions,
+> reusing the supervised SSH connection's ControlMaster socket when available
+> and recording overlay transfer audit events. Transport C now provides a
+> prompt-gated, send-only in-band fallback for overlay sends when direct SFTP
+> cannot reach the remote cwd. Set `SSHERPA_TRANSFER_TRANSPORT=inband` before
+> launching `ssherpa` to force that overlay-send fallback for testing. Wormhole
+> transport remains design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -137,9 +149,12 @@ new channel on the **existing** socket:
 -o ControlMaster=auto -o ControlPath=<per-session socket> -o ControlPersist=…
 ```
 
-These are injected into the original invocation in the `sshcmd.Build*`
-constructors (`internal/sshcmd/sshcmd.go`), gated to the supervised path, so the
-control socket is guaranteed to exist when the user beams a file.
+These are injected into the supervised invocation by
+`sshcmd.WithControlMaster` (`internal/sshcmd/sshcmd.go`), gated to the
+interactive supervised path, so the control socket is available when the user
+beams a file from the overlay. Overlay SFTP transfers receive that
+`ControlPath` through the session record and pass it to `sftp -o
+ControlMaster=auto -o ControlPath=…`.
 
 **Destination.** Default to the OSC-7 cwd (`sftp` `cd` then `put`), else remote
 `$HOME`, else a confirmed path.
@@ -187,9 +202,11 @@ through the PTY, and send the bytes over the network via a relay.
 
 - **The receiver is already installed.** Nested supervision *already requires
   ssherpa on every hop* — that is how the session lineage (`SSHERPA_DEPTH` /
-  `ROUTE` / `PARENT`, see `state.EnvForRecord`) propagates. The same install
-  that draws the session map provides `ssherpa recv`. **No chicken-and-egg, no
-  external Python, no "is wormhole on this box."**
+  `ROUTE` / `PARENT` / `ORIGIN_HOST`, see `state.EnvForRecord`) propagates
+  when supervised ssh's automatic `SendEnv=SSHERPA_*` meets server-side
+  `AcceptEnv SSHERPA_*`. The same install that draws the session map provides
+  `ssherpa recv`. **No chicken-and-egg, no external Python, no "is wormhole on
+  this box."**
 - **We own the relay configuration.** Default to the public rendezvous/transit
   relay, but expose `--rendezvous-url` / `--transit-relay` and a config setting
   so regulated environments self-host. On-brand with ssherpa's "everything
@@ -218,6 +235,16 @@ naive "base64 heredoc" is fragile; this is the version that is actually robust.
 **Preconditions.** Proceed only if the OSC-133 interlock says we are idle at a
 prompt (or the user explicitly confirms and an active probe succeeds). Refuse
 above a size cap (target ~2–5 MB) and recommend A or B instead.
+
+**Forced test mode.** `SSHERPA_TRANSFER_TRANSPORT=inband` makes overlay send
+skip direct SFTP and the remote SFTP folder picker. The destination becomes the
+tracked remote cwd plus the local file basename, so launch `ssherpa` with this
+environment variable from the local side and test from an idle prompt in the
+target directory. In this forced mode only, ssherpa also accepts an OSC-133
+`prompt_start` state for shells that never publish the prompt-complete marker;
+if OSC 7 cwd tracking is unavailable, it writes to `./<basename>` relative to
+the live shell. Normal automatic fallback still requires both a fully idle
+`prompt` state and a tracked remote cwd.
 
 **Protocol.**
 
@@ -375,10 +402,24 @@ recorded lineage rather than an invisible side effect.
 
 0. **Sniffers.** OSC 7 (cwd) and OSC 133 (prompt state) passive trackers on the
    output stream. Low risk, independently useful, the foundation for everything.
+   **Implemented.**
 1. **Transport A.** scp/sftp over an auto-enabled `ControlMaster` socket, with
    the local picker and destination confirmation. Fast value, common topology.
+   **Mostly implemented:** public `send` / `receive` SFTP commands and the
+   home-page **Send file** / **Receive file** actions exist, with local and
+   remote file/folder choosers plus post-transfer confirmations. The `Ctrl-]`
+   overlay can launch send and receive against the current interactive session,
+   start its remote pickers from the tracked remote cwd, reuse the session
+   ControlMaster socket, and record overlay transfer audit events.
 2. **Transport C.** The hardened in-band stream as the universal fallback, gated
    by the Phase-0 interlock.
+   **Send fallback implemented:** overlay send can stream one local file through
+   the live PTY to the tracked remote cwd when direct SFTP is unavailable, with
+   a ready sentinel, size cap, echo suppression, checksum verification, and
+   temp-file commit that refuses to overwrite an existing destination. For
+   test coverage, `SSHERPA_TRANSFER_TRANSPORT=inband` forces this path and
+   writes into the tracked remote cwd. Receive and directory support remain out
+   of scope.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa
    recv`; wire the inject-the-receiver orchestration and relay configuration.
    The marquee feature.

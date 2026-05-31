@@ -5,7 +5,7 @@ _ssherpa()
     local cur prev words cword
     _init_completion || return
 
-    local commands="add edit jump proxy forward check authkeys theme session list show version help"
+    local commands="add edit jump proxy forward send receive check authkeys theme session list show version help"
     local global_flags="--json --all --filter --user --config --state-dir --ssh-binary --no-color --theme-file --help"
 
     case "${words[1]}" in
@@ -67,6 +67,14 @@ _ssherpa()
             ;;
         check)
             COMPREPLY=( $(compgen -W "--json --config --state-dir --ssh-binary --timeout --icmp-timeout --no-icmp --filter --user --all --saved-forward --saved-forwards" -- "$cur") )
+            return
+            ;;
+        send)
+            COMPREPLY=( $(compgen -W "--select --remote --config --sftp-binary --force --print --filter --user --all --no-color --theme-file" -- "$cur") )
+            return
+            ;;
+        receive|recv)
+            COMPREPLY=( $(compgen -W "--select --local --config --sftp-binary --force --print --filter --user --all --no-color --theme-file" -- "$cur") )
             return
             ;;
         authkeys)

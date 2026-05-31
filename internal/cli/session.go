@@ -257,7 +257,7 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 	} else {
 		scope = "all"
 	}
-	roots := state.BuildSessionForest(visible)
+	roots := sessionview.MapForest(visible)
 	active, _ := sessionview.CountStatuses(records)
 	if flags.JSON {
 		writeJSON(stdout, sessionMapOutput{

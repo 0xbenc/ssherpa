@@ -90,7 +90,9 @@ ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
 Every supervised session is recorded as `0600` JSON (under
 `~/.local/state/ssherpa` on Linux, `~/Library/Application Support/ssherpa` on
 macOS), including its parent and route, so you can reconstruct the lineage after
-the fact:
+the fact. For nested ssherpa sessions across machines, supervised ssh commands
+send `SSHERPA_*` metadata automatically and the map can display inherited
+ancestors when the receiving sshd allows `AcceptEnv SSHERPA_*`:
 
 ```sh
 ssherpa session map            # active sessions as a tree, with their routes

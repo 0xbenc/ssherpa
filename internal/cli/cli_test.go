@@ -14,6 +14,8 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/session"
+	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -84,6 +86,7 @@ func TestRunHelpCommand(t *testing.T) {
 	assertContains(t, stdout.String(), "Available Commands:")
 	assertContains(t, stdout.String(), "theme      Build and save")
 	assertContains(t, stdout.String(), "check      Test SSH aliases")
+	assertContains(t, stdout.String(), "send       Send a local file")
 	assertContains(t, stdout.String(), "forward saved list")
 	assertContains(t, stdout.String(), "Theme Commands:")
 	assertContains(t, stdout.String(), "Phase 10:")
@@ -143,7 +146,7 @@ Host prod web
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh prod -L 8080:localhost:8080")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' prod -L 8080:localhost:8080")
 }
 
 func TestRunConnectPrintJSON(t *testing.T) {
@@ -166,7 +169,7 @@ Host prod
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal returned error: %v\n%s", err, stdout.String())
 	}
-	if strings.Join(got.Argv, "\x00") != "ssh\x00prod" || got.Alias != "prod" {
+	if strings.Join(got.Argv, "\x00") != "ssh\x00-o\x00SendEnv=SSHERPA_*\x00prod" || got.Alias != "prod" {
 		t.Fatalf("print JSON = %#v", got)
 	}
 }
@@ -183,7 +186,398 @@ Host prod
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0", code)
 	}
-	assertContains(t, stdout.String(), "[print] ssh prod --help")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' prod --help")
+}
+
+func TestRunSendPrintsSFTPCommandAndBatch(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--config", config, "--print"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), "[print] sftp -b - -F "+config+" prod")
+	assertContains(t, stdout.String(), "put "+local+" /tmp/payload.txt")
+}
+
+func TestRunSendExecutesFakeSFTP(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	fakeSFTP, argvLog, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "fake sftp stdout")
+	if got := strings.TrimSpace(readFile(t, argvLog)); got != "-b - -F "+config+" prod" {
+		t.Fatalf("fake sftp argv = %q", got)
+	}
+	if got := readFile(t, batchLog); got != "put "+local+" /tmp/payload.txt\n" {
+		t.Fatalf("fake sftp batch = %q", got)
+	}
+}
+
+func TestRunSendRefusesExistingRemoteDestinationWithoutForce(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	fakeSFTP, _, _ := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/var/log/app.log", "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "already exists")
+	assertContains(t, stderr.String(), "Use --force to overwrite")
+}
+
+func TestRunSendForceAllowsExistingRemoteDestination(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/var/log/app.log", "--config", config, "--sftp-binary", fakeSFTP, "--force"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := readFile(t, batchLog); got != "put "+local+" /var/log/app.log\n" {
+		t.Fatalf("fake sftp batch = %q", got)
+	}
+}
+
+func TestRunReceiveExecutesFakeSFTP(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	wantLocal := filepath.Join(localDir, "app.log")
+	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
+		t.Fatalf("fake sftp batch = %q, want local dir expanded", got)
+	}
+}
+
+func TestRunReceiveRefusesExistingLocalDestinationWithoutForce(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "app.log"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write existing local file: %v", err)
+	}
+	fakeSFTP, _, _ := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "already exists")
+	assertContains(t, stderr.String(), "Use --force to overwrite")
+}
+
+func TestRunReceiveForceAllowsExistingLocalDestination(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "app.log"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write existing local file: %v", err)
+	}
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP, "--force"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	wantLocal := filepath.Join(localDir, "app.log")
+	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
+		t.Fatalf("fake sftp batch = %q, want forced receive batch", got)
+	}
+}
+
+func TestRunReceiveRejectsRemoteDirectory(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	fakeSFTP, _, _ := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/logs", "--select", "prod", "--local", localDir, "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "is a directory")
+	assertContains(t, stderr.String(), "Choose a file or archive the directory first")
+}
+
+func TestRunReceiveDefaultsLocalPathToRemoteBasename(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	localDir := t.TempDir()
+	t.Chdir(localDir)
+	fakeSFTP, _, batchLog := writeFakeSFTP(t, 0)
+
+	code := Run([]string{"receive", "/var/log/app.log", "--select", "prod", "--config", config, "--sftp-binary", fakeSFTP}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	wantLocal := filepath.Join(localDir, "app.log")
+	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
+		t.Fatalf("fake sftp batch = %q, want local basename expanded", got)
+	}
+}
+
+func TestRecordTransferEventWritesAuditDetails(t *testing.T) {
+	stateDir := t.TempDir()
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	record := state.SessionRecord{ID: "session-1", TargetAlias: "prod"}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("WriteRecord returned error: %v", err)
+	}
+
+	recordTransferEvent(stateDir, record.ID, sshcmd.SFTPTransfer{
+		Direction:  sshcmd.SFTPTransferSend,
+		Alias:      "prod",
+		LocalPath:  local,
+		RemotePath: "/tmp/payload.txt",
+	})
+
+	got, err := state.ReadRecord(stateDir, record.ID)
+	if err != nil {
+		t.Fatalf("ReadRecord returned error: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %#v, want one transfer event", got.Events)
+	}
+	event := got.Events[0]
+	if event.Type != "transfer_send" {
+		t.Fatalf("event type = %q, want transfer_send", event.Type)
+	}
+	assertContains(t, event.Message, `transport=sftp`)
+	assertContains(t, event.Message, `local="`+local+`"`)
+	assertContains(t, event.Message, `remote="prod:/tmp/payload.txt"`)
+	assertContains(t, event.Message, `bytes=5`)
+	assertContains(t, event.Message, `sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824`)
+}
+
+func TestRecordInbandTransferEventWritesAuditDetails(t *testing.T) {
+	stateDir := t.TempDir()
+	record := state.SessionRecord{ID: "session-1", TargetAlias: "prod"}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("WriteRecord returned error: %v", err)
+	}
+
+	recordInbandTransferEvent(stateDir, record.ID, session.InbandSendResult{
+		LocalPath:  "/tmp/local.txt",
+		RemotePath: "/srv/remote.txt",
+		Size:       42,
+		SHA256:     "abc123",
+	})
+
+	got, err := state.ReadRecord(stateDir, record.ID)
+	if err != nil {
+		t.Fatalf("ReadRecord returned error: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %#v, want one transfer event", got.Events)
+	}
+	event := got.Events[0]
+	if event.Type != "transfer_send" {
+		t.Fatalf("event type = %q, want transfer_send", event.Type)
+	}
+	assertContains(t, event.Message, `transport=inband`)
+	assertContains(t, event.Message, `local="/tmp/local.txt"`)
+	assertContains(t, event.Message, `remote="/srv/remote.txt"`)
+	assertContains(t, event.Message, `bytes=42`)
+	assertContains(t, event.Message, `sha256=abc123`)
+}
+
+func TestValidateOverlayInbandSendRequiresIdlePromptAndCWD(t *testing.T) {
+	send := func(session.InbandSendRequest) (session.InbandSendResult, error) {
+		return session.InbandSendResult{}, nil
+	}
+	tests := []struct {
+		name       string
+		req        session.OverlayTransferRequest
+		forcedMode bool
+		want       string
+	}{
+		{
+			name: "missing sender",
+			req: session.OverlayTransferRequest{
+				RemotePrompt: state.RemotePromptPrompt,
+				RemoteCWD:    "/srv",
+			},
+			want: "sender is not available",
+		},
+		{
+			name: "unknown prompt",
+			req: session.OverlayTransferRequest{
+				InbandSend: send,
+				RemoteCWD:  "/srv",
+			},
+			want: "remote prompt state is unknown",
+		},
+		{
+			name: "prompt start normally blocked",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPromptStart,
+				RemoteCWD:    "/srv",
+			},
+			want: "not idle",
+		},
+		{
+			name: "prompt start allowed for forced transport tests",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPromptStart,
+				RemoteCWD:    "/srv",
+			},
+			forcedMode: true,
+		},
+		{
+			name: "running prompt blocked even when prompt start allowed",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptRunning,
+				RemoteCWD:    "/srv",
+			},
+			forcedMode: true,
+			want:       "not idle",
+		},
+		{
+			name: "unknown cwd",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPrompt,
+			},
+			want: "remote cwd is unknown",
+		},
+		{
+			name: "unknown cwd allowed for forced transport tests",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPrompt,
+			},
+			forcedMode: true,
+		},
+		{
+			name: "ready",
+			req: session.OverlayTransferRequest{
+				InbandSend:   send,
+				RemotePrompt: state.RemotePromptPrompt,
+				RemoteCWD:    "/srv",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOverlayInbandSend(tt.req, tt.forcedMode)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("validateOverlayInbandSend returned error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestForceOverlayInbandSendReadsTransportEnv(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"auto", false},
+		{"sftp", false},
+		{"inband", true},
+		{"in-band", true},
+		{"transport-c", true},
+		{"c", true},
+		{" PTY ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv(transferTransportEnv, tt.value)
+			if got := forceOverlayInbandSend(); got != tt.want {
+				t.Fatalf("forceOverlayInbandSend() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestRunConnectDirectExecutesFakeSSH(t *testing.T) {
@@ -261,6 +655,9 @@ Host prod
 	}
 	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "prod\x00-v") {
 		t.Fatalf("record argv = %#v", record.SSHArgv)
+	}
+	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "SendEnv=SSHERPA_*") {
+		t.Fatalf("record argv = %#v, want session env forwarding", record.SSHArgv)
 	}
 }
 
@@ -371,6 +768,36 @@ func TestPickerSummaryUsesPluralizedCompactCounts(t *testing.T) {
 
 	if len(summary) == 0 || summary[0] != "1 host  1 warning  1 session  2 tunnels" {
 		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestPickerSessionCountsIgnoreRemoteMirrors(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:          "local-active",
+		Kind:        state.KindInteractive,
+		TargetAlias: "prod",
+		LocalPID:    os.Getpid(),
+		RunnerMode:  "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord local-active: %v", err)
+	}
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:           "mirrored-active",
+		ParentID:     "local-active",
+		TargetAlias:  "nested",
+		RemoteMirror: true,
+		RunnerMode:   "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord mirrored-active: %v", err)
+	}
+
+	total, active := pickerSessionCounts(stateDir)
+	if total != 1 || active != 1 {
+		t.Fatalf("pickerSessionCounts = total %d active %d, want only local active counted", total, active)
+	}
+	if got := pickerStoppableSessionCount(stateDir); got != 1 {
+		t.Fatalf("pickerStoppableSessionCount = %d, want local active only", got)
 	}
 }
 
@@ -511,7 +938,7 @@ Host edge
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -J bastion,edge prod -A")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -J bastion,edge prod -A")
 }
 
 func TestRunJumpExecutesFakeSSH(t *testing.T) {
@@ -587,7 +1014,7 @@ Host prod
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
 }
 
 func TestRunProxyPrintCustomBindPortAndPassthrough(t *testing.T) {
@@ -603,7 +1030,7 @@ Host prod
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
 }
 
 func TestRunProxyExecutesFakeSSH(t *testing.T) {
@@ -673,7 +1100,7 @@ Host pgbox
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
 }
 
 func TestRunForwardPrintCustomBindThroughAndPassthrough(t *testing.T) {
@@ -692,7 +1119,7 @@ Host bastion
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
 }
 
 func TestRunForwardAcceptsPositionalAlias(t *testing.T) {
@@ -708,7 +1135,7 @@ Host pgbox
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
 }
 
 func TestRunForwardExecutesFakeSSH(t *testing.T) {
@@ -2053,6 +2480,29 @@ func writeFakeSSH(t *testing.T, exitCode int) (string, string) {
 		t.Fatalf("os.WriteFile returned error: %v", err)
 	}
 	return path, logPath
+}
+
+func writeFakeSFTP(t *testing.T, exitCode int) (string, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	argvLog := filepath.Join(dir, "argv.log")
+	batchLog := filepath.Join(dir, "batch.log")
+	path := filepath.Join(dir, "fake-sftp")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" > " + shellQuote(argvLog) + "\n" +
+		"batch=$(cat)\n" +
+		"printf '%s\\n' \"$batch\" > " + shellQuote(batchLog) + "\n" +
+		"case \"$batch\" in\n" +
+		"  *'cd /var/log'*'ls -la'*) printf '%s\\n' 'Remote working directory: /var/log' 'drwxr-xr-x    2 root root     4096 May 29 10:10 logs' '-rw-r--r--    1 root root      120 May 29 10:11 app.log' ;;\n" +
+		"  *'ls -la'*) printf '%s\\n' 'Remote working directory: /tmp' '-rw-r--r--    1 root root      120 May 29 10:11 other.log' ;;\n" +
+		"  *) printf '%s\\n' 'fake sftp stdout' ;;\n" +
+		"esac\n" +
+		"exit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+	return path, argvLog, batchLog
 }
 
 // writeFakeSSHFlaky drops a shell script whose Nth invocation exits

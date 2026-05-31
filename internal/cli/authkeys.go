@@ -288,7 +288,7 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 			Output:      stderr,
 			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 			Title:       "authorized_keys manager",
-			Footer:      "enter select  /  type filter  /  q back",
+			Footer:      "enter select  /  type filter  /  Q back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)

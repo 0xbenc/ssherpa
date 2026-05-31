@@ -23,6 +23,9 @@ func TestWriteReadAndListRecords(t *testing.T) {
 		LocalPID:         100,
 		SSHPID:           101,
 		RunnerMode:       "supervised",
+		RemoteHost:       "prod.example.com",
+		RemoteCWD:        "/srv/app",
+		RemotePrompt:     RemotePromptPrompt,
 		DisconnectReason: "latency unhealthy for 30s",
 		Events: []SessionEvent{{
 			Time:            startedA.Add(time.Minute),
@@ -67,6 +70,9 @@ func TestWriteReadAndListRecords(t *testing.T) {
 	if got.DisconnectReason != first.DisconnectReason || len(got.Events) != 1 || got.Events[0].Type != "latency_disconnect" {
 		t.Fatalf("record health fields = %#v, want disconnect event", got)
 	}
+	if got.RemoteHost != first.RemoteHost || got.RemoteCWD != first.RemoteCWD || got.RemotePrompt != first.RemotePrompt {
+		t.Fatalf("record remote fields = %#v, want observed remote state", got)
+	}
 
 	records, err := ListRecords(dir)
 	if err != nil {
@@ -102,6 +108,11 @@ func TestProcessAlive(t *testing.T) {
 			name: "current process is alive",
 			rec:  SessionRecord{LocalPID: os.Getpid()},
 			want: true,
+		},
+		{
+			name: "remote mirror never alive locally",
+			rec:  SessionRecord{LocalPID: os.Getpid(), RemoteMirror: true},
+			want: false,
 		},
 		{
 			name: "obviously-dead pid is not alive",
@@ -226,10 +237,40 @@ func TestInheritedMetadata(t *testing.T) {
 	t.Setenv("SSHERPA_SESSION_ID", "parent")
 	t.Setenv("SSHERPA_DEPTH", "2")
 	t.Setenv("SSHERPA_ROUTE", "laptop,bastion")
+	t.Setenv("SSHERPA_ORIGIN_HOST", "workstation")
 
 	parentID, depth, route := InheritedMetadata("prod")
 	if parentID != "parent" || depth != 3 || !reflect.DeepEqual(route, []string{"laptop", "bastion", "prod"}) {
 		t.Fatalf("metadata = %q %d %#v", parentID, depth, route)
+	}
+	if got := OriginHostFromEnv(os.Environ()); got != "workstation" {
+		t.Fatalf("OriginHostFromEnv = %q, want workstation", got)
+	}
+	if got := LocalOriginHost(os.Environ()); got != "workstation" {
+		t.Fatalf("LocalOriginHost = %q, want workstation", got)
+	}
+}
+
+func TestEnvForRecordIncludesOriginHost(t *testing.T) {
+	env := EnvForRecord(SessionRecord{
+		ID:         "child",
+		ParentID:   "parent",
+		Depth:      2,
+		Route:      []string{"bastion", "prod"},
+		OriginHost: "workstation",
+	})
+
+	got := strings.Join(env, "\n")
+	for _, want := range []string{
+		"SSHERPA_SESSION_ID=child",
+		"SSHERPA_PARENT_SESSION_ID=parent",
+		"SSHERPA_DEPTH=2",
+		"SSHERPA_ROUTE=bastion,prod",
+		"SSHERPA_ORIGIN_HOST=workstation",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("EnvForRecord missing %q in:\n%s", want, got)
+		}
 	}
 }
 

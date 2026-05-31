@@ -2,6 +2,8 @@ package sessionview
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
@@ -54,6 +56,10 @@ func MapLines(stateDir string, records []state.SessionRecord, currentID string) 
 	return MapLinesWithOptions(stateDir, records, MapOptions{CurrentID: currentID})
 }
 
+func MapForest(records []state.SessionRecord) []state.SessionNode {
+	return state.BuildSessionForest(displayRecordsForMap(records))
+}
+
 func MapLinesWithOptions(stateDir string, records []state.SessionRecord, opts MapOptions) []string {
 	active, exited := CountStatuses(records)
 	visible := records
@@ -76,7 +82,7 @@ func MapLinesWithOptions(stateDir string, records []state.SessionRecord, opts Ma
 		return append(lines, "No active supervised sessions.")
 	}
 
-	roots := state.BuildSessionForest(visible)
+	roots := MapForest(visible)
 	for i, root := range roots {
 		lines = appendNodeLines(lines, root, "", i == len(roots)-1, opts.CurrentID)
 	}
@@ -218,6 +224,9 @@ func ActiveRecords(records []state.SessionRecord) []state.SessionRecord {
 }
 
 func StatusLabel(record state.SessionRecord) string {
+	if record.Inherited {
+		return "inherited"
+	}
 	if record.Status() == "active" {
 		return "active"
 	}
@@ -230,6 +239,9 @@ func StatusLabel(record state.SessionRecord) string {
 // KindBadge returns a short bracketed tag distinguishing operator-facing
 // session types so they stand out in list / map output.
 func KindBadge(record state.SessionRecord) string {
+	if record.Inherited {
+		return ""
+	}
 	switch record.Kind {
 	case state.KindTunnel:
 		return "[forward]"
@@ -264,6 +276,10 @@ func FormatDisplayRoute(route []string) string {
 	return FormatRoute(displayRouteParts(route))
 }
 
+func FormatRecordRoute(record state.SessionRecord) string {
+	return FormatRoute(displayRecordRouteParts(record))
+}
+
 func writeListGroup(w io.Writer, title string, records []state.SessionRecord, active bool) {
 	first := true
 	for _, record := range records {
@@ -283,7 +299,7 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 			StatusLabel(record),
 			record.Depth,
 			target,
-			FormatDisplayRoute(record.Route),
+			FormatRecordRoute(record),
 			record.StartedAt.Local().Format(time.RFC3339),
 		)
 		if health := HealthSummary(record); health != "" {
@@ -299,6 +315,13 @@ func appendNodeLines(lines []string, node state.SessionNode, prefix string, last
 		nextPrefix = prefix + "   "
 	}
 	record := node.Record
+	if record.Inherited {
+		lines = append(lines, fmt.Sprintf("%s%s%s [%s]", prefix, connector, Target(record), StatusLabel(record)))
+		for i, child := range node.Children {
+			lines = appendNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID)
+		}
+		return lines
+	}
 	current := ""
 	if currentID != "" && record.ID == currentID {
 		current = "  current"
@@ -317,14 +340,17 @@ func appendNodeLines(lines []string, node state.SessionNode, prefix string, last
 		record.ID,
 		current,
 	))
-	if len(record.Route) > 0 {
-		lines = append(lines, fmt.Sprintf("%s   path: %s", prefix, FormatDisplayRoute(record.Route)))
+	if route := FormatRecordRoute(record); route != "-" {
+		lines = append(lines, fmt.Sprintf("%s   path: %s", prefix, route))
 	}
 	if forward := ForwardSummary(record); forward != "" {
 		lines = append(lines, fmt.Sprintf("%s   forward: %s", prefix, forward))
 	}
 	if proxy := ProxySummary(record); proxy != "" {
 		lines = append(lines, fmt.Sprintf("%s   proxy: %s", prefix, proxy))
+	}
+	if remote := RemoteSummary(record); remote != "" {
+		lines = append(lines, fmt.Sprintf("%s   remote: %s", prefix, remote))
 	}
 	if health := HealthSummary(record); health != "" {
 		lines = append(lines, fmt.Sprintf("%s   health: %s", prefix, health))
@@ -339,7 +365,7 @@ func mapBodyLines(records []state.SessionRecord, currentID string, theme termsty
 	if len(records) == 0 {
 		return []string{theme.Style(termstyle.RoleMuted, "No active supervised sessions.")}
 	}
-	roots := state.BuildSessionForest(records)
+	roots := MapForest(records)
 	lines := []string{theme.Style(termstyle.RoleAccent, "ROUTE")}
 	for i, root := range roots {
 		lines = appendStyledNodeLines(lines, root, "", i == len(roots)-1, currentID, theme, width)
@@ -354,6 +380,16 @@ func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string
 		nextPrefix = prefix + "   "
 	}
 	record := node.Record
+	if record.Inherited {
+		target := theme.Style(termstyle.RoleForeground, Target(record))
+		status := theme.Style(termstyle.RoleMuted, "["+StatusLabel(record)+"]")
+		line := fmt.Sprintf("%s%s%s %s", prefix, connector, target, status)
+		lines = append(lines, truncateVisible(line, width))
+		for i, child := range node.Children {
+			lines = appendStyledNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID, theme, width)
+		}
+		return lines
+	}
 	target := theme.Style(termstyle.RoleForeground, Target(record))
 	statusRole := termstyle.RoleMuted
 	if record.Status() == "active" {
@@ -370,14 +406,17 @@ func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string
 	}
 	line := fmt.Sprintf("%s%s%s%s %s  %s", prefix, connector, target, kind, status, theme.Style(termstyle.RoleMuted, meta))
 	lines = append(lines, truncateVisible(line, width))
-	if len(record.Route) > 0 {
-		lines = append(lines, routeDiagramLines(prefix+"   ", record.Route, theme, width)...)
+	if parts := displayRecordRouteParts(record); len(parts) > 0 {
+		lines = append(lines, routeDiagramPartLines(prefix+"   ", parts, theme, width)...)
 	}
 	if forward := ForwardSummary(record); forward != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "FORWARD ")+theme.Style(termstyle.RoleForeground, forward), width))
 	}
 	if proxy := ProxySummary(record); proxy != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "PROXY ")+theme.Style(termstyle.RoleForeground, proxy), width))
+	}
+	if remote := RemoteSummary(record); remote != "" {
+		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "REMOTE ")+theme.Style(termstyle.RoleForeground, remote), width))
 	}
 	if health := HealthSummary(record); health != "" {
 		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleWarning, "health ")+theme.Style(termstyle.RoleForeground, health), width))
@@ -390,6 +429,10 @@ func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string
 
 func routeDiagramLines(prefix string, route []string, theme termstyle.Theme, width int) []string {
 	parts := displayRouteParts(route)
+	return routeDiagramPartLines(prefix, parts, theme, width)
+}
+
+func routeDiagramPartLines(prefix string, parts []string, theme termstyle.Theme, width int) []string {
 	if len(parts) == 0 {
 		return nil
 	}
@@ -418,6 +461,13 @@ func routeDiagramLines(prefix string, route []string, theme termstyle.Theme, wid
 	return lines
 }
 
+func displayRecordRouteParts(record state.SessionRecord) []string {
+	if strings.TrimSpace(record.OriginHost) != "" {
+		return lineageParts(record)
+	}
+	return displayRouteParts(record.Route)
+}
+
 func displayRouteParts(route []string) []string {
 	if len(route) == 0 {
 		return []string{"here"}
@@ -427,6 +477,100 @@ func displayRouteParts(route []string) []string {
 		parts = append([]string{"here"}, parts...)
 	}
 	return parts
+}
+
+func displayRecordsForMap(records []state.SessionRecord) []state.SessionRecord {
+	if len(records) == 0 {
+		return records
+	}
+
+	localIDs := make(map[string]bool, len(records))
+	for _, record := range records {
+		if record.ID != "" {
+			localIDs[record.ID] = true
+		}
+	}
+
+	display := append([]state.SessionRecord(nil), records...)
+	virtualByPrefix := map[string]string{}
+	for i := range display {
+		record := display[i]
+		if record.ParentID == "" || localIDs[record.ParentID] {
+			continue
+		}
+		if strings.TrimSpace(record.OriginHost) == "" {
+			continue
+		}
+		lineage := lineageParts(record)
+		if len(lineage) < 2 {
+			continue
+		}
+
+		parentID := ""
+		for idx := 0; idx < len(lineage)-1; idx++ {
+			prefix := lineage[:idx+1]
+			key := strings.Join(prefix, "\x00")
+			id, ok := virtualByPrefix[key]
+			if !ok {
+				id = inheritedNodeID(prefix)
+				virtualByPrefix[key] = id
+				started := record.StartedAt
+				display = append(display, state.SessionRecord{
+					ID:           id,
+					ParentID:     parentID,
+					Depth:        idx,
+					OriginHost:   firstPart(prefix),
+					Route:        append([]string(nil), prefix[1:]...),
+					TargetAlias:  prefix[len(prefix)-1],
+					StartedAt:    started,
+					EndedAt:      &started,
+					RunnerMode:   "inherited",
+					StateVersion: state.StateVersion,
+					Inherited:    true,
+				})
+			}
+			parentID = id
+		}
+		if parentID != "" {
+			record.ParentID = parentID
+			display[i] = record
+		}
+	}
+	return display
+}
+
+func lineageParts(record state.SessionRecord) []string {
+	var parts []string
+	appendPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		if len(parts) > 0 && parts[len(parts)-1] == part {
+			return
+		}
+		parts = append(parts, part)
+	}
+	appendPart(record.OriginHost)
+	for _, part := range record.Route {
+		appendPart(part)
+	}
+	if len(parts) == 0 {
+		appendPart(Target(record))
+	}
+	return parts
+}
+
+func inheritedNodeID(prefix []string) string {
+	sum := sha1.Sum([]byte(strings.Join(prefix, "\x00")))
+	return "inherited-" + hex.EncodeToString(sum[:6])
+}
+
+func firstPart(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
 }
 
 func ForwardSummary(record state.SessionRecord) string {
@@ -469,6 +613,34 @@ func ProxySummary(record state.SessionRecord) string {
 		summary += "  (" + strings.Join(parts, ", ") + ")"
 	}
 	return summary
+}
+
+func RemoteSummary(record state.SessionRecord) string {
+	var parts []string
+	if record.RemoteCWD != "" {
+		cwd := record.RemoteCWD
+		if record.RemoteHost != "" {
+			cwd = record.RemoteHost + ":" + cwd
+		}
+		parts = append(parts, "cwd "+cwd)
+	}
+	if prompt := promptSummary(record.RemotePrompt); prompt != "" {
+		parts = append(parts, "prompt "+prompt)
+	}
+	return strings.Join(parts, "  ")
+}
+
+func promptSummary(value string) string {
+	switch value {
+	case state.RemotePromptPrompt:
+		return "idle"
+	case state.RemotePromptRunning:
+		return "running"
+	case state.RemotePromptPromptStart:
+		return "drawing"
+	default:
+		return ""
+	}
 }
 
 func forwardEndpoint(host string, port int) string {

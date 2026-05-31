@@ -22,6 +22,9 @@ const (
 	ItemProxy         ItemKind = "proxy"
 	ItemJump          ItemKind = "jump"
 	ItemForward       ItemKind = "forward"
+	ItemTransferFile  ItemKind = "transfer_file"
+	ItemSendFile      ItemKind = "send_file"
+	ItemReceiveFile   ItemKind = "receive_file"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
 	ItemProxySaved    ItemKind = "proxy_saved"
@@ -33,6 +36,10 @@ const (
 	ItemDocs          ItemKind = "docs"
 	ItemConfirmDelete ItemKind = "confirm_delete"
 	ItemConfirmCancel ItemKind = "confirm_cancel"
+	// ItemRefresh is a synthetic result returned by Pick when the
+	// operator presses "R" on the home page. It carries no selection —
+	// the caller reloads the inventory and re-renders the picker.
+	ItemRefresh ItemKind = "refresh"
 )
 
 // SavedForwardItem is the picker-facing projection of a saved
@@ -85,6 +92,12 @@ type PickOptions struct {
 	Subtitle string
 	Summary  []string
 	Footer   string
+	// Refreshable marks the home-page picker. When set, "R" returns an
+	// ItemRefresh result (caller reloads the inventory and re-renders)
+	// and the quit key is the capital "Q" so lowercase letters stay
+	// available for filtering. Sub-pickers leave this false and keep
+	// the plain lowercase "q" to quit/cancel/back.
+	Refreshable bool
 }
 
 type BuildItemsOptions struct {
@@ -180,6 +193,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemJump, Token: "JUMP", Title: "Jump via intermediate hops", Group: "Actions", Badge: "jump"},
 		Item{Kind: ItemProxy, Token: "PROXY", Title: "Start SOCKS proxy", Group: "Actions", Badge: "proxy"},
 		Item{Kind: ItemForward, Token: "FORWARD", Title: "Open port-forward tunnel", Group: "Actions", Badge: "forward"},
+		Item{Kind: ItemTransferFile, Token: "TRANSFER_FILE", Title: "Transfer file", Group: "Actions", Badge: "transfer"},
 		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
@@ -228,7 +242,13 @@ func Pick(ctx context.Context, items []Item, opts PickOptions) (Item, bool, erro
 	}
 
 	picker, ok := finalModel.(pickerModel)
-	if !ok || picker.canceled || picker.selected < 0 {
+	if !ok {
+		return Item{}, false, nil
+	}
+	if picker.refresh {
+		return Item{Kind: ItemRefresh}, true, nil
+	}
+	if picker.canceled || picker.selected < 0 {
 		return Item{}, false, nil
 	}
 	return picker.items[picker.selected], true, nil
@@ -241,6 +261,8 @@ type pickerModel struct {
 	query       string
 	selected    int
 	canceled    bool
+	refresh     bool
+	refreshable bool
 	noAltScreen bool
 	theme       termstyle.Theme
 	title       string
@@ -264,6 +286,7 @@ func newPickerModelWithTheme(items []Item, opts PickOptions, theme termstyle.The
 	model := pickerModel{
 		items:       append([]Item(nil), items...),
 		selected:    -1,
+		refreshable: opts.Refreshable,
 		noAltScreen: opts.NoAltScreen,
 		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),
 		title:       opts.Title,
@@ -303,8 +326,15 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc", "q":
+		key := msg.String()
+		// Home page only: "R" reloads the inventory. Elsewhere it falls
+		// through to the filter like any other letter.
+		if m.refreshable && key == "R" {
+			m.refresh = true
+			return m, tea.Quit
+		}
+		switch key {
+		case "ctrl+c", "esc", "Q":
 			m.canceled = true
 			return m, tea.Quit
 		case "enter":
@@ -327,7 +357,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applyFilter()
 			}
 		default:
-			if msg.Text != "" && !isControlKey(msg.String()) {
+			if msg.Text != "" && !isControlKey(key) {
 				m.query += msg.Text
 				m.applyFilter()
 			}
@@ -350,7 +380,11 @@ func (m pickerModel) View() tea.View {
 
 	footer := m.footer
 	if footer == "" {
-		footer = "enter select  /  type filter  /  arrows move  /  q quit"
+		if m.refreshable {
+			footer = "enter select  /  type filter  /  arrows move  /  R refresh  /  Q quit"
+		} else {
+			footer = "enter select  /  type filter  /  arrows move  /  Q quit"
+		}
 	}
 	b.WriteString(theme.rule(width))
 	b.WriteByte('\n')
@@ -698,7 +732,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 	switch kind {
 	case ItemAlias:
 		role = termstyle.RoleSuccess
-	case ItemAdd:
+	case ItemAdd, ItemTransferFile:
 		role = termstyle.RoleSuccess
 	case ItemEdit:
 		role = termstyle.RoleWarning
@@ -706,7 +740,7 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleInfo
 	case ItemProxy:
 		role = termstyle.RoleDanger
-	case ItemForward:
+	case ItemForward, ItemSendFile, ItemReceiveFile:
 		role = termstyle.RolePrimary
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
@@ -836,6 +870,12 @@ func selectionHint(item Item) string {
 		return "Stops every live tracked session: tunnels, proxies, jumps, and supervised direct SSH."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
+	case ItemTransferFile:
+		return "Chooses whether to send or receive one file using SFTP."
+	case ItemSendFile:
+		return "Sends one local file to a selected SSH alias using SFTP."
+	case ItemReceiveFile:
+		return "Receives one remote file from a selected SSH alias using SFTP."
 	case ItemForwardSaved:
 		return "Launches a saved port-forward tunnel from your ssherpa catalog."
 	case ItemForwardActive:

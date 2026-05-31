@@ -75,6 +75,55 @@ func TestRunSupervisedRecordsSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedAddsControlMasterForSSHCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	sshPath := filepath.Join(t.TempDir(), "ssh")
+	script := "#!/bin/sh\nprintf 'fake ssh\\n'\nexit 0\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{sshPath, "prod"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.ControlPath == "" {
+		t.Fatalf("record ControlPath is empty; record = %#v", record)
+	}
+	got := strings.Join(record.SSHArgv, "\x00")
+	if !strings.Contains(got, "\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath="+record.ControlPath+"\x00-o\x00ControlPersist=10m\x00prod") {
+		t.Fatalf("record ssh argv = %#v, want ControlMaster options before target", record.SSHArgv)
+	}
+}
+
 func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	var stdout bytes.Buffer
 	stateDir := t.TempDir()
@@ -114,6 +163,230 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	want := records[0].ID + "/3/laptop,prod"
 	if !strings.Contains(stdout.String(), want) {
 		t.Fatalf("stdout = %q, want substring %q", stdout.String(), want)
+	}
+}
+
+func TestRunSupervisedRecordsRemoteCWDAndPromptState(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '\033]7;file://deep.example.com/var/www/app\007\033]133;B\033\\ready'`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ready") {
+		t.Fatalf("stdout = %q, want remote stream preserved", stdout.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.RemoteHost != "deep.example.com" || record.RemoteCWD != "/var/www/app" || record.RemotePrompt != RemotePromptPrompt {
+		t.Fatalf("remote state = host %q cwd %q prompt %q, want observed OSC state", record.RemoteHost, record.RemoteCWD, record.RemotePrompt)
+	}
+}
+
+func TestRunSupervisedRecordsRunningPromptState(t *testing.T) {
+	var stdout bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '\033]133;C\007busy'`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0", code)
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].RemotePrompt != RemotePromptRunning {
+		t.Fatalf("records = %#v, want running prompt state", records)
+	}
+}
+
+func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	child := state.SessionRecord{
+		ID:          "child",
+		TargetAlias: "prod",
+		Route:       []string{"prod"},
+		StartedAt:   fixedClock()(),
+		RunnerMode:  RunnerModeSupervised,
+	}
+	payload, ok := sessionTelemetryFrame(child)
+	if !ok {
+		t.Fatalf("sessionTelemetryFrame returned !ok")
+	}
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '%s' "$SSHERPA_TEST_TELEMETRY"`}},
+		Metadata{TargetAlias: "bastion", Route: []string{"bastion"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env: []string{
+				"PATH=" + os.Getenv("PATH"),
+				"SSHERPA_TEST_TELEMETRY=" + string(payload),
+			},
+			Now:      fixedClock(),
+			RecordID: "parent",
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "ssherpa-session") {
+		t.Fatalf("stdout leaked telemetry frame: %q", stdout.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %#v, want parent and mirrored child", records)
+	}
+	var mirrored state.SessionRecord
+	for _, record := range records {
+		if record.ID == "child" {
+			mirrored = record
+		}
+	}
+	if !mirrored.RemoteMirror || mirrored.ParentID != "parent" || mirrored.TargetAlias != "prod" || mirrored.Depth != 1 {
+		t.Fatalf("mirrored record = %#v, want remote mirror child under parent", mirrored)
+	}
+	if !reflect.DeepEqual(mirrored.Route, []string{"bastion", "prod"}) {
+		t.Fatalf("mirrored route = %#v, want parent route plus child target", mirrored.Route)
+	}
+	if mirrored.LocalPID != 0 || mirrored.SSHPID != 0 || state.ProcessAlive(mirrored) {
+		t.Fatalf("mirrored pids/process = %#v, want non-local process", mirrored)
+	}
+	if mirrored.EndedAt == nil || mirrored.ExitCode == nil || *mirrored.ExitCode != 0 {
+		t.Fatalf("mirrored finalization = %#v, want finalized with parent exit", mirrored)
+	}
+}
+
+func TestFinalizeRemoteMirrorsClosesDescendants(t *testing.T) {
+	stateDir := t.TempDir()
+	parent := state.SessionRecord{ID: "parent", TargetAlias: "bastion"}
+	child := state.SessionRecord{ID: "child", ParentID: "parent", RemoteMirror: true, TargetAlias: "prod"}
+	grandchild := state.SessionRecord{ID: "grandchild", ParentID: "child", RemoteMirror: true, TargetAlias: "db"}
+	unrelated := state.SessionRecord{ID: "unrelated", ParentID: "other", RemoteMirror: true, TargetAlias: "other"}
+	for _, record := range []state.SessionRecord{parent, child, grandchild, unrelated} {
+		if err := state.WriteRecord(stateDir, record); err != nil {
+			t.Fatalf("WriteRecord(%s): %v", record.ID, err)
+		}
+	}
+
+	endedAt := fixedClock()().UTC()
+	finalizeRemoteMirrors(stateDir, parent, endedAt, 120)
+
+	for _, id := range []string{"child", "grandchild"} {
+		record, err := state.ReadRecord(stateDir, id)
+		if err != nil {
+			t.Fatalf("ReadRecord(%s): %v", id, err)
+		}
+		if record.EndedAt == nil || !record.EndedAt.Equal(endedAt) || record.ExitCode == nil || *record.ExitCode != 120 {
+			t.Fatalf("%s finalization = %#v, want ended with parent exit", id, record)
+		}
+	}
+	record, err := state.ReadRecord(stateDir, "unrelated")
+	if err != nil {
+		t.Fatalf("ReadRecord(unrelated): %v", err)
+	}
+	if record.EndedAt != nil {
+		t.Fatalf("unrelated mirror ended = %#v, want active", record)
+	}
+}
+
+func TestRemoteMirrorRecordRejectsUnrelatedTelemetry(t *testing.T) {
+	parent := state.SessionRecord{ID: "parent", Route: []string{"bastion"}, OriginHost: "laptop"}
+	child := state.SessionRecord{
+		ID:         "child",
+		ParentID:   "other",
+		OriginHost: "other-laptop",
+		Route:      []string{"unrelated", "prod"},
+	}
+
+	if got, ok := remoteMirrorRecord(parent, child); ok {
+		t.Fatalf("remoteMirrorRecord = %#v, true; want rejected unrelated telemetry", got)
+	}
+}
+
+func TestRemoteMirrorRecordUsesParentOriginForParentlessTelemetry(t *testing.T) {
+	parent := state.SessionRecord{
+		ID:          "parent",
+		Depth:       0,
+		OriginHost:  "Bens-Mac-mini",
+		TargetAlias: "ben-6900hx-daily",
+		Route:       []string{"ben-6900hx-daily"},
+	}
+	child := state.SessionRecord{
+		ID:          "child",
+		OriginHost:  "pop-os",
+		TargetAlias: "mdw0-vms-tailscale",
+		Route:       []string{"mdw0-vms-tailscale"},
+	}
+
+	got, ok := remoteMirrorRecord(parent, child)
+	if !ok {
+		t.Fatalf("remoteMirrorRecord rejected parentless telemetry")
+	}
+	if got.OriginHost != "Bens-Mac-mini" {
+		t.Fatalf("OriginHost = %q, want parent origin", got.OriginHost)
+	}
+	if !reflect.DeepEqual(got.Route, []string{"ben-6900hx-daily", "mdw0-vms-tailscale"}) {
+		t.Fatalf("Route = %#v, want parent alias plus child target", got.Route)
+	}
+	if got.ParentID != "parent" || got.Depth != 1 || !got.RemoteMirror {
+		t.Fatalf("mirror metadata = %#v, want attached remote mirror", got)
 	}
 }
 
@@ -279,6 +552,261 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ssherpa session map") {
 		t.Fatalf("stdout = %q, want local overlay", stdout.String())
+	}
+}
+
+func TestRunSupervisedOverlaySendActionDoesNotReachRemote(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{OverlayHotkey, 's', 'z'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	requests := make(chan OverlayTransferRequest, 1)
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=1 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod", Hops: []string{"bastion"}, Route: []string{"bastion", "prod"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+			Overlay: OverlayOptions{
+				Send: func(req OverlayTransferRequest) int {
+					requests <- req
+					return 0
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "z" {
+		t.Fatalf("remote input = %q, want only post-send byte", string(got))
+	}
+	select {
+	case req := <-requests:
+		if req.Direction != "send" || req.TargetAlias != "prod" || !reflect.DeepEqual(req.Hops, []string{"bastion"}) {
+			t.Fatalf("request = %#v, want send to prod through bastion", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("overlay send callback was not invoked")
+	}
+	if !strings.Contains(stdout.String(), "s send") {
+		t.Fatalf("stdout = %q, want send action in overlay help", stdout.String())
+	}
+}
+
+func TestRunSupervisedOverlayReceiveActionDoesNotReachRemote(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := []byte{OverlayHotkey, 'v', 'z'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	requests := make(chan OverlayTransferRequest, 1)
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=1 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod", Hops: []string{"bastion"}, Route: []string{"bastion", "prod"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+			Overlay: OverlayOptions{
+				Receive: func(req OverlayTransferRequest) int {
+					requests <- req
+					return 0
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "z" {
+		t.Fatalf("remote input = %q, want only post-receive byte", string(got))
+	}
+	select {
+	case req := <-requests:
+		if req.Direction != "receive" || req.TargetAlias != "prod" || !reflect.DeepEqual(req.Hops, []string{"bastion"}) {
+			t.Fatalf("request = %#v, want receive from prod through bastion", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("overlay receive callback was not invoked")
+	}
+	if !strings.Contains(stdout.String(), "v receive") {
+		t.Fatalf("stdout = %q, want receive action in overlay help", stdout.String())
+	}
+}
+
+func TestRunSupervisedOverlayInbandSendWritesRemoteFile(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	localPath := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(localPath, []byte("hello over pty"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	remotePath := filepath.Join(t.TempDir(), "remote payload.txt")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	input := append([]byte{OverlayHotkey, 's'}, []byte("exit\n")...)
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	results := make(chan InbandSendResult, 1)
+	callbackErrs := make(chan string, 1)
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-i"}},
+		Metadata{TargetAlias: "prod", Route: []string{"prod"}},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+			Overlay: OverlayOptions{
+				Send: func(req OverlayTransferRequest) int {
+					if req.InbandSend == nil {
+						callbackErrs <- "InbandSend is nil"
+						return 1
+					}
+					result, err := req.InbandSend(InbandSendRequest{LocalPath: localPath, RemotePath: remotePath})
+					if err != nil {
+						callbackErrs <- "InbandSend returned error: " + err.Error()
+						return 1
+					}
+					results <- result
+					return 0
+				},
+			},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	select {
+	case err := <-callbackErrs:
+		t.Fatalf("overlay callback error: %s; stderr=%q stdout=%q", err, stderr.String(), stdout.String())
+	default:
+	}
+	got, err := os.ReadFile(remotePath)
+	if err != nil {
+		t.Fatalf("read remote payload: %v", err)
+	}
+	if string(got) != "hello over pty" {
+		t.Fatalf("remote payload = %q", got)
+	}
+	select {
+	case result := <-results:
+		if result.RemotePath != remotePath || result.Size != int64(len("hello over pty")) || result.SHA256 == "" {
+			t.Fatalf("result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("in-band result was not reported")
+	}
+	if strings.Contains(stdout.String(), "aGVsbG8") {
+		t.Fatalf("stdout leaked base64 payload: %q", stdout.String())
+	}
+}
+
+func TestOutputTapStopDetachesWithoutClosingChannel(t *testing.T) {
+	tap := &outputTap{}
+	ch, stop := tap.start(true)
+	if !tap.observe([]byte("one")) {
+		t.Fatalf("observe returned false, want suppression")
+	}
+	select {
+	case got := <-ch:
+		if string(got) != "one" {
+			t.Fatalf("tap chunk = %q, want one", got)
+		}
+	default:
+		t.Fatalf("tap did not receive observed chunk")
+	}
+
+	stop()
+	if tap.observe([]byte("two")) {
+		t.Fatalf("observe returned true after stop")
+	}
+	select {
+	case _, ok := <-ch:
+		if !ok {
+			t.Fatalf("stop closed tap channel; this can race with the PTY reader")
+		}
+	default:
+	}
+}
+
+func TestOverlayTransferRequestIncludesRemoteState(t *testing.T) {
+	stateDir := t.TempDir()
+	record := state.SessionRecord{
+		ID:           "session-20260529T120000Z-abcdef",
+		TargetAlias:  "prod",
+		Hops:         []string{"bastion"},
+		Route:        []string{"bastion", "prod"},
+		ControlPath:  "/tmp/ssherpa.sock",
+		RemoteHost:   "prod.example.com",
+		RemoteCWD:    "/srv/app",
+		RemotePrompt: state.RemotePromptPrompt,
+	}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("WriteRecord returned error: %v", err)
+	}
+
+	req := overlayTransferRequest("send", stateDir, record.ID, OverlayTransferRequest{})
+	if req.Direction != "send" || req.SessionID != record.ID || req.StateDir != stateDir {
+		t.Fatalf("request identity = %#v", req)
+	}
+	if req.TargetAlias != record.TargetAlias || req.RemoteHost != record.RemoteHost || req.RemoteCWD != record.RemoteCWD || req.RemotePrompt != record.RemotePrompt {
+		t.Fatalf("request remote state = %#v, want record values", req)
+	}
+	if req.ControlPath != record.ControlPath {
+		t.Fatalf("request ControlPath = %q, want %q", req.ControlPath, record.ControlPath)
+	}
+	if !reflect.DeepEqual(req.Hops, record.Hops) || !reflect.DeepEqual(req.Route, record.Route) {
+		t.Fatalf("request route = hops %#v route %#v, want %#v %#v", req.Hops, req.Route, record.Hops, record.Route)
 	}
 }
 

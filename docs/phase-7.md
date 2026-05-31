@@ -29,7 +29,10 @@ behavior is unchanged.
 ## Session Map
 
 The new map command renders parent/child session lineage from local
-state:
+state. When a nested session was launched from a remote host that does
+not have the ancestor's JSON record, the renderer uses propagated
+`SSHERPA_ORIGIN_HOST` / `SSHERPA_ROUTE` metadata to synthesize
+display-only inherited ancestors:
 
 ```sh
 ssherpa session map
@@ -45,8 +48,10 @@ Session route map
 state: /tmp/ssherpa-state
 active: 1
 
-+- prod [active] depth=1 id=child
-   route: bastion -> prod
++- laptop [inherited]
+   +- bastion [inherited]
+      +- prod [active] depth=2 id=child
+         path: laptop -> bastion -> prod
 ```
 
 The default map is a live route view and only shows active sessions. Use
@@ -98,6 +103,13 @@ r       refresh
 ```
 
 The overlay renders active local session state. It marks the current
+session when known. Cross-host lineage requires environment propagation:
+ssherpa automatically adds client-side `SendEnv=SSHERPA_*` to supervised
+ssh commands, and each destination sshd must allow `AcceptEnv SSHERPA_*`.
+For nested ssherpa sessions, the outermost supervisor still owns
+`Ctrl-]`; downstream supervisors send invisible session telemetry back up
+the terminal stream so the outer map can include active descendants from
+remote machines.
 session and blocks remote output from drawing over the overlay until the
 overlay closes.
 
