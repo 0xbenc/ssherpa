@@ -30,6 +30,8 @@ const (
 	remotePickerDir  ui.ItemKind = "remote_dir"
 	remotePickerUp   ui.ItemKind = "remote_up"
 	remotePickerFile ui.ItemKind = "remote_file"
+
+	transferTransportEnv = "SSHERPA_TRANSFER_TRANSPORT"
 )
 
 type transferFlags struct {
@@ -767,18 +769,24 @@ func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, 
 	if start == "" {
 		start = "."
 	}
+	forceInband := forceOverlayInbandSend()
 	remotePath := ""
-	directAvailable := true
-	dir, ok, err := pickRemoteDirectory(stderr, transferFilePickerOptions(flags), flags, alias, start)
-	if err != nil {
-		directAvailable = false
+	directAvailable := !forceInband
+	if forceInband {
 		remotePath = remoteJoin(start, filepath.Base(expanded))
-		fmt.Fprintf(stderr, "ssherpa: direct SFTP folder picker failed: %v\n", err)
-	} else if !ok {
-		fmt.Fprintln(stderr, "[skipped] send cancelled")
-		return 0
+		fmt.Fprintf(stderr, "ssherpa: %s=inband set; skipping direct SFTP and using %s\n", transferTransportEnv, remotePath)
 	} else {
-		remotePath = remoteJoin(dir, filepath.Base(expanded))
+		dir, ok, err := pickRemoteDirectory(stderr, transferFilePickerOptions(flags), flags, alias, start)
+		if err != nil {
+			directAvailable = false
+			remotePath = remoteJoin(start, filepath.Base(expanded))
+			fmt.Fprintf(stderr, "ssherpa: direct SFTP folder picker failed: %v\n", err)
+		} else if !ok {
+			fmt.Fprintln(stderr, "[skipped] send cancelled")
+			return 0
+		} else {
+			remotePath = remoteJoin(dir, filepath.Base(expanded))
+		}
 	}
 
 	var code int
@@ -920,6 +928,15 @@ func validateOverlayInbandSend(req session.OverlayTransferRequest) error {
 		return fmt.Errorf("remote cwd is unknown")
 	}
 	return nil
+}
+
+func forceOverlayInbandSend() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(transferTransportEnv))) {
+	case "inband", "in-band", "pty", "transport-c", "c":
+		return true
+	default:
+		return false
+	}
 }
 
 func defaultNonZero(code int) int {

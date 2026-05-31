@@ -528,6 +528,30 @@ func TestValidateOverlayInbandSendRequiresIdlePromptAndCWD(t *testing.T) {
 	}
 }
 
+func TestForceOverlayInbandSendReadsTransportEnv(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"auto", false},
+		{"sftp", false},
+		{"inband", true},
+		{"in-band", true},
+		{"transport-c", true},
+		{"c", true},
+		{" PTY ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv(transferTransportEnv, tt.value)
+			if got := forceOverlayInbandSend(); got != tt.want {
+				t.Fatalf("forceOverlayInbandSend() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunConnectDirectExecutesFakeSSH(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

@@ -13,7 +13,9 @@
 > reusing the supervised SSH connection's ControlMaster socket when available
 > and recording overlay transfer audit events. Transport C now provides a
 > prompt-gated, send-only in-band fallback for overlay sends when direct SFTP
-> cannot reach the remote cwd. Wormhole transport remains design.
+> cannot reach the remote cwd. Set `SSHERPA_TRANSFER_TRANSPORT=inband` before
+> launching `ssherpa` to force that overlay-send fallback for testing. Wormhole
+> transport remains design.
 
 A single overlay action — **Beam file** — lets you pick a file anywhere on the
 local machine and drop it into **the current working directory of the deepest
@@ -234,6 +236,12 @@ naive "base64 heredoc" is fragile; this is the version that is actually robust.
 prompt (or the user explicitly confirms and an active probe succeeds). Refuse
 above a size cap (target ~2–5 MB) and recommend A or B instead.
 
+**Forced test mode.** `SSHERPA_TRANSFER_TRANSPORT=inband` makes overlay send
+skip direct SFTP and the remote SFTP folder picker. The destination becomes the
+tracked remote cwd plus the local file basename, so launch `ssherpa` with this
+environment variable from the local side and test from an idle prompt in the
+target directory.
+
 **Protocol.**
 
 1. **Capability probe.** One injected line whose echoed sentinel we parse from
@@ -404,8 +412,10 @@ recorded lineage rather than an invisible side effect.
    **Send fallback implemented:** overlay send can stream one local file through
    the live PTY to the tracked remote cwd when direct SFTP is unavailable, with
    a ready sentinel, size cap, echo suppression, checksum verification, and
-   temp-file commit that refuses to overwrite an existing destination. Receive
-   and directory support remain out of scope.
+   temp-file commit that refuses to overwrite an existing destination. For
+   test coverage, `SSHERPA_TRANSFER_TRANSPORT=inband` forces this path and
+   writes into the tracked remote cwd. Receive and directory support remain out
+   of scope.
 3. **Transport B.** Embed `wormhole-william`; add `ssherpa send` / `ssherpa
    recv`; wire the inject-the-receiver orchestration and relay configuration.
    The marquee feature.
