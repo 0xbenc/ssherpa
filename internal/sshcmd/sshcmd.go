@@ -422,6 +422,10 @@ func RunDirect(cmd Command, stdin io.Reader, stdout io.Writer, stderr io.Writer)
 		fmt.Fprintln(stderr, "ssherpa: empty SSH command")
 		return 1
 	}
+	if err := ValidateCommandBinary(cmd, BinaryRequirement{Name: "ssh", Role: "SSH client", Hint: OpenSSHClientInstallHint}); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
 
 	proc := exec.Command(cmd.Argv[0], cmd.Argv[1:]...)
 	proc.Stdin = stdin

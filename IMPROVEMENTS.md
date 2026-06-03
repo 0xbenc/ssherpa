@@ -1,4 +1,4 @@
-# ssherpa — 100 Potential Improvements
+# ssherpa — 99 Potential Improvements
 
 A curated, codebase-specific backlog. Each item is concrete (names real files/packages where relevant), justified, and scoped to be genuinely valuable rather than busywork. Categories: **UX**, **Reliability**, **Security**, **Performance**, **Testing**, **Architecture**, **Docs**, **Distribution**, **Observability**, **Features**.
 
@@ -36,74 +36,73 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 | 30 | Reliability | Robust terminal restore on panic | Guarantee raw-mode restoration in `session.go` via a top-level recover + `defer`, so a panic never leaves the user's terminal wedged. |
 | 31 | Reliability | Signal-during-PTY-setup race fix | Handle SIGTERM/SIGINT that arrives *between* PTY spawn and signal-handler install, preventing a zombie ssh child. |
 | 32 | Reliability | In-band transfer integrity on partial failure | Ensure a SHA256 mismatch in `inband` never commits a partial file to the destination path (write to temp, verify, then rename remotely). |
-| 33 | Reliability | Graceful handling of missing `ssh`/`sftp`/`base64` | Detect absent binaries up front (in `sshcmd`) and print install guidance instead of an opaque exec error. |
-| 34 | Reliability | Window-resize (SIGWINCH) propagation | Confirm terminal resizes propagate to the PTY so full-screen remote apps (vim/htop) reflow correctly; add a regression test. |
-| 35 | Reliability | Idempotent authkeys operations | Make `authkeys` add/merge no-ops when the exact key already exists (match by fingerprint), reporting "already present" rather than duplicating. |
-| 36 | Security | `SECURITY.md` with disclosure policy | Add a vulnerability-reporting policy and supported-versions table — table stakes for a security-adjacent tool. |
-| 37 | Security | Config/key permission warnings | Warn when `~/.ssh/config` or `authorized_keys` is group/world-writable or readable, mirroring OpenSSH's own strictness. |
-| 38 | Security | Reject newlines/control chars in authkeys comments | Validate key comments in `authkeys` so a crafted comment can't inject a second line into `authorized_keys`. |
-| 39 | Security | Directory-traversal guard in SFTP batch paths | Reject `..` and absolute-escape paths in `sshcmd` SFTP batch generation to prevent writing outside the intended target. |
-| 40 | Security | Enforce `--max-bytes` early in in-band transfer | Check payload size before encoding in `inband`, rejecting oversized transfers up front rather than after streaming. |
-| 41 | Security | GPG/cosign-sign release artifacts | Sign archives + `checksums.txt` in `release.yml` for verifiable provenance. |
-| 42 | Security | SBOM in releases | Generate a CycloneDX SBOM during GoReleaser so downstream consumers can audit the (small) dependency tree. |
-| 43 | Security | govulncheck in CI | Add `govulncheck ./...` to `ci.yml` to catch known vulnerabilities in deps and the toolchain on every PR. |
-| 44 | Security | gosec / static security linting | Run `gosec` in CI to catch insecure temp-file, perms, and exec patterns before merge. |
-| 45 | Security | Remote sshd version probe + warning | During `check`, surface the remote OpenSSH version and warn on known-EOL releases. |
-| 46 | Security | Escape-rope audit entry | Append an immutable audit line (host, lineage, time) to state when the rope is pulled, for after-incident review. |
-| 47 | Security | Secure temp-file creation review | Audit every temp path (`fsutil`, `inband`, SFTP batch) to ensure `O_EXCL`/`0600` creation and no predictable names — add tests. |
-| 48 | Security | Scrub session IDs from user-facing errors | Avoid leaking internal session identifiers into stderr/logs where they could aid correlation attacks. |
-| 49 | Security | Optional fingerprint confirmation on first connect | When connecting to an alias whose host key isn't yet known, surface the fingerprint clearly in the TUI before proceeding. |
-| 50 | Security | Dependabot / renovate for Go modules | Automate dependency-update PRs so security fixes in bubbletea/creack-pty land promptly. |
-| 51 | Performance | Parsed-config cache with mtime invalidation | Cache the parsed `sshconfig.Graph` under state with an mtime check, skipping re-parse of large multi-include configs on every invocation. |
-| 52 | Performance | Concurrent host probes in `check` | Fan out reachability/RTT probes across hosts with a bounded worker pool instead of sequentially — large fleets become usable. |
-| 53 | Performance | Append-only session event log | Avoid rewriting the whole `state` record on every event; append events and compact periodically. |
-| 54 | Performance | Compress payloads before base64 (in-band) | gzip the payload before base64 in `inband` for slow links — base64 inflates 33%, gzip often more than offsets it for text. |
-| 55 | Performance | Reuse `ControlMaster` sockets | Detect/offer `ControlMaster`+`ControlPersist` so repeated ssherpa invocations to the same host skip re-auth latency. |
-| 56 | Performance | Lazy `Include` parsing | Parse included files on first access rather than eagerly, so configs with many conditional includes load faster. |
-| 57 | Performance | Lazy forward/proxy catalog loading | Defer loading saved-forward/proxy catalogs until the relevant menu opens, trimming cold-start cost. |
-| 58 | Performance | PTY read-buffer sizing | Tune the PTY copy buffer in `session.go` to terminal dimensions to reduce syscalls under heavy output (e.g. `cat` of a big file). |
-| 59 | Performance | Picker render memoization | Cache the rendered list between keystrokes when the underlying inventory is unchanged, re-filtering only the visible window. |
-| 60 | Performance | Watchdog result coalescing | Batch latency-watchdog probe results into a single state write per interval rather than one per probe. |
-| 61 | Testing | Fuzz `sshconfig.Load` | Add a Go fuzz target feeding random/malformed config text to harden the parser against crashes and pathological includes. |
-| 62 | Testing | Dockerized end-to-end suite | A container running real `sshd` so connect/transfer/forward/jump flows are exercised against an actual server in CI. |
-| 63 | Testing | PTY replay fixtures | Record real PTY byte streams and replay them to test `osc_tracker` (OSC 7/133) and overlay behavior deterministically. |
-| 64 | Testing | Error-injection framework for I/O | Inject ENOSPC, EACCES, and partial writes into `fsutil`/`state` to verify atomic-write and backup guarantees hold. |
-| 65 | Testing | Snapshot tests for TUI render output | Golden-file the rendered output of `picker`, `sessionview`, and `confirm` to catch visual regressions; raises `ui` coverage above ~45%. |
-| 66 | Testing | Signal-injection lifecycle tests | Deliver SIGTERM/SIGHUP/SIGWINCH mid-session and assert clean teardown and terminal restore in `session`. |
-| 67 | Testing | Property-based tests for alias round-trips | Generate random valid `Host` blocks, write then re-parse, and assert structural equality to find mutation edge cases. |
-| 68 | Testing | Transfer failure-mode tests | Simulate SFTP timeout, corrupted base64, and mid-stream drop; assert no partial/corrupt destination file results. |
-| 69 | Testing | Concurrent-process state race tests | Run two ssherpa processes mutating state simultaneously to surface file-locking gaps in `state`. |
-| 70 | Testing | Terminal-capability matrix tests | Mock `TERM`, `NO_COLOR`, and width to verify graceful degradation across dumb/256/truecolor terminals. |
-| 71 | Testing | Coverage gate in CI | Fail CI if total coverage drops below a threshold, with per-package floors; target lifting `cli` (~43%) and `ui` (~45%). |
-| 72 | Testing | Race detector in CI | Run `go test -race ./...` (esp. `session`, `daemon`, `state`) to catch the concurrency bugs PTY/daemon code is prone to. |
-| 73 | Testing | Escape-rope edge cases | Test rope behavior under nested zsh/fish, `tmux`/`screen`, and `nohup` layers where signal delivery differs. |
-| 74 | Testing | Performance regression guard | Benchmark large-config parse time and alert if it regresses >2× between commits. |
-| 75 | Architecture | Split monolithic `cli.go` (1410 LOC) | Separate command dispatch from interactive flows; move each command group into its own file/handler to improve testability of `cli` (currently ~43%). |
-| 76 | Architecture | Decompose `session.go` (1958 LOC) | PTY plumbing, overlay, input-composer, watchdog, and escape-rope are five concerns in one file; extract into focused units. |
-| 77 | Architecture | Extract a flag-parsing package | The repeated `inventoryFlags`/`transferFlags` patterns + `nextArg`/`hasHelpFlag` helpers belong in one reusable parser to kill duplication. |
-| 78 | Architecture | Thread `context.Context` everywhere | Replace ad-hoc timeouts with `context.Context` through `check`, `transfer`, and `connect` for unified cancellation/timeout. |
-| 79 | Architecture | Dependency injection for globals | Pass logger, config resolver, and state manager as interfaces instead of package globals (e.g. `daemonStartProcess`) for cleaner tests. |
-| 80 | Architecture | Mode enum instead of boolean flags | Replace `--supervise`/`--direct`/`--print` booleans with a single mode enum to make illegal combinations unrepresentable. |
-| 81 | Architecture | Unify session metadata structs | Consolidate `SessionRecord`/`ForwardSpec`/`ProxySpec` shared fields to reduce the metadata-passing sprawl across packages. |
-| 82 | Architecture | Structured logging facade | Introduce a leveled, structured logger (slog) with a `--verbose`/`--debug` flag, replacing scattered direct stderr prints. |
-| 83 | Architecture | Plugin/hook interface | Define a documented contract for user scripts on session start/end (logging, Slack, audit) — a small, safe extension point. |
-| 84 | Architecture | Centralize XDG path resolution | One module resolves state/config/cache dirs across Linux + macOS, removing per-package platform branches. |
-| 85 | Docs | Architecture Decision Records | Capture key decisions (OpenSSH as source of truth, local-only supervision, three transports) as ADRs for future contributors. |
-| 86 | Docs | Troubleshooting guide | Cover permission-denied, rope-not-firing, SFTP-unreachable, and terminal-wedged scenarios with fixes. |
-| 87 | Docs | Migration guide from the bash version | Map old flags/behaviors to the Go rewrite so existing users transition without surprises. |
-| 88 | Docs | State + config-graph schema reference | Document the JSON shapes in `state`/`sshconfig` as a semi-stable internal API others can build on. |
-| 89 | Docs | Auto-generate man page + completions from CLI spec | Derive `man/ssherpa.1` and the bash/fish/zsh completions from a single command spec so they never drift from `cli.go`. |
-| 90 | Docs | Asciinema demos in README | Embed short recorded casts of picker → connect → escape rope and an in-band transfer; far more persuasive than prose. |
-| 91 | Distribution | Windows support (ConPTY) | Abstract the PTY layer to support Windows ConPTY (or document WSL-only), then ship a Windows binary — meaningfully widens the audience. |
-| 92 | Distribution | Nix flake | Add `flake.nix` so Nix users get a reproducible install and dev shell. |
-| 93 | Distribution | AUR package | Publish to the Arch User Repository (`ssherpa-bin` + source) to reach Arch users. |
-| 94 | Distribution | Reproducible builds | Pin toolchain, set `-trimpath`/`-buildvcs`, and document how to reproduce release binaries bit-for-bit. |
-| 95 | Distribution | `ssherpa upgrade` self-update (opt-in) | Check the GitHub release feed and self-update for users who didn't install via a package manager — with signature verification. |
-| 96 | Observability | `--json` output for all read commands | Ensure `list`, `session`, `check`, and catalog commands emit stable JSON for scripting and dashboards (extend existing `list --json`). |
-| 97 | Observability | Latency SLA tracking per alias | Persist p50/p95/p99 RTT over time from the watchdog and expose a `session stats` view to spot degrading links. |
-| 98 | Features | First-class wormhole transport | Implement the planned magic-wormhole off-band transport for secure transfers when neither SFTP nor in-band fits (per `file-transfer.md`). |
-| 99 | Features | Multi-file / multi-port batch operations | `send file1 file2 …` and forward builders that open several local ports in one command, reducing repetitive invocations. |
-| 100 | Features | Saved multi-hop route aliases | Let users name and re-run a full jump chain (`prod-db = laptop→bastion→db`) instead of rebuilding hops each time. |
+| 33 | Reliability | Window-resize (SIGWINCH) propagation | Confirm terminal resizes propagate to the PTY so full-screen remote apps (vim/htop) reflow correctly; add a regression test. |
+| 34 | Reliability | Idempotent authkeys operations | Make `authkeys` add/merge no-ops when the exact key already exists (match by fingerprint), reporting "already present" rather than duplicating. |
+| 35 | Security | `SECURITY.md` with disclosure policy | Add a vulnerability-reporting policy and supported-versions table — table stakes for a security-adjacent tool. |
+| 36 | Security | Config/key permission warnings | Warn when `~/.ssh/config` or `authorized_keys` is group/world-writable or readable, mirroring OpenSSH's own strictness. |
+| 37 | Security | Reject newlines/control chars in authkeys comments | Validate key comments in `authkeys` so a crafted comment can't inject a second line into `authorized_keys`. |
+| 38 | Security | Directory-traversal guard in SFTP batch paths | Reject `..` and absolute-escape paths in `sshcmd` SFTP batch generation to prevent writing outside the intended target. |
+| 39 | Security | Enforce `--max-bytes` early in in-band transfer | Check payload size before encoding in `inband`, rejecting oversized transfers up front rather than after streaming. |
+| 40 | Security | GPG/cosign-sign release artifacts | Sign archives + `checksums.txt` in `release.yml` for verifiable provenance. |
+| 41 | Security | SBOM in releases | Generate a CycloneDX SBOM during GoReleaser so downstream consumers can audit the (small) dependency tree. |
+| 42 | Security | govulncheck in CI | Add `govulncheck ./...` to `ci.yml` to catch known vulnerabilities in deps and the toolchain on every PR. |
+| 43 | Security | gosec / static security linting | Run `gosec` in CI to catch insecure temp-file, perms, and exec patterns before merge. |
+| 44 | Security | Remote sshd version probe + warning | During `check`, surface the remote OpenSSH version and warn on known-EOL releases. |
+| 45 | Security | Escape-rope audit entry | Append an immutable audit line (host, lineage, time) to state when the rope is pulled, for after-incident review. |
+| 46 | Security | Secure temp-file creation review | Audit every temp path (`fsutil`, `inband`, SFTP batch) to ensure `O_EXCL`/`0600` creation and no predictable names — add tests. |
+| 47 | Security | Scrub session IDs from user-facing errors | Avoid leaking internal session identifiers into stderr/logs where they could aid correlation attacks. |
+| 48 | Security | Optional fingerprint confirmation on first connect | When connecting to an alias whose host key isn't yet known, surface the fingerprint clearly in the TUI before proceeding. |
+| 49 | Security | Dependabot / renovate for Go modules | Automate dependency-update PRs so security fixes in bubbletea/creack-pty land promptly. |
+| 50 | Performance | Parsed-config cache with mtime invalidation | Cache the parsed `sshconfig.Graph` under state with an mtime check, skipping re-parse of large multi-include configs on every invocation. |
+| 51 | Performance | Concurrent host probes in `check` | Fan out reachability/RTT probes across hosts with a bounded worker pool instead of sequentially — large fleets become usable. |
+| 52 | Performance | Append-only session event log | Avoid rewriting the whole `state` record on every event; append events and compact periodically. |
+| 53 | Performance | Compress payloads before base64 (in-band) | gzip the payload before base64 in `inband` for slow links — base64 inflates 33%, gzip often more than offsets it for text. |
+| 54 | Performance | Reuse `ControlMaster` sockets | Detect/offer `ControlMaster`+`ControlPersist` so repeated ssherpa invocations to the same host skip re-auth latency. |
+| 55 | Performance | Lazy `Include` parsing | Parse included files on first access rather than eagerly, so configs with many conditional includes load faster. |
+| 56 | Performance | Lazy forward/proxy catalog loading | Defer loading saved-forward/proxy catalogs until the relevant menu opens, trimming cold-start cost. |
+| 57 | Performance | PTY read-buffer sizing | Tune the PTY copy buffer in `session.go` to terminal dimensions to reduce syscalls under heavy output (e.g. `cat` of a big file). |
+| 58 | Performance | Picker render memoization | Cache the rendered list between keystrokes when the underlying inventory is unchanged, re-filtering only the visible window. |
+| 59 | Performance | Watchdog result coalescing | Batch latency-watchdog probe results into a single state write per interval rather than one per probe. |
+| 60 | Testing | Fuzz `sshconfig.Load` | Add a Go fuzz target feeding random/malformed config text to harden the parser against crashes and pathological includes. |
+| 61 | Testing | Dockerized end-to-end suite | A CI-only container running real `sshd` so connect/transfer/forward/jump flows are exercised against an actual server without requiring local developer Docker usage. |
+| 62 | Testing | PTY replay fixtures | Record real PTY byte streams and replay them to test `osc_tracker` (OSC 7/133) and overlay behavior deterministically. |
+| 63 | Testing | Error-injection framework for I/O | Inject ENOSPC, EACCES, and partial writes into `fsutil`/`state` to verify atomic-write and backup guarantees hold. |
+| 64 | Testing | Snapshot tests for TUI render output | Golden-file the rendered output of `picker`, `sessionview`, and `confirm` to catch visual regressions; raises `ui` coverage above ~45%. |
+| 65 | Testing | Signal-injection lifecycle tests | Deliver SIGTERM/SIGHUP/SIGWINCH mid-session and assert clean teardown and terminal restore in `session`. |
+| 66 | Testing | Property-based tests for alias round-trips | Generate random valid `Host` blocks, write then re-parse, and assert structural equality to find mutation edge cases. |
+| 67 | Testing | Transfer failure-mode tests | Simulate SFTP timeout, corrupted base64, and mid-stream drop; assert no partial/corrupt destination file results. |
+| 68 | Testing | Concurrent-process state race tests | Run two ssherpa processes mutating state simultaneously to surface file-locking gaps in `state`. |
+| 69 | Testing | Terminal-capability matrix tests | Mock `TERM`, `NO_COLOR`, and width to verify graceful degradation across dumb/256/truecolor terminals. |
+| 70 | Testing | Coverage gate in CI | Fail CI if total coverage drops below a threshold, with per-package floors; target lifting `cli` (~43%) and `ui` (~45%). |
+| 71 | Testing | Race detector in CI | Run `go test -race ./...` (esp. `session`, `daemon`, `state`) to catch the concurrency bugs PTY/daemon code is prone to. |
+| 72 | Testing | Escape-rope edge cases | Test rope behavior under nested zsh/fish, `tmux`/`screen`, and `nohup` layers where signal delivery differs. |
+| 73 | Testing | Performance regression guard | Benchmark large-config parse time and alert if it regresses >2× between commits. |
+| 74 | Architecture | Split monolithic `cli.go` (1410 LOC) | Separate command dispatch from interactive flows; move each command group into its own file/handler to improve testability of `cli` (currently ~43%). |
+| 75 | Architecture | Decompose `session.go` (1958 LOC) | PTY plumbing, overlay, input-composer, watchdog, and escape-rope are five concerns in one file; extract into focused units. |
+| 76 | Architecture | Extract a flag-parsing package | The repeated `inventoryFlags`/`transferFlags` patterns + `nextArg`/`hasHelpFlag` helpers belong in one reusable parser to kill duplication. |
+| 77 | Architecture | Thread `context.Context` everywhere | Replace ad-hoc timeouts with `context.Context` through `check`, `transfer`, and `connect` for unified cancellation/timeout. |
+| 78 | Architecture | Dependency injection for globals | Pass logger, config resolver, and state manager as interfaces instead of package globals (e.g. `daemonStartProcess`) for cleaner tests. |
+| 79 | Architecture | Mode enum instead of boolean flags | Replace `--supervise`/`--direct`/`--print` booleans with a single mode enum to make illegal combinations unrepresentable. |
+| 80 | Architecture | Unify session metadata structs | Consolidate `SessionRecord`/`ForwardSpec`/`ProxySpec` shared fields to reduce the metadata-passing sprawl across packages. |
+| 81 | Architecture | Structured logging facade | Introduce a leveled, structured logger (slog) with a `--verbose`/`--debug` flag, replacing scattered direct stderr prints. |
+| 82 | Architecture | Plugin/hook interface | Define a documented contract for user scripts on session start/end (logging, Slack, audit) — a small, safe extension point. |
+| 83 | Architecture | Centralize XDG path resolution | One module resolves state/config/cache dirs across Linux + macOS, removing per-package platform branches. |
+| 84 | Docs | Architecture Decision Records | Capture key decisions (OpenSSH as source of truth, local-only supervision, three transports) as ADRs for future contributors. |
+| 85 | Docs | Troubleshooting guide | Cover permission-denied, rope-not-firing, SFTP-unreachable, and terminal-wedged scenarios with fixes. |
+| 86 | Docs | Migration guide from the bash version | Map old flags/behaviors to the Go rewrite so existing users transition without surprises. |
+| 87 | Docs | State + config-graph schema reference | Document the JSON shapes in `state`/`sshconfig` as a semi-stable internal API others can build on. |
+| 88 | Docs | Auto-generate man page + completions from CLI spec | Derive `man/ssherpa.1` and the bash/fish/zsh completions from a single command spec so they never drift from `cli.go`. |
+| 89 | Docs | Asciinema demos in README | Embed short recorded casts of picker → connect → escape rope and an in-band transfer; far more persuasive than prose. |
+| 90 | Distribution | Windows support (ConPTY) | Abstract the PTY layer to support Windows ConPTY (or document WSL-only), then ship a Windows binary — meaningfully widens the audience. |
+| 91 | Distribution | Nix flake | Add `flake.nix` so Nix users get a reproducible install and dev shell. |
+| 92 | Distribution | AUR package | Publish to the Arch User Repository (`ssherpa-bin` + source) to reach Arch users. |
+| 93 | Distribution | Reproducible builds | Pin toolchain, set `-trimpath`/`-buildvcs`, and document how to reproduce release binaries bit-for-bit. |
+| 94 | Distribution | `ssherpa upgrade` self-update (opt-in) | Check the GitHub release feed and self-update for users who didn't install via a package manager — with signature verification. |
+| 95 | Observability | `--json` output for all read commands | Ensure `list`, `session`, `check`, and catalog commands emit stable JSON for scripting and dashboards (extend existing `list --json`). |
+| 96 | Observability | Latency SLA tracking per alias | Persist p50/p95/p99 RTT over time from the watchdog and expose a `session stats` view to spot degrading links. |
+| 97 | Features | First-class wormhole transport | Implement the planned magic-wormhole off-band transport for secure transfers when neither SFTP nor in-band fits (per `file-transfer.md`). |
+| 98 | Features | Multi-file / multi-port batch operations | `send file1 file2 …` and forward builders that open several local ports in one command, reducing repetitive invocations. |
+| 99 | Features | Saved multi-hop route aliases | Let users name and re-run a full jump chain (`prod-db = laptop→bastion→db`) instead of rebuilding hops each time. |
 
 ---
 

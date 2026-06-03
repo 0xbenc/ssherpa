@@ -131,6 +131,9 @@ func runAuthkeysAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ssherpa: authkeys add requires exactly one of --key or --key-file")
 		return 1
 	}
+	if !validateExplicitSSHKeygen(flags, stderr) {
+		return 1
+	}
 
 	path, err := authorizedKeysPath(flags.Path)
 	if err != nil {
@@ -175,6 +178,9 @@ func runAuthkeysMerge(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ssherpa: authkeys merge requires --from-dir")
 		return 1
 	}
+	if !validateExplicitSSHKeygen(flags, stderr) {
+		return 1
+	}
 
 	path, err := authorizedKeysPath(flags.Path)
 	if err != nil {
@@ -208,6 +214,9 @@ func runAuthkeysReplace(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if flags.FromDir == "" {
 		fmt.Fprintln(stderr, "ssherpa: authkeys replace requires --from-dir")
+		return 1
+	}
+	if !validateExplicitSSHKeygen(flags, stderr) {
 		return 1
 	}
 
@@ -276,6 +285,10 @@ func runAuthkeysDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Writer) int {
+	if !validateExplicitSSHKeygen(flags, stderr) {
+		return 1
+	}
+
 	path, err := authorizedKeysPath(flags.Path)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
@@ -444,9 +457,17 @@ func parseAuthkeysMenuFlags(args []string, stderr io.Writer) (authkeysFlags, boo
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--ssh-keygen", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SSHKeygenPath = value
 		case strings.HasPrefix(arg, "--ssh-keygen="):
-			flags.SSHKeygenPath = strings.TrimPrefix(arg, "--ssh-keygen=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-keygen="), "--ssh-keygen", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SSHKeygenPath = value
 		default:
 			fmt.Fprintf(stderr, "ssherpa: unknown authkeys argument %q\n", arg)
 			return flags, false
@@ -595,10 +616,18 @@ func parseAuthkeysMutationFlag(arg string, args []string, i *int, stderr io.Writ
 		if !ok {
 			return true, false
 		}
+		value, ok = requireBinaryFlagValue(value, "--ssh-keygen", stderr)
+		if !ok {
+			return true, false
+		}
 		flags.SSHKeygenPath = value
 		return true, true
 	case strings.HasPrefix(arg, "--ssh-keygen="):
-		flags.SSHKeygenPath = strings.TrimPrefix(arg, "--ssh-keygen=")
+		value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-keygen="), "--ssh-keygen", stderr)
+		if !ok {
+			return true, false
+		}
+		flags.SSHKeygenPath = value
 		return true, true
 	default:
 		return false, true

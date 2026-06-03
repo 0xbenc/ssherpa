@@ -112,6 +112,7 @@ func runCheckWithFlags(flags checkFlags, stderr io.Writer) (checkOutput, int) {
 
 	results := []checkResult{}
 	base := sshcmd.Resolve(sshcmd.ResolveOptions{SSHBinary: flags.SSHBinary, NoKitty: true, Env: sshcmd.Env()})
+	sshBinaryErr := sshcmd.ValidateCommandBinary(base, sshBinaryRequirement(flags.SSHBinary))
 	if len(flags.Positional) > 0 {
 		for _, name := range flags.Positional {
 			alias := findAlias(inventory.Aliases, name)
@@ -119,15 +120,15 @@ func runCheckWithFlags(flags checkFlags, stderr io.Writer) (checkOutput, int) {
 				results = append(results, checkResult{Kind: "alias", Name: name, SSHAlias: name, Status: "invalid", ICMPStatus: "skipped", LocalBindStatus: "skipped", Message: "alias not found"})
 				continue
 			}
-			results = append(results, checkAlias(*alias, base, flags))
+			results = append(results, checkAlias(*alias, base, flags, sshBinaryErr))
 		}
 	} else if flags.Filter != "" || flags.User != "" {
 		for _, alias := range inventory.Aliases {
-			results = append(results, checkAlias(alias, base, flags))
+			results = append(results, checkAlias(alias, base, flags, sshBinaryErr))
 		}
 	}
 	if flags.SavedForward != "" || flags.SavedForwards {
-		savedResults, code := checkSavedForwards(flags, inventory, base, stderr)
+		savedResults, code := checkSavedForwards(flags, inventory, base, sshBinaryErr, stderr)
 		if code != 0 {
 			return checkOutput{}, code
 		}
@@ -191,9 +192,17 @@ func parseCheckFlags(args []string, stderr io.Writer) (checkFlags, bool) {
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
-			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-binary="), "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
 		case arg == "--timeout":
 			value, ok := nextArg(args, &i, stderr, "--timeout")
 			if !ok {
@@ -252,7 +261,7 @@ func parseCheckFlags(args []string, stderr io.Writer) (checkFlags, bool) {
 	return flags, true
 }
 
-func checkAlias(alias hostlist.Alias, base sshcmd.Command, flags checkFlags) checkResult {
+func checkAlias(alias hostlist.Alias, base sshcmd.Command, flags checkFlags, sshBinaryErr error) checkResult {
 	result := checkResult{
 		Kind:            "alias",
 		Name:            alias.Name,
@@ -260,15 +269,22 @@ func checkAlias(alias hostlist.Alias, base sshcmd.Command, flags checkFlags) che
 		ICMPStatus:      "skipped",
 		LocalBindStatus: "skipped",
 	}
-	cmd := buildCheckProbe(base, alias.Name, nil, flags.Timeout)
-	probe := runSSHCheckProbe(cmd, flags.Timeout)
-	result.SSHRttMillis = probe.Duration.Milliseconds()
-	result.SSHExitCode = probe.ExitCode
-	if probe.Err != nil || probe.ExitCode != 0 {
+	if sshBinaryErr != nil {
 		result.Status = "failed"
-		result.SSHError = checkErrString(probe.Err, probe.ExitCode)
+		result.SSHExitCode = 1
+		result.SSHError = sshBinaryErr.Error()
+		result.Message = sshBinaryErr.Error()
 	} else {
-		result.Status = "ok"
+		cmd := buildCheckProbe(base, alias.Name, nil, flags.Timeout)
+		probe := runSSHCheckProbe(cmd, flags.Timeout)
+		result.SSHRttMillis = probe.Duration.Milliseconds()
+		result.SSHExitCode = probe.ExitCode
+		if probe.Err != nil || probe.ExitCode != 0 {
+			result.Status = "failed"
+			result.SSHError = checkErrString(probe.Err, probe.ExitCode)
+		} else {
+			result.Status = "ok"
+		}
 	}
 	if flags.NoICMP {
 		result.ICMPStatus = "skipped"
@@ -284,7 +300,7 @@ func checkAlias(alias hostlist.Alias, base sshcmd.Command, flags checkFlags) che
 	return result
 }
 
-func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base sshcmd.Command, stderr io.Writer) ([]checkResult, int) {
+func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base sshcmd.Command, sshBinaryErr error, stderr io.Writer) ([]checkResult, int) {
 	stateDir, err := state.ResolveDir(flags.StateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
@@ -307,12 +323,12 @@ func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base ssh
 	}
 	results := make([]checkResult, 0, len(specs))
 	for _, spec := range specs {
-		results = append(results, checkSavedForward(spec, inventory, base, flags))
+		results = append(results, checkSavedForward(spec, inventory, base, flags, sshBinaryErr))
 	}
 	return results, 0
 }
 
-func checkSavedForward(spec state.StoredForward, inventory hostlist.Inventory, base sshcmd.Command, flags checkFlags) checkResult {
+func checkSavedForward(spec state.StoredForward, inventory hostlist.Inventory, base sshcmd.Command, flags checkFlags, sshBinaryErr error) checkResult {
 	result := checkResult{
 		Kind:       "saved_forward",
 		Name:       spec.Name,
@@ -343,14 +359,24 @@ func checkSavedForward(spec state.StoredForward, inventory hostlist.Inventory, b
 	if spec.Through != "" {
 		hops = []string{spec.Through}
 	}
-	probe := runSSHCheckProbe(buildCheckProbe(base, spec.SSHAlias, hops, flags.Timeout), flags.Timeout)
-	result.SSHRttMillis = probe.Duration.Milliseconds()
-	result.SSHExitCode = probe.ExitCode
-	if probe.Err != nil || probe.ExitCode != 0 || result.LocalBindStatus != "ok" {
+	if sshBinaryErr != nil {
 		result.Status = "failed"
-		result.SSHError = checkErrString(probe.Err, probe.ExitCode)
+		result.SSHExitCode = 1
+		result.SSHError = sshBinaryErr.Error()
+		result.Message = sshBinaryErr.Error()
 	} else {
-		result.Status = "ok"
+		probe := runSSHCheckProbe(buildCheckProbe(base, spec.SSHAlias, hops, flags.Timeout), flags.Timeout)
+		result.SSHRttMillis = probe.Duration.Milliseconds()
+		result.SSHExitCode = probe.ExitCode
+		if probe.Err != nil || probe.ExitCode != 0 {
+			result.Status = "failed"
+			result.SSHError = checkErrString(probe.Err, probe.ExitCode)
+		} else {
+			result.Status = "ok"
+		}
+	}
+	if result.LocalBindStatus != "ok" {
+		result.Status = "failed"
 	}
 	if flags.NoICMP {
 		result.ICMPStatus = "skipped"
@@ -383,6 +409,9 @@ func defaultRunSSHCheckProbe(cmd sshcmd.Command, timeout time.Duration) sshProbe
 	if len(cmd.Argv) == 0 {
 		return sshProbeResult{Err: errors.New("empty SSH command"), ExitCode: 1}
 	}
+	if err := sshcmd.ValidateCommandBinary(cmd, sshcmd.BinaryRequirement{Name: "ssh", Role: "SSH client", Hint: sshcmd.OpenSSHClientInstallHint}); err != nil {
+		return sshProbeResult{Duration: time.Since(started), ExitCode: 1, Err: err}
+	}
 	proc := exec.CommandContext(ctx, cmd.Argv[0], cmd.Argv[1:]...)
 	err := proc.Run()
 	duration := time.Since(started)
@@ -402,6 +431,9 @@ func defaultRunSSHCheckProbe(cmd sshcmd.Command, timeout time.Duration) sshProbe
 func defaultRunICMPCheckProbe(host string, timeout time.Duration) icmpProbeResult {
 	host = strings.TrimSpace(host)
 	if host == "" {
+		return icmpProbeResult{Status: "unavailable"}
+	}
+	if _, err := exec.LookPath("ping"); err != nil {
 		return icmpProbeResult{Status: "unavailable"}
 	}
 	args := []string{"-c", "1"}

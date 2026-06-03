@@ -79,6 +79,7 @@ type connectOptions struct {
 	Supervise bool
 	StateDir  string
 	Config    string
+	SSHBinary string
 	Watchdog  session.WatchdogOptions
 	Composer  session.ComposerOptions
 	Reconnect session.ReconnectOptions
@@ -98,6 +99,7 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 		Supervise: !flags.Direct,
 		StateDir:  flags.StateDir,
 		Config:    flags.Config,
+		SSHBinary: flags.SSHBinary,
 		Watchdog: session.WatchdogOptions{
 			WarnThreshold:   flags.LatencyWarn,
 			DisconnectAfter: flags.LatencyDisconnect,
@@ -244,12 +246,16 @@ func runProxyWith(args []string, detached bool, recordID string, stdout io.Write
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
-	if flags.Background && !detached {
-		return daemonizeProxy(args, flags, stdout, stderr)
-	}
 
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildProxy(base, alias.Name, flags.Bind, flags.Port, flags.SSHArgs)
+	if flags.Background && !detached {
+		if !validateSSHCommandBinary(sshcmd.WithSessionEnvForwarding(sshcmd.WithConnectTimeout(cmd, sshcmd.DefaultConnectTimeoutSeconds)), flags.SSHBinary, stderr) {
+			return 1
+		}
+		return daemonizeProxy(args, flags, stdout, stderr)
+	}
+
 	metadata := session.Metadata{
 		TargetAlias: alias.Name,
 		Route:       []string{alias.Name},
@@ -374,12 +380,14 @@ func runForwardWith(args []string, detached bool, recordID string, stdout io.Wri
 	// Parent process for --background: validation has passed, now fork
 	// the child supervisor and exit. The child invocation re-enters
 	// this function via the --__supervisor dispatch with detached=true.
-	if flags.Background && !detached {
-		return daemonizeForward(args, flags, stdout, stderr)
-	}
-
 	base := resolveSSHCommand(flags.connectFlags)
 	cmd := sshcmd.BuildForward(base, alias.Name, flags.LocalBind, flags.LocalPort, flags.RemoteHost, flags.RemotePort, flags.Through, flags.SSHArgs)
+	if flags.Background && !detached {
+		if !validateSSHCommandBinary(sshcmd.WithSessionEnvForwarding(sshcmd.WithConnectTimeout(cmd, sshcmd.DefaultConnectTimeoutSeconds)), flags.SSHBinary, stderr) {
+			return 1
+		}
+		return daemonizeForward(args, flags, stdout, stderr)
+	}
 
 	route := []string{alias.Name}
 	var hops []string
@@ -455,9 +463,17 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
-			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-binary="), "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
 		case arg == "--supervise":
 			flags.Supervise = true
 			flags.Direct = false
@@ -632,9 +648,17 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
-			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-binary="), "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
 		case arg == "--supervise":
 			flags.Supervise = true
 			flags.Direct = false
@@ -818,9 +842,17 @@ func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
-			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-binary="), "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
 		case arg == "--supervise":
 			flags.Supervise = true
 			flags.Direct = false
@@ -1337,6 +1369,10 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 	if options.Print {
 		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 		return 0
+	}
+
+	if !validateSSHCommandBinary(cmd, options.SSHBinary, stderr) {
+		return 1
 	}
 
 	if options.Supervise {

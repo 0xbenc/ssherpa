@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xbenc/ssherpa/internal/state"
 )
@@ -50,6 +52,34 @@ Host prod
 		t.Fatalf("Run returned %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	assertContains(t, stdout.String(), "failed")
+}
+
+func TestRunCheckMissingSSHBinaryReturnsStructuredFailure(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	missing := filepath.Join(t.TempDir(), "missing-ssh")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"check", "prod", "--config", config, "--ssh-binary", missing, "--no-icmp", "--json"}, &stdout, &stderr, BuildInfo{})
+	if code != 2 {
+		t.Fatalf("Run returned %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	var out checkOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json.Unmarshal: %v\n%s", err, stdout.String())
+	}
+	if out.OK || len(out.Results) != 1 {
+		t.Fatalf("output = %+v, want one failed result", out)
+	}
+	result := out.Results[0]
+	if result.Status != "failed" || !strings.Contains(result.SSHError, "from --ssh-binary") || !strings.Contains(result.Message, "does not exist") {
+		t.Fatalf("result = %+v, want missing SSH binary diagnostics", result)
+	}
 }
 
 func TestRunCheckSavedForwardValidatesAndChecks(t *testing.T) {
@@ -112,4 +142,14 @@ Host other
 	}
 	assertContains(t, stdout.String(), `"status": "invalid"`)
 	assertContains(t, stdout.String(), `alias \"pgbox\" not found`)
+}
+
+func TestDefaultRunICMPCheckProbeMissingPingIsUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	got := defaultRunICMPCheckProbe("prod.example.com", time.Millisecond)
+
+	if got.Status != "unavailable" {
+		t.Fatalf("Status = %q, want unavailable", got.Status)
+	}
 }

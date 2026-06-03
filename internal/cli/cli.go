@@ -473,9 +473,17 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SSHBinary = value
 		case strings.HasPrefix(arg, "--ssh-binary="):
-			flags.SSHBinary = strings.TrimPrefix(arg, "--ssh-binary=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--ssh-binary="), "--ssh-binary", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SSHBinary = value
 		case arg == "--supervise":
 			flags.Supervise = true
 			flags.Direct = false

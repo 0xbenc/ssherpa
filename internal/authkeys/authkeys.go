@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/0xbenc/ssherpa/internal/sshcmd"
 )
 
 const (
@@ -174,6 +176,14 @@ func (v Validator) Validate(key AuthorizedKey) (ValidationResult, error) {
 			return ValidationResult{StructuralOnly: true}, nil
 		}
 		path = found
+	} else if err := sshcmd.ValidateBinary(sshcmd.BinaryRequirement{
+		Name:    "ssh-keygen",
+		Role:    "ssh-keygen",
+		Program: path,
+		Flag:    "--ssh-keygen",
+		Hint:    sshcmd.SSHKeygenInstallHint,
+	}); err != nil {
+		return ValidationResult{}, err
 	}
 
 	cmd := exec.Command(path, "-lf", "-")

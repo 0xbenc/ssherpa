@@ -257,6 +257,88 @@ func TestValidateSFTPTransfer(t *testing.T) {
 	}
 }
 
+func TestValidateCommandBinaryUsesLookPath(t *testing.T) {
+	err := ValidateCommandBinary(Command{Argv: []string{"ssh"}}, BinaryRequirement{
+		Name: "ssh",
+		Role: "SSH client",
+		LookPath: func(name string) (string, error) {
+			if name != "ssh" {
+				t.Fatalf("LookPath called with %q, want ssh", name)
+			}
+			return "/usr/bin/ssh", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ValidateCommandBinary returned error: %v", err)
+	}
+}
+
+func TestValidateCommandBinaryReportsMissingPathLookup(t *testing.T) {
+	err := ValidateCommandBinary(Command{Argv: []string{"ssh"}}, BinaryRequirement{
+		Name: "ssh",
+		Role: "SSH client",
+		Hint: OpenSSHClientInstallHint,
+		LookPath: func(string) (string, error) {
+			return "", os.ErrNotExist
+		},
+	})
+	if err == nil {
+		t.Fatal("ValidateCommandBinary returned nil, want missing binary error")
+	}
+	assertErrorContains(t, err, "SSH client")
+	assertErrorContains(t, err, "not found in PATH")
+	assertErrorContains(t, err, "OpenSSH client")
+}
+
+func TestValidateCommandBinaryReportsSourceForMissingFlagPath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-ssh")
+
+	err := ValidateCommandBinary(Command{Argv: []string{missing}}, BinaryRequirement{
+		Name: "ssh",
+		Role: "SSH client",
+		Flag: "--ssh-binary",
+		Hint: OpenSSHClientInstallHint,
+	})
+	if err == nil {
+		t.Fatal("ValidateCommandBinary returned nil, want missing binary error")
+	}
+	assertErrorContains(t, err, "from --ssh-binary")
+	assertErrorContains(t, err, "does not exist")
+	assertErrorContains(t, err, missing)
+}
+
+func TestValidateCommandBinaryReportsSourceForMissingEnvBinary(t *testing.T) {
+	err := ValidateCommandBinary(Command{Argv: []string{"missing-env-ssh"}}, BinaryRequirement{
+		Name:   "ssh",
+		Role:   "SSH client",
+		EnvVar: "SSHERPA_SSH_BINARY",
+		Hint:   OpenSSHClientInstallHint,
+		LookPath: func(string) (string, error) {
+			return "", os.ErrNotExist
+		},
+	})
+	if err == nil {
+		t.Fatal("ValidateCommandBinary returned nil, want missing binary error")
+	}
+	assertErrorContains(t, err, "from SSHERPA_SSH_BINARY")
+	assertErrorContains(t, err, "not found in PATH")
+}
+
+func TestValidateCommandBinaryRejectsDirectoryAndNonExecutablePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := ValidateCommandBinary(Command{Argv: []string{dir}}, BinaryRequirement{Name: "ssh", Role: "SSH client"}); err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("directory error = %v, want directory message", err)
+	}
+
+	file := filepath.Join(dir, "not-executable")
+	if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := ValidateCommandBinary(Command{Argv: []string{file}}, BinaryRequirement{Name: "ssh", Role: "SSH client"}); err == nil || !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("non-executable error = %v, want executable message", err)
+	}
+}
+
 func TestBuildForward(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -420,5 +502,12 @@ func TestRunDirectPropagatesExitCode(t *testing.T) {
 
 	if code != 7 {
 		t.Fatalf("RunDirect returned %d, want 7; stderr = %q", code, stderr.String())
+	}
+}
+
+func assertErrorContains(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want substring %q", err, want)
 	}
 }

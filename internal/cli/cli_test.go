@@ -235,6 +235,25 @@ Host prod
 	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 prod --help")
 }
 
+func TestRunConnectPrintDoesNotValidateMissingSSHBinary(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	missing := filepath.Join(t.TempDir(), "missing-ssh")
+
+	code := Run([]string{"--print", "--select", "prod", "--config", config, "--ssh-binary", missing}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), missing)
+}
+
 func TestRunSendPrintsSFTPCommandAndBatch(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -257,6 +276,29 @@ Host prod
 	}
 	assertContains(t, stdout.String(), "[print] sftp -b - -F "+config+" prod")
 	assertContains(t, stdout.String(), "put "+local+" /tmp/payload.txt")
+}
+
+func TestRunSendPrintDoesNotValidateMissingSFTPBinary(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing-sftp")
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--config", config, "--sftp-binary", missing, "--print"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertContains(t, stdout.String(), missing)
 }
 
 func TestRunSendExecutesFakeSFTP(t *testing.T) {
@@ -284,6 +326,28 @@ Host prod
 	if got := readFile(t, batchLog); got != "put "+local+" /tmp/payload.txt\n" {
 		t.Fatalf("fake sftp batch = %q", got)
 	}
+}
+
+func TestRunSendRejectsMissingSFTPBinaryBeforeRemoteChecks(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing-sftp")
+
+	code := Run([]string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--config", config, "--sftp-binary", missing}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	assertContains(t, stderr.String(), "from --sftp-binary")
+	assertContains(t, stderr.String(), "does not exist")
+	assertNotContains(t, stderr.String(), "cannot verify remote destination")
 }
 
 func TestRunSendRefusesExistingRemoteDestinationWithoutForce(t *testing.T) {
@@ -704,6 +768,83 @@ Host prod
 	}
 	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "SendEnv=SSHERPA_*") {
 		t.Fatalf("record argv = %#v, want session env forwarding", record.SSHArgv)
+	}
+}
+
+func TestRunConnectDirectRejectsMissingSSHBinary(t *testing.T) {
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	missing := filepath.Join(t.TempDir(), "missing-ssh")
+
+	code := Run([]string{"--direct", "--select", "prod", "--config", config, "--ssh-binary", missing}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "from --ssh-binary")
+	assertContains(t, stderr.String(), "does not exist")
+	assertNotContains(t, stderr.String(), "[exec]")
+}
+
+func TestRunConnectSupervisedRejectsMissingEnvSSHBinary(t *testing.T) {
+	var stderr bytes.Buffer
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+	missing := filepath.Join(t.TempDir(), "missing-env-ssh")
+	t.Setenv("SSHERPA_SSH_BINARY", missing)
+
+	code := Run([]string{"--select", "prod", "--config", config}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "from SSHERPA_SSH_BINARY")
+	assertContains(t, stderr.String(), "does not exist")
+	assertNotContains(t, stderr.String(), "[supervise]")
+}
+
+func TestRunRejectsEmptyBinaryFlags(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+	local := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "authorized_keys")
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "connect ssh", args: []string{"--ssh-binary="}, want: "--ssh-binary cannot be empty"},
+		{name: "jump ssh", args: []string{"jump", "--ssh-binary=", "--dest", "prod", "--hop", "bastion", "--config", config}, want: "--ssh-binary cannot be empty"},
+		{name: "proxy ssh", args: []string{"proxy", "--ssh-binary=", "--select", "prod", "--config", config}, want: "--ssh-binary cannot be empty"},
+		{name: "forward ssh", args: []string{"forward", "--ssh-binary=", "--select", "prod", "--local", "5432", "--remote", "127.0.0.1:5432", "--config", config}, want: "--ssh-binary cannot be empty"},
+		{name: "check ssh", args: []string{"check", "prod", "--ssh-binary=", "--config", config}, want: "--ssh-binary cannot be empty"},
+		{name: "send sftp", args: []string{"send", local, "--select", "prod", "--remote", "/tmp/payload.txt", "--sftp-binary=", "--config", config}, want: "--sftp-binary cannot be empty"},
+		{name: "authkeys keygen", args: []string{"authkeys", "add", "--key", testEd25519Key, "--path", authPath, "--ssh-keygen="}, want: "--ssh-keygen cannot be empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(tt.args, nil, &stderr, BuildInfo{})
+			if code != 1 {
+				t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+			}
+			assertContains(t, stderr.String(), tt.want)
+		})
 	}
 }
 
@@ -1553,6 +1694,42 @@ Host bastion
 	assertContains(t, stdout.String(), "daemon pid: 31337")
 	assertContains(t, stdout.String(), "session id:")
 	assertContains(t, stdout.String(), "log file:")
+}
+
+func TestRunForwardBackgroundRejectsMissingSSHBinaryBeforeDaemonize(t *testing.T) {
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	stateDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "missing-ssh")
+
+	var spawned bool
+	defer func(orig func(string, []string, *os.ProcAttr) (int, error)) {
+		daemonStartProcess = orig
+	}(daemonStartProcess)
+	daemonStartProcess = func(string, []string, *os.ProcAttr) (int, error) {
+		spawned = true
+		return 0, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"forward", "--background",
+		"--state-dir", stateDir,
+		"--select", "pgbox",
+		"--local", "5432", "--remote", "127.0.0.1:5432",
+		"--config", config, "--ssh-binary", missing,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if spawned {
+		t.Fatalf("daemonStartProcess was called despite missing SSH binary")
+	}
+	assertContains(t, stderr.String(), "from --ssh-binary")
+	assertContains(t, stderr.String(), "does not exist")
 }
 
 func TestWaitForDetachedRecordWaitsUntilRecordExists(t *testing.T) {
@@ -2486,6 +2663,23 @@ func TestRunAuthkeysAddRejectsInvalidKey(t *testing.T) {
 		t.Fatalf("Run returned %d, want 1", code)
 	}
 	assertContains(t, stderr.String(), "not valid base64")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected add, err=%v", err)
+	}
+}
+
+func TestRunAuthkeysAddRejectsMissingExplicitSSHKeygen(t *testing.T) {
+	var stderr bytes.Buffer
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	missing := filepath.Join(t.TempDir(), "missing-ssh-keygen")
+
+	code := Run([]string{"authkeys", "add", "--key", testEd25519Key, "--path", path, "--yes", "--ssh-keygen", missing}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stderr = %q", code, stderr.String())
+	}
+	assertContains(t, stderr.String(), "from --ssh-keygen")
+	assertContains(t, stderr.String(), "does not exist")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("authorized_keys exists after rejected add, err=%v", err)
 	}

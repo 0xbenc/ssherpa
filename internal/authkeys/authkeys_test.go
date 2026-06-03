@@ -92,6 +92,19 @@ func TestValidatorUsesFakeSSHKeygen(t *testing.T) {
 	}
 }
 
+func TestValidatorReportsMissingExplicitSSHKeygen(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-ssh-keygen")
+
+	_, err := Validator{SSHKeygenPath: missing}.Validate(mustParseKey(t, ed25519Key))
+
+	if err == nil {
+		t.Fatal("Validate returned nil error, want missing ssh-keygen error")
+	}
+	if !strings.Contains(err.Error(), "from --ssh-keygen") || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("error = %v, want explicit ssh-keygen diagnostic", err)
+	}
+}
+
 func TestCollectFromDirPrefersAuthorizedKeysDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "outside.pub"), []byte(ed25519Key+"\n"), 0o644); err != nil {

@@ -125,9 +125,17 @@ func parseTransferFlags(args []string, stderr io.Writer, direction sshcmd.SFTPTr
 			if !ok {
 				return flags, false
 			}
+			value, ok = requireBinaryFlagValue(value, "--sftp-binary", stderr)
+			if !ok {
+				return flags, false
+			}
 			flags.SFTPBinary = value
 		case strings.HasPrefix(arg, "--sftp-binary="):
-			flags.SFTPBinary = strings.TrimPrefix(arg, "--sftp-binary=")
+			value, ok := requireBinaryFlagValue(strings.TrimPrefix(arg, "--sftp-binary="), "--sftp-binary", stderr)
+			if !ok {
+				return flags, false
+			}
+			flags.SFTPBinary = value
 		case arg == "--all":
 			flags.All = true
 		case arg == "--filter":
@@ -218,6 +226,9 @@ func executeSFTPTransfer(direction sshcmd.SFTPTransferDirection, flags transferF
 		fmt.Fprintf(stdout, "[print] %s\n", sshcmd.QuoteArgv(cmd.Argv))
 		fmt.Fprintf(stdout, "[batch]\n%s", transfer.Batch)
 		return 0, transfer, true
+	}
+	if !validateSFTPCommandBinary(cmd, flags, stderr) {
+		return 1, transfer, false
 	}
 	proceed, code := confirmTransferSafety(flags, transfer, cmd, stderr)
 	if !proceed {
@@ -358,6 +369,10 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 func runSFTPCommand(cmd sshcmd.Command, batch string, stdout io.Writer, stderr io.Writer) int {
 	if len(cmd.Argv) == 0 {
 		fmt.Fprintln(stderr, "ssherpa: empty SFTP command")
+		return 1
+	}
+	if err := sshcmd.ValidateCommandBinary(cmd, sshcmd.BinaryRequirement{Name: "sftp", Role: "SFTP client", Hint: sshcmd.OpenSFTPInstallHint}); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
 	proc := exec.Command(cmd.Argv[0], cmd.Argv[1:]...)
@@ -1395,6 +1410,9 @@ func listRemoteEntries(flags transferFlags, alias string, dir string) (remoteLis
 		ControlPath: flags.ControlPath,
 	}
 	cmd := sshcmd.BuildSFTP(resolveSFTPBinary(flags), transfer)
+	if err := sshcmd.ValidateCommandBinary(cmd, sftpBinaryRequirement(flags)); err != nil {
+		return remoteListing{}, err
+	}
 	batch := fmt.Sprintf("cd %s\npwd\nls -la\n", quoteSFTPBatchPath(dir))
 	var stdout, stderr strings.Builder
 	code := runSFTPCommand(cmd, batch, &stdout, &stderr)
