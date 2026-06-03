@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/incoming"
 	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
@@ -32,6 +33,7 @@ Available Commands:
   send       Send a local file to an SSH alias with SFTP
   receive    Receive a remote file from an SSH alias with SFTP
   check      Test SSH aliases and saved forwards
+  incoming   Inspect and mark incoming SSH sessions
   authkeys   Manage authorized_keys on this device
   theme      Build and save the terminal UI color schema
   session    Inspect supervised session records
@@ -104,6 +106,11 @@ Check Commands:
   ssherpa check --filter SUBSTR [--json]
   ssherpa check --saved-forward NAME [--json]
   ssherpa check --saved-forwards [--json]
+
+Incoming Commands:
+  ssherpa incoming list [--json]
+  ssherpa incoming mark [--watch-parent PID] [--quiet]
+  ssherpa incoming hook [--shell sh|bash|zsh|fish]
 
 Theme Commands:
   ssherpa theme [--theme-file PATH]
@@ -182,6 +189,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runReceive(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
+	case "incoming":
+		return runIncoming(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
 	case "show":
@@ -361,6 +370,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			return code
 		case ui.ItemAuthkeys:
 			code := runAuthkeys(nil, stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemIncoming:
+			code := runIncomingList(nil, stdout, stderr)
 			if code == 0 && flags.Select == "" {
 				continue
 			}
@@ -669,6 +684,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 	sessionCount, activeSessions := pickerSessionCounts(flags.StateDir)
 	activeTunnels := pickerActiveTunnels(flags.StateDir)
 	activeProxies := pickerActiveProxies(flags.StateDir)
+	incomingSSH := pickerIncomingSessions()
 	stoppableSessions := pickerStoppableSessionCount(flags.StateDir)
 	savedForwards := pickerSavedForwards(flags.StateDir, activeSavedNames(activeTunnels))
 	savedProxies := pickerSavedProxies(flags.StateDir, activeSavedNames(activeProxies))
@@ -680,6 +696,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		ActiveTunnels:      activeTunnels,
 		ActiveProxies:      activeProxies,
 		StopAllActiveCount: stoppableSessions,
+		IncomingSSH:        incomingSSH,
 	}), ui.PickOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
@@ -690,7 +707,7 @@ func selectConnectItem(flags connectFlags, graph *sshconfig.Graph, inventory hos
 		Title:       "ssherpa",
 		Version:     pickerVersionLabel(build),
 		Subtitle:    pickerMode(flags),
-		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)+len(activeProxies)),
+		Summary:     pickerSummary(flags, graph, inventory, sessionCount, activeSessions, len(activeTunnels)+len(activeProxies), len(incomingSSH)),
 		Refreshable: true,
 	})
 	if err != nil {
@@ -740,18 +757,22 @@ func pickerMode(flags connectFlags) string {
 	}
 }
 
-func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, sessionCount int, activeSessions int, activeTunnels int) []string {
+func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlist.Inventory, sessionCount int, activeSessions int, activeTunnels int, incomingSSH int) []string {
 	var summary []string
 	warnings := len(inventory.Diagnostics)
 	for _, alias := range inventory.Aliases {
 		warnings += len(alias.Warnings)
 	}
-	summary = append(summary, strings.Join([]string{
+	counts := []string{
 		countLabel(len(inventory.Aliases), "host"),
 		countLabel(warnings, "warning"),
 		countLabel(activeSessions, "session"),
 		countLabel(activeTunnels, "tunnel"),
-	}, "  "))
+	}
+	if incomingSSH > 0 {
+		counts = append(counts, countLabel(incomingSSH, "incoming"))
+	}
+	summary = append(summary, strings.Join(counts, "  "))
 	var scope []string
 	if flags.All {
 		scope = append(scope, "including patterns")
@@ -785,9 +806,70 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 	return summary
 }
 
+func pickerIncomingSessions() []ui.IncomingItem {
+	sessions, err := incoming.List(incoming.Options{Env: os.Environ()})
+	if err != nil {
+		return nil
+	}
+	now := time.Now()
+	items := make([]ui.IncomingItem, 0, len(sessions))
+	for _, session := range sessions {
+		title := strings.TrimSpace(session.User + " " + session.TTY)
+		if title == "" {
+			title = defaultString(session.TTY, "incoming ssh")
+		}
+		items = append(items, ui.IncomingItem{
+			Token:       session.TTY,
+			Title:       title,
+			Description: incomingDescription(session, now),
+			Detail:      incomingDetail(session),
+			SSHerpa:     session.SSHerpa,
+		})
+	}
+	return items
+}
+
+func incomingDescription(session incoming.Session, now time.Time) string {
+	parts := []string{}
+	if session.ClientIP != "" {
+		parts = append(parts, "from "+session.ClientIP)
+	} else if session.Host != "" {
+		parts = append(parts, "from "+session.Host)
+	}
+	if session.SSHerpa {
+		parts = append(parts, "ssherpa")
+	} else {
+		parts = append(parts, "ssh")
+	}
+	if !session.LoginAt.IsZero() {
+		uptime := now.Sub(session.LoginAt)
+		if uptime > 0 {
+			parts = append(parts, "up "+humanShortDuration(uptime))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+func incomingDetail(session incoming.Session) string {
+	parts := []string{}
+	if len(session.Route) > 0 {
+		parts = append(parts, "route "+strings.Join(session.Route, " -> "))
+	}
+	if session.OriginHost != "" {
+		parts = append(parts, "origin "+session.OriginHost)
+	}
+	if session.SSHerpaSessionID != "" {
+		parts = append(parts, "session "+session.SSHerpaSessionID)
+	}
+	if len(parts) == 0 && session.Raw != "" {
+		return session.Raw
+	}
+	return strings.Join(parts, " · ")
+}
+
 func countLabel(count int, singular string) string {
 	label := singular
-	if count != 1 {
+	if count != 1 && singular != "incoming" {
 		label += "s"
 	}
 	return fmt.Sprintf("%d %s", count, label)

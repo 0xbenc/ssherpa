@@ -8,6 +8,9 @@ ssherpa \- terminal UI and supervisor for OpenSSH configs
 .B ssherpa check
 \fIALIAS...\fR [--json] [--no-icmp]
 .br
+.B ssherpa incoming
+\fIcommand\fR [\fIflags\fR]
+.br
 .B ssherpa forward saved
 \fIcommand\fR [\fIflags\fR]
 .br
@@ -24,6 +27,8 @@ ssherpa \- terminal UI and supervisor for OpenSSH configs
 reads OpenSSH config, lets you pick and connect to aliases, supervises SSH
 sessions, manages safe config edits, authorized_keys, jump/proxy routes, and
 local port-forward tunnels.
+It can also surface current interactive SSH logins into the local machine and
+flag logins that claim SSHerpa session metadata.
 .SH COMMANDS
 .TP
 .B add
@@ -59,6 +64,9 @@ Manage saved proxy catalog entries with list, show, save, edit, delete, and rena
 .B check
 Test SSH aliases or saved forwards with a BatchMode SSH probe and best-effort ICMP latency.
 .TP
+.B incoming
+List incoming interactive SSH sessions, write per-login marker files, or print a shell hook.
+.TP
 .B authkeys
 Manage authorized_keys on this device.
 .TP
@@ -74,6 +82,20 @@ ssherpa check --filter prod --json
 ssherpa check --saved-forward pg --no-icmp
 ssherpa check --saved-forwards --timeout 3s
 .EE
+.SH INCOMING SSH EXAMPLES
+.EX
+ssherpa incoming list
+ssherpa incoming list --json
+ssherpa incoming hook --shell zsh
+ssherpa incoming mark --watch-parent $$ --quiet
+.EE
+.PP
+Install the hook printed by
+.B ssherpa incoming hook
+in the remote account's login shell startup file. SSHerpa labels require the
+receiving sshd to allow
+.B AcceptEnv SSHERPA_* .
+The label is advisory: clients can spoof accepted environment variables.
 .SH SAVED FORWARD EXAMPLES
 .EX
 ssherpa forward saved save pg --select pgbox --local 15432 --remote 127.0.0.1:5432

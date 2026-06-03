@@ -106,6 +106,33 @@ ssherpa session prune --older-than 168h --dry-run
 Prefer the old behavior? `--direct` runs `ssh` straight through with no overlay,
 watchdog, or state.
 
+### Incoming SSH visibility
+
+The home picker can show current interactive SSH logins into this machine. Plain
+SSH logins are shown as `ssh`; logins that arrived from a supervised SSHerpa
+client are flagged as `ssherpa` when the remote account has a small shell hook
+installed and the receiving `sshd` accepts `SSHERPA_*` environment metadata.
+
+```sh
+ssherpa incoming list
+ssherpa incoming list --json
+ssherpa incoming hook --shell zsh
+ssherpa incoming hook --shell fish
+```
+
+Install the printed hook in the remote account's login shell startup file. For
+SSHerpa labels, the SSH server must also allow:
+
+```sshconfig
+AcceptEnv SSHERPA_*
+```
+
+This is an operator-facing warning surface, not an authentication system:
+`SSHERPA_*` environment values are advisory and can be spoofed by clients that
+the server allows to send them. `incoming` tracks interactive TTY logins; pure
+SFTP sessions, non-TTY remote commands, and port-forward-only SSH connections
+may not appear.
+
 ## Installation
 
 ### Homebrew
@@ -244,6 +271,18 @@ ssherpa check --saved-forwards --timeout 3s
 Shell completions are shipped in `completions/`, and the manpage is shipped as
 `man/ssherpa.1`.
 
+### Inspect incoming SSH
+
+`incoming` lists current interactive SSH logins into this machine. If a remote
+login shell has installed the hook from `ssherpa incoming hook`, rows can be
+enriched with SSHerpa route metadata.
+
+```sh
+ssherpa incoming list
+ssherpa incoming list --json
+ssherpa incoming hook --shell bash
+```
+
 ### Manage authorized_keys
 
 Operates on `~/.ssh/authorized_keys` by default. Point it elsewhere with `--path`
@@ -265,6 +304,7 @@ Flags override environment variables, which override the defaults.
 | `--config PATH` | — | `~/.ssh/config` |
 | `--ssh-binary PATH` | `SSHERPA_SSH_BINARY` | `ssh` (or `kitten ssh` under Kitty) |
 | `--state-dir PATH` | `SSHERPA_STATE_DIR` | platform state dir |
+| `--runtime-dir PATH` (incoming) | `SSHERPA_INCOMING_DIR` | runtime marker dir |
 | `--path PATH` (authkeys) | `SSHERPA_AUTHORIZED_KEYS_PATH` | `~/.ssh/authorized_keys` |
 | `--theme-file PATH` | `SSHERPA_THEME_FILE` | `~/.config/ssherpa/theme.conf` |
 | `--no-color` | `SSHERPA_NO_COLOR`, `NO_COLOR` | color on |

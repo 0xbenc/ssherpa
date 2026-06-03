@@ -27,6 +27,7 @@ const (
 	ItemReceiveFile   ItemKind = "receive_file"
 	ItemForwardSaved  ItemKind = "forward_saved"
 	ItemForwardActive ItemKind = "forward_active"
+	ItemIncoming      ItemKind = "incoming"
 	ItemProxySaved    ItemKind = "proxy_saved"
 	ItemProxyActive   ItemKind = "proxy_active"
 	ItemStopAllActive ItemKind = "stop_all_active"
@@ -63,6 +64,18 @@ type ActiveTunnelItem struct {
 	SessionID   string // full session record ID; matched by `forward stop`
 	Title       string // short, recognizable label (saved alias / target / id tail)
 	Description string // local→remote · uptime · daemon pid
+}
+
+// IncomingItem is an operator-facing projection of an inbound interactive
+// SSH login on this machine. It is informational: selecting it opens the
+// incoming-session list, but it is not part of stop-all because ssherpa does
+// not own the remote user's sshd session.
+type IncomingItem struct {
+	Token       string
+	Title       string
+	Description string
+	Detail      string
+	SSHerpa     bool
 }
 
 type Item struct {
@@ -118,6 +131,7 @@ type BuildItemsOptions struct {
 	// StopAllActiveCount renders the global kill action when at least one
 	// live tracked session exists, including interactive jump/direct sessions.
 	StopAllActiveCount int
+	IncomingSSH        []IncomingItem
 }
 
 func BuildItems(aliases []hostlist.Alias) []Item {
@@ -126,6 +140,22 @@ func BuildItems(aliases []hostlist.Alias) []Item {
 
 func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []Item {
 	items := []Item{}
+
+	for _, incoming := range opts.IncomingSSH {
+		badge := "ssh"
+		if incoming.SSHerpa {
+			badge = "ssherpa"
+		}
+		items = append(items, Item{
+			Kind:        ItemIncoming,
+			Token:       incoming.Token,
+			Title:       incoming.Title,
+			Description: incoming.Description,
+			Detail:      incoming.Detail,
+			Group:       "Incoming SSH",
+			Badge:       badge,
+		})
+	}
 
 	if opts.StopAllActiveCount > 0 {
 		items = append(items, Item{
@@ -868,6 +898,8 @@ func selectionHint(item Item) string {
 		return "Stops this running SOCKS proxy."
 	case ItemStopAllActive:
 		return "Stops every live tracked session: tunnels, proxies, jumps, and supervised direct SSH."
+	case ItemIncoming:
+		return "Shows current inbound interactive SSH logins on this machine."
 	case ItemForward:
 		return "Builds an ssh -L port-forward tunnel — pick destination, ports, optional jump hop."
 	case ItemTransferFile:

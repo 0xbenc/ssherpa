@@ -8,6 +8,7 @@ complete -c ssherpa -f -n '__fish_use_subcommand' -a forward -d 'Open and manage
 complete -c ssherpa -f -n '__fish_use_subcommand' -a send -d 'Send a local file with SFTP'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a receive -d 'Receive a remote file with SFTP'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a check -d 'Test SSH aliases and saved forwards'
+complete -c ssherpa -f -n '__fish_use_subcommand' -a incoming -d 'Inspect incoming SSH sessions'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a authkeys -d 'Manage authorized_keys'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a theme -d 'Build and save UI colors'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a session -d 'Inspect session records'
@@ -25,6 +26,13 @@ complete -c ssherpa -n '__fish_seen_subcommand_from check' -l icmp-timeout -r -d
 complete -c ssherpa -n '__fish_seen_subcommand_from check' -l no-icmp -d 'Skip ICMP ping'
 complete -c ssherpa -n '__fish_seen_subcommand_from check' -l saved-forward -r -d 'Check saved forward'
 complete -c ssherpa -n '__fish_seen_subcommand_from check' -l saved-forwards -d 'Check all saved forwards'
+
+complete -c ssherpa -n '__fish_seen_subcommand_from incoming' -a 'list mark hook'
+complete -c ssherpa -n '__fish_seen_subcommand_from incoming' -l json -d 'Emit JSON'
+complete -c ssherpa -n '__fish_seen_subcommand_from incoming' -l runtime-dir -r -d 'Override incoming marker directory'
+complete -c ssherpa -n '__fish_seen_subcommand_from incoming' -l watch-parent -r -d 'Watch parent process'
+complete -c ssherpa -n '__fish_seen_subcommand_from incoming' -l quiet -d 'Suppress marker output'
+complete -c ssherpa -n '__fish_seen_subcommand_from incoming' -l shell -r -d 'Shell hook type'
 
 complete -c ssherpa -n '__fish_seen_subcommand_from send' -l select -r -d 'SSH alias'
 complete -c ssherpa -n '__fish_seen_subcommand_from send' -l remote -r -d 'Remote destination path'

@@ -74,6 +74,50 @@ func TestRunVersionDefaults(t *testing.T) {
 	}
 }
 
+func TestRunIncomingHook(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Run([]string{"incoming", "hook", "--shell", "zsh"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "ssherpa incoming mark --watch-parent")
+	assertContains(t, stdout.String(), "$SSH_TTY")
+}
+
+func TestRunIncomingMarkWritesMarker(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("USER", "ben")
+	t.Setenv("SSH_TTY", "/dev/pts/9")
+	t.Setenv("SSH_CLIENT", "192.168.1.50 51234 22")
+	t.Setenv("SSHERPA_SESSION_ID", "session-1")
+	t.Setenv("SSHERPA_ROUTE", "laptop,prod")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Run([]string{"incoming", "mark", "--runtime-dir", dir}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run returned %d; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), "incoming marker:")
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir marker dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("marker entries = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	assertContains(t, string(data), `"tty": "pts/9"`)
+	assertContains(t, string(data), `"ssherpa_session_id": "session-1"`)
+}
+
 func TestRunHelpCommand(t *testing.T) {
 	var stdout bytes.Buffer
 
@@ -86,7 +130,9 @@ func TestRunHelpCommand(t *testing.T) {
 	assertContains(t, stdout.String(), "Available Commands:")
 	assertContains(t, stdout.String(), "theme      Build and save")
 	assertContains(t, stdout.String(), "check      Test SSH aliases")
+	assertContains(t, stdout.String(), "incoming   Inspect and mark incoming SSH sessions")
 	assertContains(t, stdout.String(), "send       Send a local file")
+	assertContains(t, stdout.String(), "Incoming Commands:")
 	assertContains(t, stdout.String(), "forward saved list")
 	assertContains(t, stdout.String(), "Theme Commands:")
 	assertContains(t, stdout.String(), "Phase 10:")
@@ -764,9 +810,9 @@ func TestPickerSummaryUsesPluralizedCompactCounts(t *testing.T) {
 	inventory := hostlist.Inventory{
 		Aliases: []hostlist.Alias{{Name: "prod", Warnings: []string{"warning"}}},
 	}
-	summary := pickerSummary(connectFlags{}, nil, inventory, 0, 1, 2)
+	summary := pickerSummary(connectFlags{}, nil, inventory, 0, 1, 2, 3)
 
-	if len(summary) == 0 || summary[0] != "1 host  1 warning  1 session  2 tunnels" {
+	if len(summary) == 0 || summary[0] != "1 host  1 warning  1 session  2 tunnels  3 incoming" {
 		t.Fatalf("summary = %#v", summary)
 	}
 }

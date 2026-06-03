@@ -11,6 +11,7 @@ _ssherpa() {
     'send:Send a local file with SFTP'
     'receive:Receive a remote file with SFTP'
     'check:Test SSH aliases and saved forwards'
+    'incoming:Inspect incoming SSH sessions'
     'authkeys:Manage authorized_keys'
     'theme:Build and save the terminal UI color schema'
     'session:Inspect supervised session records'
@@ -94,6 +95,15 @@ _ssherpa() {
             '--all[include pattern aliases]' \
             '--saved-forward[check saved forward]:name' \
             '--saved-forwards[check all saved forwards]'
+          ;;
+        incoming)
+          _arguments \
+            '2:subcommand:(list mark hook)' \
+            '--json[emit JSON]' \
+            '--runtime-dir[override incoming marker directory]:path:_files' \
+            '--watch-parent[watch parent process id]:pid' \
+            '--quiet[suppress marker output]' \
+            '--shell[shell hook type]:(sh bash zsh fish)'
           ;;
         send)
           _arguments \

@@ -5,7 +5,7 @@ _ssherpa()
     local cur prev words cword
     _init_completion || return
 
-    local commands="add edit jump proxy forward send receive check authkeys theme session list show version help"
+    local commands="add edit jump proxy forward send receive check incoming authkeys theme session list show version help"
     local global_flags="--json --all --filter --user --config --state-dir --ssh-binary --no-color --theme-file --help"
 
     case "${words[1]}" in
@@ -68,6 +68,26 @@ _ssherpa()
         check)
             COMPREPLY=( $(compgen -W "--json --config --state-dir --ssh-binary --timeout --icmp-timeout --no-icmp --filter --user --all --saved-forward --saved-forwards" -- "$cur") )
             return
+            ;;
+        incoming)
+            case "${words[2]}" in
+                list)
+                    COMPREPLY=( $(compgen -W "--json --runtime-dir" -- "$cur") )
+                    return
+                    ;;
+                mark)
+                    COMPREPLY=( $(compgen -W "--watch-parent --quiet --runtime-dir" -- "$cur") )
+                    return
+                    ;;
+                hook)
+                    COMPREPLY=( $(compgen -W "--shell sh bash zsh fish" -- "$cur") )
+                    return
+                    ;;
+                *)
+                    COMPREPLY=( $(compgen -W "list mark hook --json --runtime-dir --watch-parent --quiet --shell" -- "$cur") )
+                    return
+                    ;;
+            esac
             ;;
         send)
             COMPREPLY=( $(compgen -W "--select --remote --config --sftp-binary --force --print --filter --user --all --no-color --theme-file" -- "$cur") )

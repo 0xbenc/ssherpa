@@ -12,6 +12,9 @@ import (
 
 func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 	items := BuildItemsWithOptions([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}, BuildItemsOptions{
+		IncomingSSH: []IncomingItem{
+			{Token: "pts/2", Title: "ben pts/2", Description: "from 192.168.1.50", SSHerpa: true},
+		},
 		ActiveTunnels: []ActiveTunnelItem{
 			{SessionID: "sess-1", Title: "pngwin-pg-tunnel", Description: "127.0.0.1:5432 -> 127.0.0.1:5432 · up 2m"},
 		},
@@ -20,11 +23,12 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 		},
 	})
 
-	// Expected order: Active Tunnels, Saved Forwards, Actions (11), Hosts.
-	if len(items) != 1+1+11+1 {
-		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+11+1)
+	// Expected order: Incoming SSH, Active Tunnels, Saved Forwards, Actions (11), Hosts.
+	if len(items) != 1+1+1+11+1 {
+		t.Fatalf("len(items) = %d, want %d", len(items), 1+1+1+11+1)
 	}
 	want := []ItemKind{
+		ItemIncoming,      // incoming SSH row
 		ItemForwardActive, // active tunnel row
 		ItemForwardSaved,  // saved forward row
 		ItemAdd, ItemEdit, ItemJump, ItemProxy, ItemForward, ItemTransferFile, ItemCheck, ItemAuthkeys, ItemSessions, ItemTheme, ItemDocs,
@@ -35,14 +39,17 @@ func TestBuildItemsPrependsActiveTunnelsAndSavedForwards(t *testing.T) {
 			t.Fatalf("items[%d].Kind = %q, want %q", i, items[i].Kind, kind)
 		}
 	}
-	if items[0].Token != "sess-1" {
-		t.Fatalf("active-tunnel token = %q, want session ID 'sess-1'", items[0].Token)
+	if items[0].Token != "pts/2" || items[0].Badge != "ssherpa" {
+		t.Fatalf("incoming row = %#v, want pts/2 ssherpa", items[0])
 	}
-	if items[0].Group != "Active Tunnels" {
-		t.Fatalf("active-tunnel group = %q", items[0].Group)
+	if items[1].Token != "sess-1" {
+		t.Fatalf("active-tunnel token = %q, want session ID 'sess-1'", items[1].Token)
 	}
-	if items[1].Group != "Saved Forwards" {
-		t.Fatalf("saved-forward group = %q", items[1].Group)
+	if items[1].Group != "Active Tunnels" {
+		t.Fatalf("active-tunnel group = %q", items[1].Group)
+	}
+	if items[2].Group != "Saved Forwards" {
+		t.Fatalf("saved-forward group = %q", items[2].Group)
 	}
 }
 
