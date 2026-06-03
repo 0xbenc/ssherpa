@@ -896,7 +896,7 @@ func pickerSessionCounts(stateDir string) (total int, active int) {
 		if record.RemoteMirror {
 			continue
 		}
-		if record.Status() == "active" {
+		if state.ProcessAlive(record) {
 			active++
 		}
 	}

@@ -204,7 +204,7 @@ func (m mapModel) View() tea.View {
 
 func CountStatuses(records []state.SessionRecord) (active int, exited int) {
 	for _, record := range records {
-		if record.Status() == "active" {
+		if IsActive(record) {
 			active++
 		} else {
 			exited++
@@ -216,19 +216,26 @@ func CountStatuses(records []state.SessionRecord) (active int, exited int) {
 func ActiveRecords(records []state.SessionRecord) []state.SessionRecord {
 	active := make([]state.SessionRecord, 0, len(records))
 	for _, record := range records {
-		if record.Status() == "active" {
+		if IsActive(record) {
 			active = append(active, record)
 		}
 	}
 	return active
 }
 
+func IsActive(record state.SessionRecord) bool {
+	return state.ProcessAlive(record)
+}
+
 func StatusLabel(record state.SessionRecord) string {
 	if record.Inherited {
 		return "inherited"
 	}
-	if record.Status() == "active" {
+	if IsActive(record) {
 		return "active"
+	}
+	if record.EndedAt == nil {
+		return "orphan"
 	}
 	if record.ExitCode != nil {
 		return fmt.Sprintf("exit %d", *record.ExitCode)
@@ -283,7 +290,7 @@ func FormatRecordRoute(record state.SessionRecord) string {
 func writeListGroup(w io.Writer, title string, records []state.SessionRecord, active bool) {
 	first := true
 	for _, record := range records {
-		if (record.Status() == "active") != active {
+		if IsActive(record) != active {
 			continue
 		}
 		if first {
@@ -392,8 +399,10 @@ func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string
 	}
 	target := theme.Style(termstyle.RoleForeground, Target(record))
 	statusRole := termstyle.RoleMuted
-	if record.Status() == "active" {
+	if IsActive(record) {
 		statusRole = termstyle.RoleSuccess
+	} else if record.EndedAt == nil {
+		statusRole = termstyle.RoleWarning
 	}
 	status := theme.Style(statusRole, "["+StatusLabel(record)+"]")
 	meta := fmt.Sprintf("depth %d  id %s", record.Depth, record.ID)

@@ -1,6 +1,7 @@
 package sessionview
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ func TestMapViewCarriesRouteDetails(t *testing.T) {
 		Route:            []string{"laptop", "bastion", "prod"},
 		Hops:             []string{"bastion"},
 		StartedAt:        time.Unix(1700000000, 0),
+		LocalPID:         os.Getpid(),
 		DisconnectReason: "latency_timeout",
 	}
 
@@ -66,6 +68,7 @@ func TestMapViewSynthesizesInheritedLineage(t *testing.T) {
 		TargetAlias: "C",
 		Route:       []string{"B", "C"},
 		StartedAt:   time.Unix(1700000000, 0),
+		LocalPID:    os.Getpid(),
 	}
 
 	view := MapView(ViewOptions{
@@ -110,6 +113,7 @@ func TestMapLinesSynthesizesInheritedLineage(t *testing.T) {
 		TargetAlias: "C",
 		Route:       []string{"B", "C"},
 		StartedAt:   time.Unix(1700000000, 0),
+		LocalPID:    os.Getpid(),
 	}
 
 	text := strings.Join(MapLines("/tmp/ssherpa-state", []state.SessionRecord{record}, "c-session"), "\n")
@@ -124,6 +128,53 @@ func TestMapLinesSynthesizesInheritedLineage(t *testing.T) {
 			t.Fatalf("map lines missing %q:\n%s", want, text)
 		}
 	}
+}
+
+func TestSessionViewTreatsOpenDeadRecordsAsOrphans(t *testing.T) {
+	ended := time.Unix(1700000100, 0)
+	records := []state.SessionRecord{
+		{
+			ID:          "live",
+			TargetAlias: "prod",
+			Route:       []string{"prod"},
+			StartedAt:   time.Unix(1700000000, 0),
+			LocalPID:    os.Getpid(),
+		},
+		{
+			ID:          "stale",
+			TargetAlias: "old-prod",
+			Route:       []string{"old-prod"},
+			StartedAt:   time.Unix(1700000001, 0),
+			LocalPID:    0,
+		},
+		{
+			ID:          "done",
+			TargetAlias: "db",
+			Route:       []string{"db"},
+			StartedAt:   time.Unix(1700000002, 0),
+			EndedAt:     &ended,
+		},
+	}
+
+	active, exited := CountStatuses(records)
+	if active != 1 || exited != 2 {
+		t.Fatalf("CountStatuses = active %d exited %d, want live only active and stale inactive", active, exited)
+	}
+	if got := ActiveRecords(records); len(got) != 1 || got[0].ID != "live" {
+		t.Fatalf("ActiveRecords = %#v, want only live", got)
+	}
+	if got := StatusLabel(records[1]); got != "orphan" {
+		t.Fatalf("StatusLabel(orphan) = %q, want orphan", got)
+	}
+
+	activeText := strings.Join(MapLines("/tmp/ssherpa-state", records, ""), "\n")
+	assertContainsText(t, activeText, "active: 1")
+	assertContainsText(t, activeText, "+- prod [active]")
+	assertNotContainsText(t, activeText, "old-prod [orphan]")
+
+	allText := strings.Join(MapLinesWithOptions("/tmp/ssherpa-state", records, MapOptions{IncludeExited: true}), "\n")
+	assertContainsText(t, allText, "active: 1  exited: 2  total: 3")
+	assertContainsText(t, allText, "+- old-prod [orphan] depth=0 id=stale")
 }
 
 func TestMapForestMarksInheritedLineage(t *testing.T) {
@@ -156,6 +207,7 @@ func TestMapViewShowsLocalOriginForSingleHopRoute(t *testing.T) {
 		TargetAlias: "prod",
 		Route:       []string{"prod"},
 		StartedAt:   time.Unix(1700000000, 0),
+		LocalPID:    os.Getpid(),
 	}
 
 	view := MapView(ViewOptions{
@@ -181,6 +233,7 @@ func TestMapViewDoesNotRenderSeparateHopsRow(t *testing.T) {
 		Route:       []string{"bastion", "prod"},
 		Hops:        []string{"bastion"},
 		StartedAt:   time.Unix(1700000000, 0),
+		LocalPID:    os.Getpid(),
 		Forward: &state.ForwardSpec{
 			LocalBind:  "127.0.0.1",
 			LocalPort:  15432,
@@ -254,6 +307,7 @@ func TestMapViewShowsProxyDetails(t *testing.T) {
 		TargetAlias: "bastion",
 		Route:       []string{"bastion"},
 		StartedAt:   time.Unix(1700000000, 0),
+		LocalPID:    os.Getpid(),
 		Proxy: &state.ProxySpec{
 			Bind:       "127.0.0.1",
 			Port:       1080,
@@ -285,6 +339,7 @@ func TestMapViewShowsRemoteCWDAndPrompt(t *testing.T) {
 		TargetAlias:  "prod",
 		Route:        []string{"prod"},
 		StartedAt:    time.Unix(1700000000, 0),
+		LocalPID:     os.Getpid(),
 		RemoteHost:   "prod.example.com",
 		RemoteCWD:    "/srv/app",
 		RemotePrompt: state.RemotePromptPrompt,
@@ -347,5 +402,19 @@ func TestMapModelWaitsForKey(t *testing.T) {
 	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
 	if cmd == nil {
 		t.Fatalf("key press did not request quit")
+	}
+}
+
+func assertContainsText(t *testing.T, got string, want string) {
+	t.Helper()
+	if !strings.Contains(got, want) {
+		t.Fatalf("text missing %q:\n%s", want, got)
+	}
+}
+
+func assertNotContainsText(t *testing.T, got string, want string) {
+	t.Helper()
+	if strings.Contains(got, want) {
+		t.Fatalf("text unexpectedly contains %q:\n%s", want, got)
 	}
 }

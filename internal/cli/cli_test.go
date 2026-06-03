@@ -958,7 +958,7 @@ func TestPickerSummaryUsesPluralizedCompactCounts(t *testing.T) {
 	}
 }
 
-func TestPickerSessionCountsIgnoreRemoteMirrors(t *testing.T) {
+func TestPickerSessionCountsIgnoreRemoteMirrorsAndOrphans(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := state.WriteRecord(stateDir, state.SessionRecord{
 		ID:          "local-active",
@@ -968,6 +968,15 @@ func TestPickerSessionCountsIgnoreRemoteMirrors(t *testing.T) {
 		RunnerMode:  "supervised",
 	}); err != nil {
 		t.Fatalf("WriteRecord local-active: %v", err)
+	}
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:          "local-orphan",
+		Kind:        state.KindInteractive,
+		TargetAlias: "stale",
+		LocalPID:    0,
+		RunnerMode:  "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord local-orphan: %v", err)
 	}
 	if err := state.WriteRecord(stateDir, state.SessionRecord{
 		ID:           "mirrored-active",
@@ -980,8 +989,8 @@ func TestPickerSessionCountsIgnoreRemoteMirrors(t *testing.T) {
 	}
 
 	total, active := pickerSessionCounts(stateDir)
-	if total != 1 || active != 1 {
-		t.Fatalf("pickerSessionCounts = total %d active %d, want only local active counted", total, active)
+	if total != 2 || active != 1 {
+		t.Fatalf("pickerSessionCounts = total %d active %d, want local records counted and only live local active", total, active)
 	}
 	if got := pickerStoppableSessionCount(stateDir); got != 1 {
 		t.Fatalf("pickerStoppableSessionCount = %d, want local active only", got)
@@ -1970,6 +1979,7 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 		TargetAlias: "prod",
 		Route:       []string{"bastion", "prod"},
 		StartedAt:   now.Add(-time.Minute),
+		LocalPID:    os.Getpid(),
 		RunnerMode:  "supervised",
 	}
 	if err := state.WriteRecord(stateDir, root); err != nil {
