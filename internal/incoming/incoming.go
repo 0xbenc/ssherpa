@@ -286,7 +286,7 @@ func ParseWho(text string, now time.Time) []WhoEntry {
 				entry.ClientIP = trimHostPort(entry.Host)
 			}
 		}
-		if entry.TTY == "" || strings.HasPrefix(entry.TTY, "tty") {
+		if !isInteractiveSSHWhoEntry(entry) {
 			continue
 		}
 		out = append(out, entry)
@@ -298,6 +298,19 @@ func NormalizeTTY(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "/dev/")
 	return strings.Trim(value, "/")
+}
+
+func isInteractiveSSHWhoEntry(entry WhoEntry) bool {
+	if entry.TTY == "" || entry.Host == "" {
+		return false
+	}
+	if strings.HasPrefix(entry.TTY, "pts/") {
+		return true
+	}
+	if strings.HasPrefix(entry.TTY, "ttys") {
+		return true
+	}
+	return false
 }
 
 func ShellHook(shell string) (string, error) {

@@ -12,18 +12,25 @@ func TestParseWhoFiltersLocalTTYAndExtractsHost(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.Local)
 	got := ParseWho(strings.Join([]string{
 		"ben      pts/2        2026-06-03 10:15 (192.168.1.50)",
+		"ben      pts/3        2026-06-03 10:20",
 		"ben      tty1         2026-06-03 09:00",
+		"xbenc    :1           2026-06-02 09:38 (:1)",
 		"alice    pts/10       Jun  2 23:59 (vpn.example.com)",
+		"local    ttys000      Jun  2 10:00",
+		"remote   ttys001      Jun  2 10:10 (10.0.0.2)",
 	}, "\n"), now)
 
-	if len(got) != 2 {
-		t.Fatalf("len(got) = %d, want 2; got=%+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3; got=%+v", len(got), got)
 	}
 	if got[0].TTY != "pts/2" || got[0].ClientIP != "192.168.1.50" {
 		t.Fatalf("got[0] = %+v, want pts/2 with client IP", got[0])
 	}
 	if got[1].TTY != "pts/10" || got[1].Host != "vpn.example.com" {
 		t.Fatalf("got[1] = %+v, want host preserved", got[1])
+	}
+	if got[2].TTY != "ttys001" || got[2].ClientIP != "10.0.0.2" {
+		t.Fatalf("got[2] = %+v, want macOS remote ttys entry", got[2])
 	}
 }
 
