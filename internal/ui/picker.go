@@ -285,23 +285,24 @@ func Pick(ctx context.Context, items []Item, opts PickOptions) (Item, bool, erro
 }
 
 type pickerModel struct {
-	items       []Item
-	filtered    []int
-	cursor      int
-	query       string
-	selected    int
-	canceled    bool
-	refresh     bool
-	refreshable bool
-	noAltScreen bool
-	theme       termstyle.Theme
-	title       string
-	version     string
-	subtitle    string
-	summary     []string
-	footer      string
-	width       int
-	height      int
+	items        []Item
+	filtered     []int
+	cursor       int
+	scrollOffset int
+	query        string
+	selected     int
+	canceled     bool
+	refresh      bool
+	refreshable  bool
+	noAltScreen  bool
+	theme        termstyle.Theme
+	title        string
+	version      string
+	subtitle     string
+	summary      []string
+	footer       string
+	width        int
+	height       int
 }
 
 func newPickerModel(items []Item, opts PickOptions) pickerModel {
@@ -355,8 +356,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Height > 0 {
 			m.height = msg.Height
 		}
+		m.ensureCursorVisible()
 	case tea.KeyPressMsg:
 		key := msg.String()
+		keystroke := msg.Key().Keystroke()
 		// Home page only: "R" reloads the inventory. Elsewhere it falls
 		// through to the filter like any other letter.
 		if m.refreshable && key == "R" {
@@ -373,21 +376,22 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.selected = m.filtered[m.cursor]
 			return m, tea.Quit
-		case "up", "ctrl+p":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "ctrl+n":
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-			}
 		case "backspace":
 			if m.query != "" {
 				m.query = m.query[:len(m.query)-1]
 				m.applyFilter()
 			}
 		default:
-			if msg.Text != "" && !isControlKey(key) {
+			switch {
+			case keystroke == "shift+up" || keystroke == "shift+left":
+				m.jumpSection(-1)
+			case keystroke == "shift+down" || keystroke == "shift+right":
+				m.jumpSection(1)
+			case key == "up" || key == "ctrl+p":
+				m.moveCursor(-1)
+			case key == "down" || key == "ctrl+n":
+				m.moveCursor(1)
+			case msg.Text != "" && !isControlKey(key):
 				m.query += msg.Text
 				m.applyFilter()
 			}
@@ -411,9 +415,9 @@ func (m pickerModel) View() tea.View {
 	footer := m.footer
 	if footer == "" {
 		if m.refreshable {
-			footer = "enter select  /  type filter  /  arrows move  /  R refresh  /  Q quit"
+			footer = "enter select / type filter / arrows move / shift+arrows section / R refresh / Q quit"
 		} else {
-			footer = "enter select  /  type filter  /  arrows move  /  Q quit"
+			footer = "enter select / type filter / arrows move / shift+arrows section / Q quit"
 		}
 	}
 	b.WriteString(theme.rule(width))
@@ -548,9 +552,14 @@ func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
 	// list grows to fill a tall terminal instead of stopping at a fixed cap.
 	budget := listBudget(m.height, len(m.summary))
 	lines := []string{""}
+	start := m.normalizedScrollOffset()
+	if start > 0 {
+		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more above", start)))
+	}
 	lastGroup := ""
 	rendered := 0
-	for i := 0; i < len(m.filtered); i++ {
+	renderedUntil := start
+	for i := start; i < len(m.filtered); i++ {
 		index := m.filtered[i]
 		item := m.items[index]
 		groupCost := 0
@@ -577,9 +586,10 @@ func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
 		}
 		lines = append(lines, m.renderRow(item, i == m.cursor, width, theme))
 		rendered++
+		renderedUntil = i + 1
 	}
-	if len(m.filtered) > rendered {
-		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more hidden by terminal height", len(m.filtered)-rendered)))
+	if renderedUntil < len(m.filtered) {
+		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more below", len(m.filtered)-renderedUntil)))
 	}
 	return lines
 }
@@ -639,6 +649,141 @@ func (m *pickerModel) applyFilter() {
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
+	m.ensureCursorVisible()
+}
+
+func (m *pickerModel) moveCursor(delta int) {
+	if len(m.filtered) == 0 || delta == 0 {
+		return
+	}
+	m.cursor = clamp(m.cursor+delta, 0, len(m.filtered)-1)
+	m.ensureCursorVisible()
+}
+
+func (m *pickerModel) jumpSection(delta int) {
+	if len(m.filtered) == 0 || delta == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
+		return
+	}
+
+	currentGroup := m.filteredGroup(m.cursor)
+	if delta > 0 {
+		for i := m.cursor + 1; i < len(m.filtered); i++ {
+			if m.filteredGroup(i) != currentGroup {
+				m.cursor = i
+				m.ensureCursorVisible()
+				return
+			}
+		}
+		return
+	}
+
+	for i := m.cursor - 1; i >= 0; i-- {
+		group := m.filteredGroup(i)
+		if group == currentGroup {
+			continue
+		}
+		for i > 0 && m.filteredGroup(i-1) == group {
+			i--
+		}
+		m.cursor = i
+		m.ensureCursorVisible()
+		return
+	}
+}
+
+func (m pickerModel) filteredGroup(pos int) string {
+	if pos < 0 || pos >= len(m.filtered) {
+		return ""
+	}
+	index := m.filtered[pos]
+	if index < 0 || index >= len(m.items) {
+		return ""
+	}
+	return m.items[index].Group
+}
+
+func (m *pickerModel) ensureCursorVisible() {
+	if len(m.filtered) == 0 {
+		m.cursor = 0
+		m.scrollOffset = 0
+		return
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor >= len(m.filtered) {
+		m.cursor = len(m.filtered) - 1
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+	if m.scrollOffset >= len(m.filtered) {
+		m.scrollOffset = len(m.filtered) - 1
+	}
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+
+	budget := listBudget(m.height, len(m.summary))
+	for m.scrollOffset < m.cursor && !listWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
+		m.scrollOffset++
+	}
+	if !listWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
+		m.scrollOffset = m.cursor
+	}
+}
+
+func (m pickerModel) normalizedScrollOffset() int {
+	if len(m.filtered) == 0 || m.scrollOffset < 0 {
+		return 0
+	}
+	if m.scrollOffset >= len(m.filtered) {
+		return len(m.filtered) - 1
+	}
+	return m.scrollOffset
+}
+
+func listWindowContainsCursor(items []Item, filtered []int, start int, cursor int, budget int) bool {
+	if len(filtered) == 0 || cursor < start || cursor < 0 || cursor >= len(filtered) {
+		return false
+	}
+	lines := 1 // leading blank spacer
+	if start > 0 {
+		lines++ // "N more above"
+	}
+	lastGroup := ""
+	rendered := 0
+	for i := start; i < len(filtered); i++ {
+		index := filtered[i]
+		if index < 0 || index >= len(items) {
+			continue
+		}
+		item := items[index]
+		groupCost := 0
+		newGroup := item.Group != "" && item.Group != lastGroup
+		if newGroup {
+			groupCost = 1
+			if rendered > 0 {
+				groupCost++
+			}
+		}
+		reserve := 0
+		if len(filtered)-i-1 > 0 {
+			reserve = 1
+		}
+		if lines+groupCost+1+reserve > budget {
+			return false
+		}
+		if i == cursor {
+			return true
+		}
+		lines += groupCost + 1
+		if newGroup {
+			lastGroup = item.Group
+		}
+		rendered++
+	}
+	return false
 }
 
 func (m pickerModel) renderRow(item Item, selected bool, width int, theme pickerTheme) string {

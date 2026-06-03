@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -333,6 +334,69 @@ func TestPickerHostRowsOnlyShowNickname(t *testing.T) {
 	t.Fatalf("host row not found:\n%s", text)
 }
 
+func TestPickerListScrollsToKeepCursorVisible(t *testing.T) {
+	aliases := make([]hostlist.Alias, 24)
+	for i := range aliases {
+		name := fmt.Sprintf("host-%02d", i)
+		aliases[i] = hostlist.Alias{Name: name, HostName: name + ".example.com"}
+	}
+	model := newPickerModel(BuildItems(aliases), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+	model.width = 88
+	model.height = 14
+
+	for i := 0; i < 20; i++ {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		model = updated.(pickerModel)
+	}
+
+	selected := model.items[model.filtered[model.cursor]]
+	text := model.View().Content
+	if selected.Title != "host-09" {
+		t.Fatalf("selected title = %q, want host-09", selected.Title)
+	}
+	if !strings.Contains(text, "more above") || !strings.Contains(text, "more below") {
+		t.Fatalf("scroll notices missing:\n%s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "[HOST]") && strings.Contains(line, selected.Title) {
+			return
+		}
+	}
+	t.Fatalf("selected host row was not visible in the left list:\n%s", text)
+}
+
+func TestPickerShiftArrowsJumpSections(t *testing.T) {
+	model := newPickerModel(BuildItemsWithOptions([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}, BuildItemsOptions{
+		SavedForwards: []SavedForwardItem{{Name: "pg", Description: ":15432 -> :5432"}},
+	}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Actions" || item.Kind != ItemAdd {
+		t.Fatalf("shift+down selected %#v, want first Actions item", item)
+	}
+
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Hosts" || item.Token != "prod" {
+		t.Fatalf("shift+right selected %#v, want first Hosts item", item)
+	}
+
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Actions" || item.Kind != ItemAdd {
+		t.Fatalf("shift+up selected %#v, want first Actions item", item)
+	}
+
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Saved Forwards" || item.Token != "pg" {
+		t.Fatalf("shift+left selected %#v, want first Saved Forwards item", item)
+	}
+}
+
 func TestPickerViewRendersVersionTagInHeader(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
@@ -531,4 +595,12 @@ func TestPickerViewUsesFullAvailableWidth(t *testing.T) {
 	if len(lines) < 2 || len(lines[1]) != 180 {
 		t.Fatalf("rule width = %d, want 180:\n%s", len(lines[1]), text)
 	}
+}
+
+func updatePicker(model pickerModel, msgs ...tea.KeyPressMsg) pickerModel {
+	for _, msg := range msgs {
+		updated, _ := model.Update(msg)
+		model = updated.(pickerModel)
+	}
+	return model
 }
