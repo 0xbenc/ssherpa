@@ -45,6 +45,11 @@ const (
 	// normal logout or an ssh error (255). The value is outside the usual
 	// shell/signal ranges and ssherpa's own 0/1/255 codes.
 	EscapeRopeExitCode = 120
+	// InterruptReason marks a startup connection attempt that was locally
+	// cancelled with Ctrl+C before the SSH child produced output.
+	InterruptReason = "interrupt"
+	// InterruptExitCode mirrors the conventional shell status for SIGINT.
+	InterruptExitCode = 130
 )
 
 type Metadata struct {
@@ -282,7 +287,9 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	suspendTerminal := func(fn func()) {
 		fn()
 	}
+	terminalInput := false
 	if !opts.Detached {
+		terminalInput = stdin != nil && term.IsTerminal(stdin.Fd())
 		restore, err := makeRawIfTerminal(stdin)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
@@ -318,8 +325,12 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	// of a mid-backoff sleep. See docs/escape-rope.md.
 	ropeCtx, ropeCancel := context.WithCancel(context.Background())
 	defer ropeCancel()
+	interruptCtx, interruptCancel := context.WithCancel(context.Background())
+	defer interruptCancel()
 	var ropePulled atomic.Bool
+	var interrupted atomic.Bool
 	ropePulledCh := make(chan struct{})
+	interruptedCh := make(chan struct{})
 	pullRope := func() {
 		if !ropePulled.CompareAndSwap(false, true) {
 			return
@@ -357,9 +368,39 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			}
 		}(proc)
 	}
+	interruptLocal := func() {
+		if !interrupted.CompareAndSwap(false, true) {
+			return
+		}
+		close(interruptedCh)
+		recordMu.Lock()
+		record.DisconnectReason = InterruptReason
+		record.Events = append(record.Events, state.SessionEvent{
+			Time:    now().UTC(),
+			Type:    InterruptReason,
+			Message: "connection attempt interrupted locally with Ctrl+C",
+		})
+		_ = state.WriteRecord(stateDir, record)
+		recordMu.Unlock()
+		proc := procRefShared.get()
+		if proc == nil {
+			return
+		}
+		signalSessionGroup(proc, syscall.SIGINT)
+		go func(p *os.Process) {
+			timer := time.NewTimer(localInterruptKillGrace)
+			defer timer.Stop()
+			select {
+			case <-interruptCtx.Done():
+			case <-timer.C:
+				signalSessionGroup(p, syscall.SIGKILL)
+			}
+		}(proc)
+	}
 
 	output := &lockedWriter{w: stdout}
 	tap := &outputTap{}
+	startupInterruptible := &atomic.Bool{}
 	inputDone := make(chan struct{})
 	defer close(inputDone)
 	var inputStarted atomic.Bool
@@ -367,7 +408,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		if !inputStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, suspendTerminal, inputDone)
+		go copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, suspendTerminal, terminalInput, startupInterruptible, interruptLocal, inputDone)
 	}
 	if opts.Detached {
 		// In detached mode there is no stdin to forward and no
@@ -378,25 +419,26 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 
 	var lastWaitErr error
 	for attempt := 1; ; attempt++ {
-		if ropePulled.Load() {
+		if ropePulled.Load() || interrupted.Load() {
 			break
 		}
 		ac := attemptContext{
-			command:     command,
-			stateDir:    stateDir,
-			record:      &record,
-			recordMu:    &recordMu,
-			env:         env,
-			stdin:       stdin,
-			ptmxRef:     ptmxRefShared,
-			procRef:     procRefShared,
-			output:      output,
-			outputTap:   tap,
-			watchdog:    opts.Watchdog,
-			stderr:      stderr,
-			now:         now,
-			onPtmxReady: startInput,
-			pullRope:    pullRope,
+			command:              command,
+			stateDir:             stateDir,
+			record:               &record,
+			recordMu:             &recordMu,
+			env:                  env,
+			stdin:                stdin,
+			ptmxRef:              ptmxRefShared,
+			procRef:              procRefShared,
+			output:               output,
+			outputTap:            tap,
+			startupInterruptible: startupInterruptible,
+			watchdog:             opts.Watchdog,
+			stderr:               stderr,
+			now:                  now,
+			onPtmxReady:          startInput,
+			pullRope:             pullRope,
 		}
 		waitErr := attemptOnce(ac)
 		lastWaitErr = waitErr
@@ -406,7 +448,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			fmt.Fprintf(stderr, "ssherpa: run %s: %v\n", sshcmd.QuoteArgv(command.Argv), waitErr)
 			return 1
 		}
-		if ropePulled.Load() {
+		if ropePulled.Load() || interrupted.Load() {
 			break
 		}
 		if waitErr == nil {
@@ -447,6 +489,8 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		select {
 		case <-ropePulledCh:
 			timer.Stop()
+		case <-interruptedCh:
+			timer.Stop()
 		case <-timer.C:
 		}
 	}
@@ -455,6 +499,9 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	if ropePulled.Load() {
 		exitCode = EscapeRopeExitCode
 		fmt.Fprint(stderr, "\r\nssherpa: escape rope pulled — disconnecting all downstream sessions\r\n")
+	} else if interrupted.Load() {
+		exitCode = InterruptExitCode
+		fmt.Fprint(stderr, "\r\nssherpa: connection attempt interrupted\r\n")
 	}
 	endedAt := now().UTC()
 	recordMu.Lock()
@@ -665,7 +712,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, composer ComposerOptions, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), done <-chan struct{}) {
+func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, composer ComposerOptions, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), localInterrupts bool, startupInterruptible *atomic.Bool, interruptLocal func(), done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -674,6 +721,8 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outp
 		n, err := stdin.Read(buf[:])
 		if n > 0 {
 			switch {
+			case localInterrupts && buf[0] == 0x03 && startupInterruptible != nil && startupInterruptible.Load() && interruptLocal != nil:
+				interruptLocal()
 			case buf[0] == OverlayHotkey:
 				showSessionOverlay(ptmxRef, stdin, output, tap, stateDir, currentID, overlayBase, overlay, theme, pullRope, suspendTerminal, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
@@ -1244,6 +1293,11 @@ const (
 	// we escalate from SIGHUP to SIGKILL quickly to guarantee a prompt local
 	// return even if the ssh client ignores the hangup.
 	escapeRopeKillGrace = 750 * time.Millisecond
+	// localInterruptKillGrace mirrors the escape-rope escalation window for
+	// Ctrl+C during a startup attempt. SIGINT is tried first so a normal ssh
+	// client can clean up; SIGKILL follows quickly so a blocked connect cannot
+	// leave ssherpa wedged in raw mode.
+	localInterruptKillGrace = 750 * time.Millisecond
 	// Mashing the overlay hotkey escapeRopePanicTaps times within
 	// escapeRopePanicWindow of each press pulls the rope immediately, skipping
 	// the confirm step — a blind panic exit for when a layer is wedged and you
@@ -1634,9 +1688,13 @@ type attemptContext struct {
 	procRef   *procRef
 	output    *lockedWriter
 	outputTap *outputTap
-	watchdog  WatchdogOptions
-	stderr    io.Writer
-	now       func() time.Time
+	// startupInterruptible is true while the current child attempt has not
+	// emitted any PTY output. copyInput uses that window to treat Ctrl+C as a
+	// local abort instead of forwarding it to an ssh client blocked in connect.
+	startupInterruptible *atomic.Bool
+	watchdog             WatchdogOptions
+	stderr               io.Writer
+	now                  func() time.Time
 	// onPtmxReady, if non-nil, is invoked once per attempt after ptmxRef
 	// points at the freshly-started PTY and the active record has been
 	// written. The supervisor uses this to start the long-lived copyInput
@@ -1659,14 +1717,23 @@ type attemptContext struct {
 func attemptOnce(ac attemptContext) error {
 	proc := exec.Command(ac.command.Argv[0], ac.command.Argv[1:]...)
 	proc.Env = sessionEnv(ac.env, *ac.record)
+	if ac.startupInterruptible != nil {
+		ac.startupInterruptible.Store(true)
+	}
 
 	ptmx, err := pty.Start(proc)
 	if err != nil {
+		if ac.startupInterruptible != nil {
+			ac.startupInterruptible.Store(false)
+		}
 		return err
 	}
 	ac.ptmxRef.set(ptmx)
 	ac.procRef.set(proc.Process)
 	defer func() {
+		if ac.startupInterruptible != nil {
+			ac.startupInterruptible.Store(false)
+		}
 		ac.procRef.set(nil)
 		ac.ptmxRef.set(nil)
 	}()
@@ -1722,6 +1789,9 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 	for {
 		n, err := ptmx.Read(buf)
 		if n > 0 {
+			if ac.startupInterruptible != nil {
+				ac.startupInterruptible.Store(false)
+			}
 			chunk := buf[:n]
 			observed, clean := tracker.ObserveAndFilter(chunk)
 			if len(clean) > 0 {

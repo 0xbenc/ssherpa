@@ -129,6 +129,57 @@ func TestWithControlMasterSkipsExistingControlPathAndNonSSHCommands(t *testing.T
 	}
 }
 
+func TestWithConnectTimeout(t *testing.T) {
+	cmd := WithConnectTimeout(Command{Argv: []string{"ssh", "prod"}}, 10)
+
+	want := "ssh\x00-o\x00ConnectTimeout=10\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestWithConnectTimeoutKeepsKittyPrefix(t *testing.T) {
+	cmd := WithConnectTimeout(Command{Argv: []string{"kitten", "ssh", "prod"}}, 10)
+
+	want := "kitten\x00ssh\x00-o\x00ConnectTimeout=10\x00prod"
+	if got := strings.Join(cmd.Argv, "\x00"); got != want {
+		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
+	}
+}
+
+func TestWithConnectTimeoutSkipsExistingTimeoutAndNonSSHCommands(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{
+			name: "separate -o",
+			argv: []string{"ssh", "-o", "ConnectTimeout=3", "prod"},
+			want: "ssh\x00-o\x00ConnectTimeout=3\x00prod",
+		},
+		{
+			name: "compact -o",
+			argv: []string{"ssh", "-oConnectTimeout=4", "prod"},
+			want: "ssh\x00-oConnectTimeout=4\x00prod",
+		},
+		{
+			name: "non ssh",
+			argv: []string{"sh", "-c", "true"},
+			want: "sh\x00-c\x00true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := WithConnectTimeout(Command{Argv: tt.argv}, 10)
+			if got := strings.Join(cmd.Argv, "\x00"); got != tt.want {
+				t.Fatalf("Argv = %#v, want %q", cmd.Argv, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildProxy(t *testing.T) {
 	cmd := BuildProxy(Command{Argv: []string{"ssh"}}, "prod", "127.0.0.1", 1080, []string{"-v"})
 

@@ -408,7 +408,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		cmd := sshcmd.BuildDirect(base, alias.Name, flags.SSHArgs)
 
 		if flags.Print {
-			printCmd := cmd
+			printCmd := sshcmd.WithConnectTimeout(cmd, sshcmd.DefaultConnectTimeoutSeconds)
 			if !flags.Direct {
 				printCmd = sshcmd.WithSessionEnvForwarding(printCmd)
 			}

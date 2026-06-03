@@ -21,6 +21,11 @@ const DefaultForwardBind = "127.0.0.1"
 
 const SessionEnvPattern = "SSHERPA_*"
 
+// DefaultConnectTimeoutSeconds bounds ssherpa-launched SSH connection
+// attempts so an offline host cannot leave the supervised UI waiting on the
+// operating system's much longer TCP timeout.
+const DefaultConnectTimeoutSeconds = 10
+
 type Command struct {
 	Argv []string `json:"argv"`
 }
@@ -139,6 +144,18 @@ func WithControlMaster(command Command, controlPath string) Command {
 	return Command{Argv: argv}
 }
 
+func WithConnectTimeout(command Command, seconds int) Command {
+	if len(command.Argv) == 0 || seconds <= 0 || !supportsSSHOptions(command.Argv) || hasSSHOption(command.Argv, "ConnectTimeout=") {
+		return command
+	}
+	insertAt := sshOptionInsertIndex(command.Argv)
+	argv := make([]string, 0, len(command.Argv)+2)
+	argv = append(argv, command.Argv[:insertAt]...)
+	argv = append(argv, "-o", fmt.Sprintf("ConnectTimeout=%d", seconds))
+	argv = append(argv, command.Argv[insertAt:]...)
+	return Command{Argv: argv}
+}
+
 func BuildJump(base Command, destination string, hops []string, extraArgs []string) Command {
 	argv := append([]string(nil), base.Argv...)
 	argv = append(argv, "-J", strings.Join(hops, ","), destination)
@@ -220,6 +237,9 @@ func BuildSFTP(binary string, transfer SFTPTransfer) Command {
 func hasSSHOption(argv []string, prefix string) bool {
 	for i, arg := range argv {
 		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+		if strings.HasPrefix(arg, "-o"+prefix) {
 			return true
 		}
 		if arg == "-o" && i+1 < len(argv) && strings.HasPrefix(argv[i+1], prefix) {

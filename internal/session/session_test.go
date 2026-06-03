@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/creack/pty"
 )
 
 func TestRunSupervisedRecordsSessionLifecycle(t *testing.T) {
@@ -508,6 +510,133 @@ func TestForwardSignalsCallsPullRopeOnExternalTerminate(t *testing.T) {
 		// expected — fix works
 	case <-time.After(2 * time.Second):
 		t.Fatalf("pullRope was not invoked within 2s after SIGHUP — daemon would have respawned ssh")
+	}
+}
+
+func TestRunSupervisedCtrlCDuringStartupInterruptsLocally(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	userPTY, userTTY, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open user pty: %v", err)
+	}
+	defer userPTY.Close()
+	defer userTTY.Close()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sleep", "30"}},
+			Metadata{TargetAlias: "prod"},
+			Options{
+				StateDir: stateDir,
+				Stdin:    userTTY,
+				Stdout:   &stdout,
+				Stderr:   &stderr,
+				Env:      []string{"PATH=" + os.Getenv("PATH")},
+				Now:      fixedClock(),
+			},
+		)
+	}()
+
+	waitForSessionRecordCount(t, stateDir, 1, 2*time.Second)
+	if _, err := userPTY.Write([]byte{0x03}); err != nil {
+		t.Fatalf("write Ctrl+C: %v", err)
+	}
+
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("RunSupervised did not return after startup Ctrl+C; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+	if code != InterruptExitCode {
+		t.Fatalf("RunSupervised returned %d, want %d; stderr=%q", code, InterruptExitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "connection attempt interrupted") {
+		t.Fatalf("stderr = %q, want interrupt notice", stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].DisconnectReason != InterruptReason {
+		t.Fatalf("records = %#v, want one interrupted record", records)
+	}
+	if records[0].ExitCode == nil || *records[0].ExitCode != InterruptExitCode {
+		t.Fatalf("record exit = %#v, want %d", records[0].ExitCode, InterruptExitCode)
+	}
+	hasInterruptEvent := false
+	for _, event := range records[0].Events {
+		if event.Type == InterruptReason {
+			hasInterruptEvent = true
+		}
+	}
+	if !hasInterruptEvent {
+		t.Fatalf("events = %#v, want interrupt event", records[0].Events)
+	}
+}
+
+func TestRunSupervisedCtrlCAfterOutputReachesRemote(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	userPTY, userTTY, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open user pty: %v", err)
+	}
+	defer userPTY.Close()
+	defer userTTY.Close()
+	stdout := newNotifyingBuffer("ready")
+
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; printf ready; dd bs=1 count=1 of="$OUT" 2>/dev/null`}},
+			Metadata{TargetAlias: "prod"},
+			Options{
+				StateDir: stateDir,
+				Stdin:    userTTY,
+				Stdout:   stdout,
+				Stderr:   &stderr,
+				Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+				Now:      fixedClock(),
+			},
+		)
+	}()
+
+	select {
+	case <-stdout.notified:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("child did not produce startup output; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+	if _, err := userPTY.Write([]byte{0x03}); err != nil {
+		t.Fatalf("write Ctrl+C: %v", err)
+	}
+
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("RunSupervised did not return after forwarded Ctrl+C; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input: %v", err)
+	}
+	if !bytes.Equal(got, []byte{0x03}) {
+		t.Fatalf("remote input = %#v, want Ctrl+C byte", got)
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].DisconnectReason == InterruptReason {
+		t.Fatalf("records = %#v, want normal forwarded Ctrl+C session", records)
 	}
 }
 
@@ -1320,6 +1449,51 @@ func TestRunSupervisedRejectsBadStateDir(t *testing.T) {
 	if !strings.Contains(stderr.String(), "write session record") {
 		t.Fatalf("stderr = %q, want state write error", stderr.String())
 	}
+}
+
+func waitForSessionRecordCount(t *testing.T, stateDir string, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last []state.SessionRecord
+	for time.Now().Before(deadline) {
+		records, err := state.ListRecords(stateDir)
+		if err == nil {
+			last = records
+			if len(records) == want {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("session record count did not reach %d within %s; last=%#v", want, timeout, last)
+}
+
+type notifyingBuffer struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	needle   string
+	notified chan struct{}
+	once     sync.Once
+}
+
+func newNotifyingBuffer(needle string) *notifyingBuffer {
+	return &notifyingBuffer{needle: needle, notified: make(chan struct{})}
+}
+
+func (b *notifyingBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n, err := b.buf.Write(p)
+	if strings.Contains(b.buf.String(), b.needle) {
+		b.once.Do(func() { close(b.notified) })
+	}
+	return n, err
+}
+
+func (b *notifyingBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func fixedClock() func() time.Time {
