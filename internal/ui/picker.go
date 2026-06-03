@@ -945,6 +945,14 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RolePrimary
 	case ItemForwardActive, ItemProxyActive, ItemStopAllActive:
 		role = termstyle.RoleDanger
+	case ItemKind("edit_details"):
+		role = termstyle.RoleSuccess
+	case ItemKind("rename"):
+		role = termstyle.RoleInfo
+	case ItemKind("delete"):
+		role = termstyle.RoleDanger
+	case ItemKind("back"):
+		role = termstyle.RoleSecondary
 	case ItemCheck:
 		role = termstyle.RoleInfo
 	case ItemAuthkeys:

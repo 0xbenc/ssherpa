@@ -131,6 +131,8 @@ type hostChooserBaseOptions struct {
 	Steps       []string
 	CurrentStep int
 	Footer      string
+	Summary     string
+	EmptyLabel  string
 }
 
 const (
@@ -140,12 +142,14 @@ const (
 
 type hostChooserItem struct {
 	Kind        string
+	StyleKind   ItemKind
 	Token       string
 	Title       string
 	Description string
 	Detail      string
 	Badge       string
 	Group       string
+	Action      string
 }
 
 type hostChooserModel struct {
@@ -163,6 +167,8 @@ type hostChooserModel struct {
 	steps        []string
 	currentStep  int
 	footer       string
+	summary      string
+	emptyLabel   string
 	width        int
 	height       int
 }
@@ -188,11 +194,16 @@ func newHostChooserModel(items []hostChooserItem, opts hostChooserBaseOptions) (
 		steps:       append([]string(nil), opts.Steps...),
 		currentStep: opts.CurrentStep,
 		footer:      opts.Footer,
+		summary:     strings.TrimSpace(opts.Summary),
+		emptyLabel:  strings.TrimSpace(opts.EmptyLabel),
 		width:       96,
 		height:      24,
 	}
 	if model.mode == "" {
 		model.mode = "pick host"
+	}
+	if model.emptyLabel == "" {
+		model.emptyLabel = "No matching hosts"
 	}
 	model.applyFilter()
 	return model, nil
@@ -337,7 +348,7 @@ func (m hostChooserModel) renderBody(width int, theme pickerTheme) []string {
 
 func (m hostChooserModel) renderListLines(width int, theme pickerTheme) []string {
 	if len(m.filtered) == 0 {
-		return []string{"  " + theme.empty("No matching hosts")}
+		return []string{"  " + theme.empty(m.emptyLabel)}
 	}
 
 	budget := m.listWindowBudget()
@@ -413,6 +424,7 @@ func hostChooserItemsFromAliases(aliases []hostlist.Alias) []hostChooserItem {
 	for _, alias := range aliases {
 		items = append(items, hostChooserItem{
 			Kind:        hostChooserItemHost,
+			StyleKind:   ItemAlias,
 			Token:       alias.Name,
 			Title:       alias.Name,
 			Description: displayAlias(alias),
@@ -498,6 +510,9 @@ func hostChooserCompactLine(item hostChooserItem, width int, theme pickerTheme) 
 }
 
 func hostChooserAction(item hostChooserItem) string {
+	if strings.TrimSpace(item.Action) != "" {
+		return strings.TrimSpace(item.Action)
+	}
 	if item.Kind == hostChooserItemDone {
 		return "Finish this jump route"
 	}
@@ -505,6 +520,9 @@ func hostChooserAction(item hostChooserItem) string {
 }
 
 func hostChooserItemKind(item hostChooserItem) ItemKind {
+	if item.StyleKind != "" {
+		return item.StyleKind
+	}
 	if item.Kind == hostChooserItemDone {
 		return ItemCheck
 	}
@@ -627,6 +645,9 @@ func (m hostChooserModel) currentItem() (hostChooserItem, bool) {
 }
 
 func (m hostChooserModel) countSummary() string {
+	if m.summary != "" {
+		return m.summary
+	}
 	hosts := 0
 	for _, item := range m.items {
 		if item.Kind == hostChooserItemHost {

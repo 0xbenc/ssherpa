@@ -388,7 +388,7 @@ func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	item, ok, err := ui.Pick(context.Background(), editItems(inventory.Aliases, savedForwards, savedProxies), ui.PickOptions{
+	item, ok, err := ui.ChooseManagement(context.Background(), editManagementItems(inventory.Aliases, savedForwards, savedProxies), ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -396,6 +396,11 @@ func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Edit: pick an alias or saved preset",
+		Mode:        "choose item to edit",
+		Steps:       []string{"target", "action", "editor"},
+		CurrentStep: 0,
+		Summary:     editTargetSummary(len(inventory.Aliases), len(savedForwards), len(savedProxies)),
+		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -742,7 +747,7 @@ func runRenameSavedProxyTUI(name string, flags editInteractiveFlags, stdout io.W
 }
 
 func pickEditAction(title string, items []ui.Item, flags editInteractiveFlags, stderr io.Writer) (ui.Item, bool, error) {
-	return ui.Pick(context.Background(), items, ui.PickOptions{
+	item, ok, err := ui.ChooseManagement(context.Background(), editActionItems(items), ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -750,7 +755,24 @@ func pickEditAction(title string, items []ui.Item, flags editInteractiveFlags, s
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       title,
+		Mode:        editActionMode(title),
+		Steps:       []string{"target", "action", "editor"},
+		CurrentStep: 1,
+		Summary:     editActionSummary(len(items)),
+		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 	})
+	if err != nil || !ok {
+		return ui.Item{}, ok, err
+	}
+	return ui.Item{
+		Kind:        item.Kind,
+		Token:       item.Token,
+		Title:       item.Title,
+		Description: item.Description,
+		Detail:      item.Detail,
+		Badge:       item.Badge,
+		Group:       item.Group,
+	}, true, nil
 }
 
 func editSavedForwards(stateDirOverride string) []state.StoredForward {
@@ -777,40 +799,158 @@ func editSavedProxies(stateDirOverride string) []state.StoredProxy {
 	return proxies
 }
 
-func editItems(aliases []hostlist.Alias, forwards []state.StoredForward, proxies []state.StoredProxy) []ui.Item {
-	items := make([]ui.Item, 0, len(aliases)+len(forwards)+len(proxies))
+func editManagementItems(aliases []hostlist.Alias, forwards []state.StoredForward, proxies []state.StoredProxy) []ui.ManagementItem {
+	items := make([]ui.ManagementItem, 0, len(aliases)+len(forwards)+len(proxies))
 	for _, forward := range forwards {
-		items = append(items, ui.Item{
+		items = append(items, ui.ManagementItem{
 			Kind:        ui.ItemForwardSaved,
 			Token:       forward.Name,
 			Title:       forward.Name,
 			Description: savedForwardDescription(forward),
+			Detail:      savedForwardDetail(forward),
 			Group:       "Saved Forwards",
-			Badge:       "forward",
+			Badge:       "fwd",
+			Action:      "Choose an action for this saved forward",
 		})
 	}
 	for _, proxy := range proxies {
-		items = append(items, ui.Item{
+		items = append(items, ui.ManagementItem{
 			Kind:        ui.ItemProxySaved,
 			Token:       proxy.Name,
 			Title:       proxy.Name,
 			Description: savedProxyDescription(proxy),
+			Detail:      savedProxyDetail(proxy),
 			Group:       "Saved Proxies",
 			Badge:       "proxy",
+			Action:      "Choose an action for this saved proxy",
 		})
 	}
 	for _, alias := range aliases {
-		items = append(items, ui.Item{
+		items = append(items, ui.ManagementItem{
 			Kind:        ui.ItemAlias,
 			Token:       alias.Name,
 			Title:       alias.Name,
 			Description: displayAlias(alias),
 			Group:       "SSH Aliases",
 			Badge:       "host",
-			Detail:      fmt.Sprintf("%s:%d", alias.SourcePath, alias.SourceLine),
+			Detail:      editAliasDetail(alias),
+			Action:      "Choose an action for this SSH alias",
 		})
 	}
 	return items
+}
+
+func editActionItems(items []ui.Item) []ui.ManagementItem {
+	out := make([]ui.ManagementItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, ui.ManagementItem{
+			Kind:        item.Kind,
+			Token:       item.Token,
+			Title:       item.Title,
+			Description: item.Description,
+			Detail:      item.Detail,
+			Badge:       editActionBadge(item),
+			Group:       editActionGroup(item.Token),
+			Action:      editActionHelp(item.Token, item.Title),
+		})
+	}
+	return out
+}
+
+func editActionBadge(item ui.Item) string {
+	if strings.TrimSpace(item.Badge) != "" {
+		return item.Badge
+	}
+	switch item.Token {
+	case "edit":
+		return "edit"
+	case "rename":
+		return "rename"
+	case "delete":
+		return "delete"
+	case "back":
+		return "back"
+	default:
+		return "action"
+	}
+}
+
+func editActionGroup(token string) string {
+	switch token {
+	case "delete":
+		return "Danger"
+	case "back":
+		return "Navigation"
+	default:
+		return "Actions"
+	}
+}
+
+func editActionHelp(token string, title string) string {
+	switch token {
+	case "edit":
+		return "Open the editor for this item"
+	case "rename":
+		return "Rename this saved catalog item"
+	case "delete":
+		return "Delete this item after confirmation"
+	case "back":
+		return "Return without changing this item"
+	default:
+		return title
+	}
+}
+
+func editActionMode(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "choose edit action"
+	}
+	if _, target, ok := strings.Cut(title, ":"); ok {
+		target = strings.TrimSpace(target)
+		if target != "" {
+			return "choose action for " + target
+		}
+	}
+	return "choose edit action"
+}
+
+func editActionSummary(count int) string {
+	return editCountLabel(count, "action", "actions")
+}
+
+func editTargetSummary(aliasCount int, forwardCount int, proxyCount int) string {
+	parts := make([]string, 0, 3)
+	if aliasCount > 0 {
+		parts = append(parts, editCountLabel(aliasCount, "alias", "aliases"))
+	}
+	if forwardCount > 0 {
+		parts = append(parts, editCountLabel(forwardCount, "forward", "forwards"))
+	}
+	if proxyCount > 0 {
+		parts = append(parts, editCountLabel(proxyCount, "proxy", "proxies"))
+	}
+	if len(parts) == 0 {
+		return "0 choices"
+	}
+	return strings.Join(parts, "  ")
+}
+
+func editCountLabel(count int, singular string, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
+}
+
+func editAliasDetail(alias hostlist.Alias) string {
+	if alias.SourcePath == "" {
+		return ""
+	}
+	if alias.SourceLine > 0 {
+		return fmt.Sprintf("%s:%d", alias.SourcePath, alias.SourceLine)
+	}
+	return alias.SourcePath
 }
 
 func savedForwardDescription(spec state.StoredForward) string {
