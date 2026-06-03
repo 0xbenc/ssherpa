@@ -97,6 +97,23 @@ func TestAddAliasFormPastesCustomIdentityPath(t *testing.T) {
 	}
 }
 
+func TestAddAliasIdentityChoicesKeepLongPathsInLabelColumn(t *testing.T) {
+	theme := pickerTheme{theme: termstyle.TerminalTheme().WithNoColor(true)}
+	longPath := "~/.ssh/0xbenc_id_ed25519_d01p0MOh"
+
+	line := identityChoiceLine(longPath, false, 80, theme)
+
+	if termstyle.VisibleWidth(line) > 72 {
+		t.Fatalf("identity choice line width = %d, want <= 72: %q", termstyle.VisibleWidth(line), line)
+	}
+	if !strings.Contains(line, "write IdentityFile") {
+		t.Fatalf("identity choice line missing action description: %q", line)
+	}
+	if strings.Contains(line, "write IdentityFile "+longPath) {
+		t.Fatalf("identity choice line duplicated long path in description: %q", line)
+	}
+}
+
 func TestAddAliasFormUsesAccentForBreadcrumbAndLabels(t *testing.T) {
 	m := newAddAliasModel(AddAliasOptions{
 		Initial: AddAliasResult{HostName: "prod.example.com", Alias: "prod"},

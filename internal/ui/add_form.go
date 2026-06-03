@@ -404,30 +404,40 @@ func (m addAliasModel) viewIdentity(b *strings.Builder, theme pickerTheme, width
 	maxLines := clamp(m.height-10, 5, 14)
 	from, to := windowRange(m.idCursorRow, len(m.idChoices), maxLines)
 	for i := from; i < to; i++ {
-		choice := m.idChoices[i]
-		label := choice
-		desc := ""
-		switch choice {
-		case addIdentityNone:
-			label = "(none)"
-			desc = "do not write IdentityFile"
-		case addIdentityCustom:
-			label = "Custom path..."
-			desc = "type another key path"
-		default:
-			desc = "write IdentityFile " + choice
-		}
-		cursor := "  "
-		if i == m.idCursorRow {
-			cursor = "> "
-		}
-		line := cursor + termstyle.PadRight(label, 28) + theme.rowDesc(termstyle.Truncate(desc, max(0, width-32)), false)
-		if i == m.idCursorRow {
-			line = theme.rowTitle(line, true)
-		}
 		b.WriteString("  ")
-		b.WriteString(line)
+		b.WriteString(identityChoiceLine(m.idChoices[i], i == m.idCursorRow, width, theme))
 		b.WriteByte('\n')
+	}
+}
+
+func identityChoiceLine(choice string, selected bool, width int, theme pickerTheme) string {
+	label, desc := identityChoiceText(choice)
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+	available := max(24, width-8)
+	labelWidth := clamp(available/2, 18, 42)
+	descWidth := max(0, available-len(cursor)-labelWidth-2)
+
+	line := cursor + termstyle.PadRight(termstyle.Truncate(label, labelWidth), labelWidth)
+	if desc != "" && descWidth >= 8 {
+		line += "  " + theme.rowDesc(termstyle.Truncate(desc, descWidth), false)
+	}
+	if selected {
+		line = theme.rowTitle(line, true)
+	}
+	return line
+}
+
+func identityChoiceText(choice string) (label string, desc string) {
+	switch choice {
+	case addIdentityNone:
+		return "(none)", "do not write IdentityFile"
+	case addIdentityCustom:
+		return "Custom path...", "type another key path"
+	default:
+		return choice, "write IdentityFile"
 	}
 }
 
