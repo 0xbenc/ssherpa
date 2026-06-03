@@ -108,7 +108,7 @@ func Base64Length(size int64) int64 {
 }
 
 func ProbeCommand() string {
-	return "command -v base64 >/dev/null 2>&1 && { command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; } && stty -a >/dev/null 2>&1 && printf '" + ProbePrefix + " ok\\n' || printf '" + ProbePrefix + " fail\\n'"
+	return "command -v base64 >/dev/null 2>&1 && { command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; } && head -c 0 </dev/null >/dev/null 2>&1 && stty -a >/dev/null 2>&1 && printf '" + ProbePrefix + " ok\\n' || printf '" + ProbePrefix + " fail\\n'"
 }
 
 func ResetCommand() string {

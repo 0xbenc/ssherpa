@@ -900,6 +900,14 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 			}
 			encoded = encoded[n:]
 		}
+		// The receiver reads exactly Base64Length bytes. A trailing newline is
+		// harmless once the remote PTY is truly non-canonical, and it flushes
+		// BSD/macOS PTYs if canonical buffering is still in effect.
+		if _, err := ptmx.Write([]byte("\n")); err != nil {
+			_, _ = ptmx.Write([]byte{0x03})
+			_ = writeLine(plan.ResetCommand)
+			return InbandSendResult{}, fmt.Errorf("flush payload: %w", err)
+		}
 		done, err := waitForInbandOutput(output, 30*time.Second, func(text string) (bool, error) {
 			ok, parseErr := inband.ParseCompletion(text, plan.SHA256)
 			if parseErr == nil && ok {
