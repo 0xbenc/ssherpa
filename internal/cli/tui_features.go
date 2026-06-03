@@ -15,19 +15,7 @@ import (
 
 func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.Writer, stderr io.Writer) (int, bool) {
 	saved := pickerSavedForwards(flags.StateDir, nil)
-	items := []ui.Item{
-		{Kind: ui.ItemCheck, Token: "host", Title: "Check one host", Description: "pick an SSH alias and run SSH/ICMP checks", Badge: "check"},
-		{Kind: ui.ItemCheck, Token: "hosts", Title: "Check visible hosts", Description: "run checks for the current host list", Badge: "check"},
-	}
-	if len(saved) > 0 {
-		items = append(items,
-			ui.Item{Kind: ui.ItemCheck, Token: "forward", Title: "Check one saved forward", Description: "validate a saved tunnel and run reachability checks", Badge: "check"},
-			ui.Item{Kind: ui.ItemCheck, Token: "forwards", Title: "Check saved forwards", Description: "validate every saved tunnel", Badge: "check"},
-		)
-	}
-	items = append(items, ui.Item{Kind: ui.ItemCheck, Token: "back", Title: "Back", Description: "return to the home screen", Badge: "back"})
-
-	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+	item, ok, err := ui.ChooseManagement(context.Background(), checkModeItems(len(saved) > 0), ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -35,7 +23,11 @@ func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Check reachability",
-		Footer:      "enter select  /  Q back",
+		Mode:        "choose check scope",
+		Steps:       []string{"scope", "target", "results"},
+		CurrentStep: 0,
+		Summary:     checkModeSummary(len(inventory.Aliases), len(saved)),
+		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: check picker failed: %v\n", err)
@@ -79,6 +71,92 @@ func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.
 	default:
 		return 0, true
 	}
+}
+
+func checkModeItems(hasSavedForwards bool) []ui.ManagementItem {
+	items := []ui.ManagementItem{
+		{
+			Kind:        ui.ItemCheck,
+			Token:       "host",
+			Title:       "Check one host",
+			Description: "pick an SSH alias and run SSH/ICMP checks",
+			Group:       "Hosts",
+			Badge:       "host",
+			Action:      "Choose one host and show its reachability results",
+		},
+		{
+			Kind:        ui.ItemCheck,
+			Token:       "hosts",
+			Title:       "Check visible hosts",
+			Description: "run checks for the current host list",
+			Group:       "Hosts",
+			Badge:       "all",
+			Action:      "Check every visible SSH alias",
+		},
+	}
+	if hasSavedForwards {
+		items = append(items,
+			ui.ManagementItem{
+				Kind:        ui.ItemForwardSaved,
+				Token:       "forward",
+				Title:       "Check one saved forward",
+				Description: "validate a saved tunnel and run reachability checks",
+				Group:       "Saved Forwards",
+				Badge:       "fwd",
+				Action:      "Choose one saved forward and validate its tunnel path",
+			},
+			ui.ManagementItem{
+				Kind:        ui.ItemForwardSaved,
+				Token:       "forwards",
+				Title:       "Check saved forwards",
+				Description: "validate every saved tunnel",
+				Group:       "Saved Forwards",
+				Badge:       "all",
+				Action:      "Validate every saved forward",
+			},
+		)
+	}
+	items = append(items, ui.ManagementItem{
+		Kind:        ui.ItemKind("back"),
+		Token:       "back",
+		Title:       "Back",
+		Description: "return to the home screen",
+		Group:       "Navigation",
+		Badge:       "back",
+		Action:      "Return without running checks",
+	})
+	return items
+}
+
+func checkSavedForwardItems(saved []ui.SavedForwardItem) []ui.ManagementItem {
+	items := make([]ui.ManagementItem, 0, len(saved))
+	for _, sf := range saved {
+		items = append(items, ui.ManagementItem{
+			Kind:        ui.ItemForwardSaved,
+			Token:       sf.Name,
+			Title:       sf.Name,
+			Description: sf.Description,
+			Detail:      sf.Detail,
+			Group:       "Saved Forwards",
+			Badge:       "fwd",
+			Action:      "Run reachability checks for this saved forward",
+		})
+	}
+	return items
+}
+
+func checkModeSummary(aliasCount int, savedForwardCount int) string {
+	if savedForwardCount <= 0 {
+		return checkCountLabel(aliasCount, "alias", "aliases")
+	}
+	return checkCountLabel(aliasCount, "alias", "aliases") + "  " + checkCountLabel(savedForwardCount, "forward", "forwards")
+}
+
+func checkCountLabel(count int, singular string, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
 }
 
 func runCheckTUI(args []string, connect connectFlags, stderr io.Writer) int {
@@ -131,17 +209,7 @@ func runCheckTUI(args []string, connect connectFlags, stderr io.Writer) int {
 }
 
 func pickSavedForwardForCheck(flags connectFlags, saved []ui.SavedForwardItem, stderr io.Writer, stdout io.Writer) (string, bool, int) {
-	items := make([]ui.Item, 0, len(saved))
-	for _, sf := range saved {
-		items = append(items, ui.Item{
-			Kind:        ui.ItemForwardSaved,
-			Token:       sf.Name,
-			Title:       sf.Name,
-			Description: sf.Description,
-			Badge:       "forward",
-		})
-	}
-	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+	item, ok, err := ui.ChooseManagement(context.Background(), checkSavedForwardItems(saved), ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -149,6 +217,11 @@ func pickSavedForwardForCheck(flags connectFlags, saved []ui.SavedForwardItem, s
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Check: pick saved forward",
+		Mode:        "choose saved forward to check",
+		Steps:       []string{"scope", "target", "results"},
+		CurrentStep: 1,
+		Summary:     checkCountLabel(len(saved), "forward", "forwards"),
+		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
