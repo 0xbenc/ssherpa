@@ -264,9 +264,10 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 	if !ok {
 		t.Fatalf("sessionTelemetryFrame returned !ok")
 	}
+	mirrorPath := state.RecordPath(stateDir, child.ID)
 
 	code := RunSupervised(
-		sshcmd.Command{Argv: []string{"sh", "-c", `printf '%s' "$SSHERPA_TEST_TELEMETRY"`}},
+		sshcmd.Command{Argv: []string{"sh", "-c", `printf '%s' "$SSHERPA_TEST_TELEMETRY"; i=0; while [ "$i" -lt 200 ] && [ ! -f "$SSHERPA_TEST_MIRROR_PATH" ]; do i=$((i + 1)); sleep 0.01; done`}},
 		Metadata{TargetAlias: "bastion", Route: []string{"bastion"}},
 		Options{
 			StateDir: stateDir,
@@ -276,6 +277,7 @@ func TestRunSupervisedMirrorsRemoteDescendantTelemetry(t *testing.T) {
 			Env: []string{
 				"PATH=" + os.Getenv("PATH"),
 				"SSHERPA_TEST_TELEMETRY=" + string(payload),
+				"SSHERPA_TEST_MIRROR_PATH=" + mirrorPath,
 			},
 			Now:      fixedClock(),
 			RecordID: "parent",
@@ -803,7 +805,7 @@ func TestRunSupervisedOverlayReceiveActionDoesNotReachRemote(t *testing.T) {
 }
 
 func TestRunSupervisedOverlayInbandSendWritesRemoteFile(t *testing.T) {
-	var stdout bytes.Buffer
+	stdout := newNotifyingBuffer("SSHERPA_READY")
 	var stderr bytes.Buffer
 	stateDir := t.TempDir()
 	localPath := filepath.Join(t.TempDir(), "payload.txt")
@@ -811,47 +813,61 @@ func TestRunSupervisedOverlayInbandSendWritesRemoteFile(t *testing.T) {
 		t.Fatalf("write local payload: %v", err)
 	}
 	remotePath := filepath.Join(t.TempDir(), "remote payload.txt")
-	stdinPath := filepath.Join(t.TempDir(), "stdin")
-	input := append([]byte{OverlayHotkey, 's'}, []byte("exit\n")...)
-	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
-		t.Fatalf("write stdin fixture: %v", err)
-	}
-	stdin, err := os.Open(stdinPath)
+	userPTY, userTTY, err := pty.Open()
 	if err != nil {
-		t.Fatalf("open stdin fixture: %v", err)
+		t.Fatalf("open user pty: %v", err)
 	}
-	defer stdin.Close()
+	defer userPTY.Close()
+	defer userTTY.Close()
 
 	results := make(chan InbandSendResult, 1)
 	callbackErrs := make(chan string, 1)
-	code := RunSupervised(
-		sshcmd.Command{Argv: []string{"sh", "-i"}},
-		Metadata{TargetAlias: "prod", Route: []string{"prod"}},
-		Options{
-			StateDir: stateDir,
-			Stdin:    stdin,
-			Stdout:   &stdout,
-			Stderr:   &stderr,
-			Env:      []string{"PATH=" + os.Getenv("PATH")},
-			Now:      fixedClock(),
-			Overlay: OverlayOptions{
-				Send: func(req OverlayTransferRequest) int {
-					if req.InbandSend == nil {
-						callbackErrs <- "InbandSend is nil"
-						return 1
-					}
-					result, err := req.InbandSend(InbandSendRequest{LocalPath: localPath, RemotePath: remotePath})
-					if err != nil {
-						callbackErrs <- "InbandSend returned error: " + err.Error()
-						return 1
-					}
-					results <- result
-					return 0
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", `PS1='SSHERPA_READY '; export PS1; exec sh -i`}},
+			Metadata{TargetAlias: "prod", Route: []string{"prod"}},
+			Options{
+				StateDir: stateDir,
+				Stdin:    userTTY,
+				Stdout:   stdout,
+				Stderr:   &stderr,
+				Env:      []string{"PATH=" + os.Getenv("PATH")},
+				Now:      fixedClock(),
+				Overlay: OverlayOptions{
+					Send: func(req OverlayTransferRequest) int {
+						if req.InbandSend == nil {
+							callbackErrs <- "InbandSend is nil"
+							return 1
+						}
+						result, err := req.InbandSend(InbandSendRequest{LocalPath: localPath, RemotePath: remotePath})
+						if err != nil {
+							callbackErrs <- "InbandSend returned error: " + err.Error()
+							return 1
+						}
+						results <- result
+						return 0
+					},
 				},
 			},
-		},
-	)
+		)
+	}()
 
+	select {
+	case <-stdout.notified:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("interactive shell did not become ready; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+	if _, err := userPTY.Write(append([]byte{OverlayHotkey, 's'}, []byte("exit\n")...)); err != nil {
+		t.Fatalf("write overlay input: %v", err)
+	}
+
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(35 * time.Second):
+		t.Fatalf("RunSupervised did not return after in-band send; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
 	if code != 0 {
 		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
