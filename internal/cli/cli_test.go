@@ -1995,9 +1995,10 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 		t.Fatalf("session map returned %d, want 0", code)
 	}
 	assertContains(t, stdout.String(), "Session route map")
-	assertContains(t, stdout.String(), "+- prod [jump] [active]")
-	assertContains(t, stdout.String(), "path: here -> bastion -> prod")
-	assertNotContains(t, stdout.String(), "bastion [exit 0]")
+	assertContains(t, stdout.String(), "● active  prod [jump]")
+	assertContains(t, stdout.String(), "· bastion hop")
+	assertContains(t, stdout.String(), "● prod target")
+	assertNotContains(t, stdout.String(), "× exit 0  bastion")
 
 	stdout.Reset()
 	code = Run([]string{"session", "map", "--json", "--state-dir", stateDir}, &stdout, nil, BuildInfo{})
