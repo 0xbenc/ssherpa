@@ -545,31 +545,13 @@ func runTransferFileBuilder(flags connectFlags, inventory hostlist.Inventory, st
 }
 
 func chooseTransferDirection(flags connectFlags, stderr io.Writer) (sshcmd.SFTPTransferDirection, bool, error) {
-	items := []ui.Item{
-		{
-			Kind:        ui.ItemSendFile,
-			Token:       string(sshcmd.SFTPTransferSend),
-			Title:       "Send file",
-			Description: "local to remote",
-			Badge:       "send",
-		},
-		{
-			Kind:        ui.ItemReceiveFile,
-			Token:       string(sshcmd.SFTPTransferReceive),
-			Title:       "Receive file",
-			Description: "remote to local",
-			Badge:       "recv",
-		},
-	}
-	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+	direction, ok, err := ui.ChooseTransferDirection(context.Background(), ui.TransferDirectionOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		NoColor:     flags.NoColor,
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
-		Title:       "File transfer",
-		Footer:      "enter select  /  Q back",
 	})
 	if err != nil {
 		return "", false, err
@@ -577,13 +559,13 @@ func chooseTransferDirection(flags connectFlags, stderr io.Writer) (sshcmd.SFTPT
 	if !ok {
 		return "", false, nil
 	}
-	switch item.Kind {
-	case ui.ItemSendFile:
+	switch direction {
+	case ui.TransferDirectionSend:
 		return sshcmd.SFTPTransferSend, true, nil
-	case ui.ItemReceiveFile:
+	case ui.TransferDirectionReceive:
 		return sshcmd.SFTPTransferReceive, true, nil
 	default:
-		return "", false, fmt.Errorf("unexpected transfer direction item %q", item.Kind)
+		return "", false, fmt.Errorf("unexpected transfer direction %q", direction)
 	}
 }
 
