@@ -104,7 +104,8 @@ func TestAddAliasFormUsesAccentForBreadcrumbAndLabels(t *testing.T) {
 
 	text := m.View().Content
 	for _, want := range []string{
-		"\x1b[33m[host] ->  alias  ->  user  ->  port  ->  identity  ->  custom  ->  auth  ->  review\x1b[0m",
+		"\x1b[39;4m● host\x1b[0m",
+		"\x1b[90m○ alias\x1b[0m",
 		"\x1b[33mHostName\x1b[0m",
 		"\x1b[39mprod.example.com|\x1b[0m",
 	} {

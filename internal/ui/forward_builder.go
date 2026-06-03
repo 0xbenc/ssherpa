@@ -244,6 +244,7 @@ type forwardActionModel struct {
 	canceled    bool
 	action      ForwardAction
 	theme       termstyle.Theme
+	noAltScreen bool
 	width       int
 	height      int
 }
@@ -254,6 +255,7 @@ func newForwardActionModel(opts ForwardActionOptions, theme termstyle.Theme) for
 		description: opts.Description,
 		kindLabel:   opts.KindLabel,
 		theme:       theme,
+		noAltScreen: opts.NoAltScreen,
 		width:       104,
 		height:      18,
 	}
@@ -299,35 +301,32 @@ func (m forwardActionModel) View() tea.View {
 	width := clamp(m.width, 56, 104)
 	innerWidth := width - 8
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
+	var body strings.Builder
 
-	b.WriteString("  ")
 	label := strings.TrimSpace(m.kindLabel)
 	if label == "" {
 		label = "SSHERPA FORWARD PRESET"
 	}
-	b.WriteString(theme.logo(label))
-	b.WriteString("\n")
-	b.WriteString("  ")
-	b.WriteString(theme.theme.Style(termstyle.RoleBorder, strings.Repeat("-", innerWidth)))
-	b.WriteString("\n\n")
 
-	previewKVLine(&b, theme, "preset", m.name)
+	previewKVLine(&body, theme, "preset", m.name)
 	if m.description != "" {
-		previewKVLine(&b, theme, "route", termstyle.Truncate(m.description, max(0, innerWidth-16)))
+		previewKVLine(&body, theme, "route", termstyle.Truncate(m.description, max(0, innerWidth-16)))
 	}
-	b.WriteByte('\n')
+	body.WriteByte('\n')
 
-	b.WriteString("  ")
-	b.WriteString(forwardLaunchButton(theme, "Foreground", m.choice == forwardLaunchForeground, termstyle.RolePrimary))
-	b.WriteString("  ")
-	b.WriteString(forwardLaunchButton(theme, "Background", m.choice == forwardLaunchBackground, termstyle.RoleInfo))
-	b.WriteString("\n\n")
+	body.WriteString("  ")
+	body.WriteString(forwardLaunchButton(theme, "Foreground", m.choice == forwardLaunchForeground, termstyle.RolePrimary))
+	body.WriteString("  ")
+	body.WriteString(forwardLaunchButton(theme, "Background", m.choice == forwardLaunchBackground, termstyle.RoleInfo))
+	body.WriteString("\n")
 
-	b.WriteString("  ")
-	b.WriteString(theme.muted("enter launch  /  left-right choose  /  f foreground  /  b background  /  esc cancel"))
-	b.WriteByte('\n')
-	return tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:  label,
+		Body:   workflowBodyLines(&body),
+		Footer: "enter launch  /  left-right choose  /  f foreground  /  b background  /  esc cancel",
+	}))
+	view.AltScreen = !m.noAltScreen
+	return view
 }
 
 func (m forwardActionModel) selectedAction() ForwardAction {
@@ -868,40 +867,37 @@ func validateSaveName(name string) error {
 func (m forwardBuilderModel) View() tea.View {
 	width := clamp(m.width, 64, 140)
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
+	var body strings.Builder
 
 	titleText := "SSHERPA FORWARD BUILDER"
 	if m.editMode {
 		titleText = "SSHERPA FORWARD EDITOR"
 	}
-	title := theme.logo(titleText)
-	b.WriteString(termstyle.PadRight(title, width))
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.muted(stepBreadcrumb(m.step)))
-	b.WriteString("\n\n")
 
 	switch m.step {
 	case builderStepDestination:
-		m.viewDestination(&b, theme, width)
+		m.viewDestination(&body, theme, width)
 	case builderStepLocal:
-		m.viewLocal(&b, theme, width)
+		m.viewLocal(&body, theme, width)
 	case builderStepRemote:
-		m.viewRemote(&b, theme, width)
+		m.viewRemote(&body, theme, width)
 	case builderStepThrough:
-		m.viewThrough(&b, theme, width)
+		m.viewThrough(&body, theme, width)
 	case builderStepSummary:
-		m.viewSummary(&b, theme, width)
+		m.viewSummary(&body, theme, width)
 	case builderStepSaveName:
-		m.viewSaveName(&b, theme, width)
+		m.viewSaveName(&body, theme, width)
 	}
 
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.muted(stepFooter(m.step)))
-	b.WriteByte('\n')
-
-	return tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:   titleText,
+		Steps:   builderStepLabels(m.step),
+		Current: builderStepIndex(m.step),
+		Body:    workflowBodyLines(&body),
+		Footer:  stepFooter(m.step),
+	}))
+	view.AltScreen = !m.noAltScreen
+	return view
 }
 
 func (m forwardBuilderModel) viewDestination(b *strings.Builder, theme pickerTheme, width int) {
@@ -1050,10 +1046,16 @@ func (m forwardBuilderModel) summaryActions() []summaryAction {
 // inline error line. The cursor is rendered as a styled space
 // inside the buffer text.
 func renderInput(b *strings.Builder, theme pickerTheme, label, buf string, cursor int, errStr string, width int) {
+	labelWidth := 14
+	valueWidth := max(8, width-labelWidth-12)
+	value := truncateStyled(insertCursor(buf, cursor), valueWidth)
+	valueText := termstyle.PadRight(theme.theme.Style(termstyle.RoleForeground, value), valueWidth)
 	b.WriteString("  ")
-	b.WriteString(theme.label(label))
+	b.WriteString(termstyle.PadRight(theme.label(label), labelWidth))
 	b.WriteString("  ")
-	b.WriteString(theme.theme.Style(termstyle.RoleForeground, insertCursor(buf, cursor)))
+	b.WriteString(theme.theme.Style(termstyle.RoleBorder, "[ "))
+	b.WriteString(valueText)
+	b.WriteString(theme.theme.Style(termstyle.RoleBorder, " ]"))
 	b.WriteByte('\n')
 	if errStr != "" {
 		b.WriteString("  ")
@@ -1095,20 +1097,19 @@ func buildForwardPreview(r ForwardResult) string {
 	return strings.Join(parts, " ")
 }
 
-func stepBreadcrumb(step builderStep) string {
+func builderStepLabels(step builderStep) []string {
 	steps := []string{"destination", "local", "remote", "through", "summary"}
 	if step == builderStepSaveName {
 		steps = append(steps, "save name")
 	}
-	highlighted := []string{}
-	for i, s := range steps {
-		if i == int(step) {
-			highlighted = append(highlighted, "["+s+"]")
-		} else {
-			highlighted = append(highlighted, " "+s+" ")
-		}
+	return steps
+}
+
+func builderStepIndex(step builderStep) int {
+	if step == builderStepSaveName {
+		return 5
 	}
-	return strings.Join(highlighted, " -> ")
+	return int(step)
 }
 
 func stepFooter(step builderStep) string {

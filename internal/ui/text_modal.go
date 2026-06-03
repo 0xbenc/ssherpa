@@ -134,19 +134,13 @@ func (m textPromptModel) View() tea.View {
 	width := clamp(m.width, 48, 96)
 	innerWidth := width - 8
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString("  ")
-	b.WriteString(theme.logo(m.title))
-	b.WriteString("\n")
-	b.WriteString("  ")
-	b.WriteString(theme.theme.Style(termstyle.RoleBorder, strings.Repeat("-", innerWidth)))
-	b.WriteString("\n\n")
-	renderInput(&b, theme, m.label, m.buf, m.cursor, m.errStr, innerWidth)
-	b.WriteString("\n  ")
-	b.WriteString(theme.muted("enter save  /  type to edit  /  esc cancel"))
-	b.WriteString("\n")
-	view := tea.NewView(b.String())
+	var body strings.Builder
+	renderInput(&body, theme, m.label, m.buf, m.cursor, m.errStr, innerWidth)
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:  m.title,
+		Body:   workflowBodyLines(&body),
+		Footer: "enter save  /  type to edit  /  esc cancel",
+	}))
 	view.AltScreen = !m.noAltScreen
 	return view
 }

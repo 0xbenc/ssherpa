@@ -337,40 +337,34 @@ func (m addAliasModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m addAliasModel) View() tea.View {
 	width := clamp(m.width, 64, 140)
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
-
-	title := theme.logo("SSHERPA ADD ALIAS")
-	b.WriteString(termstyle.PadRight(title, width))
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.label(addBreadcrumb(m.step)))
-	b.WriteString("\n\n")
+	var body strings.Builder
 
 	switch m.step {
 	case addStepHost:
-		m.viewHost(&b, theme, width)
+		m.viewHost(&body, theme, width)
 	case addStepAlias:
-		m.viewAlias(&b, theme, width)
+		m.viewAlias(&body, theme, width)
 	case addStepUser:
-		m.viewUser(&b, theme, width)
+		m.viewUser(&body, theme, width)
 	case addStepPort:
-		m.viewPort(&b, theme, width)
+		m.viewPort(&body, theme, width)
 	case addStepIdentity:
-		m.viewIdentity(&b, theme, width)
+		m.viewIdentity(&body, theme, width)
 	case addStepIdentityCustom:
-		m.viewIdentityCustom(&b, theme, width)
+		m.viewIdentityCustom(&body, theme, width)
 	case addStepIdentitiesOnly:
-		m.viewIdentitiesOnly(&b, theme, width)
+		m.viewIdentitiesOnly(&body, theme, width)
 	case addStepReview:
-		m.viewReview(&b, theme, width)
+		m.viewReview(&body, theme, width)
 	}
 
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.muted(addFooter(m.step)))
-	b.WriteByte('\n')
-
-	view := tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:   "SSHERPA ADD ALIAS",
+		Steps:   addStepLabels(),
+		Current: int(m.step),
+		Body:    workflowBodyLines(&body),
+		Footer:  addFooter(m.step),
+	}))
 	view.AltScreen = !m.noAltScreen
 	return view
 }
@@ -481,19 +475,8 @@ func (m addAliasModel) viewReview(b *strings.Builder, theme pickerTheme, width i
 	_ = width
 }
 
-func addBreadcrumb(step addAliasStep) string {
-	steps := []string{"host", "alias", "user", "port", "identity", "custom", "auth", "review"}
-	parts := make([]string, 0, len(steps))
-	for i, s := range steps {
-		if i == int(step) {
-			parts = append(parts, "["+s+"]")
-		} else if i == len(steps)-1 {
-			parts = append(parts, " "+s)
-		} else {
-			parts = append(parts, " "+s+" ")
-		}
-	}
-	return strings.Join(parts, " -> ")
+func addStepLabels() []string {
+	return []string{"host", "alias", "user", "port", "identity", "custom", "auth", "review"}
 }
 
 func addFooter(step addAliasStep) string {

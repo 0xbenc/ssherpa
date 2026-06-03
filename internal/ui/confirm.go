@@ -133,37 +133,28 @@ func (m confirmModel) View() tea.View {
 	width := clamp(m.width, 48, 96)
 	innerWidth := width - 8
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
+	var body strings.Builder
 
-	b.WriteString("\n")
-	b.WriteString("  ")
-	titleRole := termstyle.RolePrimary
-	if m.danger {
-		titleRole = termstyle.RoleDanger
-	}
-	b.WriteString(theme.theme.Style(titleRole, termstyle.PadRight(m.title, innerWidth)))
-	b.WriteString("\n")
-	b.WriteString("  ")
-	b.WriteString(theme.theme.Style(termstyle.RoleBorder, strings.Repeat("-", innerWidth)))
-	b.WriteString("\n\n")
 	if m.message != "" {
 		for _, line := range wrapConfirmText(m.message, innerWidth) {
-			b.WriteString("  ")
-			b.WriteString(theme.theme.Style(termstyle.RoleForeground, line))
-			b.WriteString("\n")
+			body.WriteString("  ")
+			body.WriteString(theme.theme.Style(termstyle.RoleForeground, line))
+			body.WriteString("\n")
 		}
-		b.WriteString("\n")
+		body.WriteString("\n")
 	}
-	b.WriteString("  ")
-	b.WriteString(confirmButton(theme, "Yes", m.selectedYes, m.danger))
-	b.WriteString("  ")
-	b.WriteString(confirmButton(theme, "No", !m.selectedYes, false))
-	b.WriteString("\n\n")
-	b.WriteString("  ")
-	b.WriteString(theme.muted("enter confirm  /  left-right choose  /  esc cancel"))
-	b.WriteString("\n")
+	body.WriteString("  ")
+	body.WriteString(confirmButton(theme, "Yes", m.selectedYes, m.danger))
+	body.WriteString("  ")
+	body.WriteString(confirmButton(theme, "No", !m.selectedYes, false))
+	body.WriteString("\n")
 
-	view := tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:  m.title,
+		Body:   workflowBodyLines(&body),
+		Footer: "enter confirm  /  left-right choose  /  esc cancel",
+		Danger: m.danger,
+	}))
 	view.AltScreen = !m.noAltScreen
 	return view
 }
