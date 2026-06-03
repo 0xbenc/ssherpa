@@ -667,17 +667,33 @@ func (m *pickerModel) jumpSection(delta int) {
 
 	currentGroup := m.filteredGroup(m.cursor)
 	if delta > 0 {
+		currentEnd := m.cursor
 		for i := m.cursor + 1; i < len(m.filtered); i++ {
 			if m.filteredGroup(i) != currentGroup {
 				m.cursor = i
 				m.ensureCursorVisible()
 				return
 			}
+			currentEnd = i
+		}
+		if currentEnd > m.cursor {
+			m.cursor = currentEnd
+			m.ensureCursorVisible()
 		}
 		return
 	}
 
-	for i := m.cursor - 1; i >= 0; i-- {
+	currentStart := m.cursor
+	for currentStart > 0 && m.filteredGroup(currentStart-1) == currentGroup {
+		currentStart--
+	}
+	if currentStart < m.cursor {
+		m.cursor = currentStart
+		m.ensureCursorVisible()
+		return
+	}
+
+	for i := currentStart - 1; i >= 0; i-- {
 		group := m.filteredGroup(i)
 		if group == currentGroup {
 			continue

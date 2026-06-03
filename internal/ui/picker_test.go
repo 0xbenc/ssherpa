@@ -381,6 +381,18 @@ func TestPickerShiftArrowsJumpSections(t *testing.T) {
 		t.Fatalf("shift+down selected %#v, want first Actions item", item)
 	}
 
+	model.cursor = pickerCursorForKind(t, model, ItemSessions)
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Hosts" || item.Token != "prod" {
+		t.Fatalf("shift+down from middle of Actions selected %#v, want first Hosts item", item)
+	}
+
+	model.cursor = pickerCursorForKind(t, model, ItemSessions)
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Actions" || item.Kind != ItemAdd {
+		t.Fatalf("shift+up from middle of Actions selected %#v, want first Actions item", item)
+	}
+
 	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight, Mod: tea.ModShift}))
 	if item := model.items[model.filtered[model.cursor]]; item.Group != "Hosts" || item.Token != "prod" {
 		t.Fatalf("shift+right selected %#v, want first Hosts item", item)
@@ -394,6 +406,29 @@ func TestPickerShiftArrowsJumpSections(t *testing.T) {
 	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft, Mod: tea.ModShift}))
 	if item := model.items[model.filtered[model.cursor]]; item.Group != "Saved Forwards" || item.Token != "pg" {
 		t.Fatalf("shift+left selected %#v, want first Saved Forwards item", item)
+	}
+}
+
+func TestPickerShiftArrowsWithinFinalHostsSection(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{
+		{Name: "alpha", HostName: "alpha.example.com"},
+		{Name: "bravo", HostName: "bravo.example.com"},
+		{Name: "charlie", HostName: "charlie.example.com"},
+	}), PickOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+	})
+
+	model.cursor = pickerCursorForToken(t, model, "charlie")
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Hosts" || item.Token != "alpha" {
+		t.Fatalf("shift+up from middle of Hosts selected %#v, want first Hosts item", item)
+	}
+
+	model.cursor = pickerCursorForToken(t, model, "bravo")
+	model = updatePicker(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModShift}))
+	if item := model.items[model.filtered[model.cursor]]; item.Group != "Hosts" || item.Token != "charlie" {
+		t.Fatalf("shift+down from final Hosts section selected %#v, want last Hosts item", item)
 	}
 }
 
@@ -603,4 +638,26 @@ func updatePicker(model pickerModel, msgs ...tea.KeyPressMsg) pickerModel {
 		model = updated.(pickerModel)
 	}
 	return model
+}
+
+func pickerCursorForKind(t *testing.T, model pickerModel, kind ItemKind) int {
+	t.Helper()
+	for cursor, index := range model.filtered {
+		if model.items[index].Kind == kind {
+			return cursor
+		}
+	}
+	t.Fatalf("kind %q not found in filtered items", kind)
+	return 0
+}
+
+func pickerCursorForToken(t *testing.T, model pickerModel, token string) int {
+	t.Helper()
+	for cursor, index := range model.filtered {
+		if model.items[index].Token == token {
+			return cursor
+		}
+	}
+	t.Fatalf("token %q not found in filtered items", token)
+	return 0
 }
