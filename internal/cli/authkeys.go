@@ -317,6 +317,10 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 		}
 
 		switch item.Token {
+		case "view":
+			if code := runAuthkeysCurrentKeysViewer(path, stderr); code != 0 {
+				return code
+			}
 		case "add":
 			line, ok, err := promptText(stderr, "Add authorized key", "key", "", validateNonEmpty("SSH public key"))
 			if err != nil {
@@ -452,14 +456,133 @@ func pickAuthkeysFingerprint(path string, stderr io.Writer) (string, bool, int) 
 	return item.Token, true, 0
 }
 
+func runAuthkeysCurrentKeysViewer(path string, stderr io.Writer) int {
+	for {
+		doc, err := authkeys.ReadDocument(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
+		keys := doc.Keys()
+		items := authkeysCurrentKeyItems(keys)
+		if len(keys) == 0 {
+			if err := showAuthkeysCurrentKeysEmpty(path, doc.Diagnostics, stderr); err != nil {
+				fmt.Fprintf(stderr, "ssherpa: authkeys viewer failed: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+		items = append(items, ui.ManagementItem{
+			Kind:        ui.ItemKind("back"),
+			Token:       "back",
+			Title:       "Back",
+			Description: "return to authorized_keys actions",
+			Group:       "Navigation",
+			Badge:       "back",
+			Action:      "Return to the authorized_keys manager",
+		})
+
+		item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			Title:       "Current authorized_keys",
+			Mode:        "view current keys",
+			Steps:       []string{"action", "key", "details"},
+			CurrentStep: 1,
+			Summary:     authkeysCurrentSummary(path, len(keys), len(doc.Diagnostics)),
+			Footer:      "enter view  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)
+			return 1
+		}
+		if !ok || item.Token == "back" {
+			return 0
+		}
+
+		key, found := authkeysKeyByFingerprint(keys, item.Token)
+		if !found {
+			fmt.Fprintf(stderr, "Warning: selected key disappeared: %s\n", item.Token)
+			continue
+		}
+		if err := ui.ShowTextView(context.Background(), ui.TextViewOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			Title:       "authorized_keys entry",
+			Steps:       []string{"action", "key", "details"},
+			CurrentStep: 2,
+			Summary:     authkeysCurrentSummary(path, len(keys), len(doc.Diagnostics)),
+			Lines:       authkeysKeyViewLines(key, item.Token),
+			Footer:      "up/down scroll  /  pgup/pgdn page  /  q back to keys",
+		}); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: authkeys viewer failed: %v\n", err)
+			return 1
+		}
+	}
+}
+
+func showAuthkeysCurrentKeysEmpty(path string, diagnostics []authkeys.Diagnostic, stderr io.Writer) error {
+	lines := []string{
+		"Path: " + path,
+		"Keys: 0",
+	}
+	if len(diagnostics) == 0 {
+		lines = append(lines, "", "No authorized keys were found.")
+	} else {
+		lines = append(lines, "", "Diagnostics:")
+		for _, diagnostic := range diagnostics {
+			lines = append(lines, authkeysDiagnosticLine(diagnostic))
+		}
+	}
+	return ui.ShowTextView(context.Background(), ui.TextViewOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Current authorized_keys",
+		Steps:       []string{"action", "key"},
+		CurrentStep: 1,
+		Summary:     path,
+		Lines:       lines,
+		Footer:      "q back to authorized_keys manager",
+	})
+}
+
 func authkeysMenuItems() []ui.ManagementItem {
 	return []ui.ManagementItem{
+		{Kind: ui.ItemAuthkeys, Token: "view", Title: "View current keys", Description: "browse existing authorized_keys entries", Group: "Inspect", Badge: "view", Action: "Open a read-only TUI list of current keys"},
 		{Kind: ui.ItemAuthkeys, Token: "add", Title: "Add single key (paste)", Description: "append one public key", Group: "Add Keys", Badge: "add", Action: "Paste one public key and append it"},
 		{Kind: ui.ItemAuthkeys, Token: "merge", Title: "Add keys from directory (merge)", Description: "read authorized_keys/ or *.pub", Group: "Add Keys", Badge: "merge", Action: "Merge keys from a directory without removing existing keys"},
 		{Kind: ui.ItemConfirmDelete, Token: "replace", Title: "Replace keys from directory (overwrite)", Description: "backup, then replace file contents", Group: "Overwrite", Badge: "repl", Action: "Replace authorized_keys after confirmation"},
 		{Kind: ui.ItemConfirmDelete, Token: "delete", Title: "Delete keys", Description: "select one key to remove", Group: "Remove", Badge: "delete", Action: "Choose one key fingerprint to delete"},
 		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the previous menu", Group: "Navigation", Badge: "back", Action: "Return without changing authorized_keys"},
 	}
+}
+
+func authkeysCurrentKeyItems(keys []authkeys.AuthorizedKey) []ui.ManagementItem {
+	items := make([]ui.ManagementItem, 0, len(keys))
+	for _, key := range keys {
+		fp, err := key.SHA256Fingerprint()
+		if err != nil {
+			continue
+		}
+		title := fp
+		if key.Comment != "" {
+			title = key.Comment
+		}
+		items = append(items, ui.ManagementItem{
+			Kind:        ui.ItemAuthkeys,
+			Token:       fp,
+			Title:       title,
+			Description: key.Type + "  " + fp,
+			Detail:      authkeysKeyDetail(key),
+			Group:       "Current Keys",
+			Badge:       authkeysKeyBadge(key.Type),
+			Action:      "View full key details",
+		})
+	}
+	return items
 }
 
 func authkeysFingerprintItems(keys []authkeys.AuthorizedKey) []ui.ManagementItem {
@@ -487,6 +610,38 @@ func authkeysFingerprintItems(keys []authkeys.AuthorizedKey) []ui.ManagementItem
 	return items
 }
 
+func authkeysKeyByFingerprint(keys []authkeys.AuthorizedKey, fingerprint string) (authkeys.AuthorizedKey, bool) {
+	for _, key := range keys {
+		fp, err := key.SHA256Fingerprint()
+		if err == nil && fp == fingerprint {
+			return key, true
+		}
+	}
+	return authkeys.AuthorizedKey{}, false
+}
+
+func authkeysKeyViewLines(key authkeys.AuthorizedKey, fingerprint string) []string {
+	lines := []string{
+		"Fingerprint: " + fingerprint,
+		"Type: " + key.Type,
+	}
+	if key.Source != "" {
+		source := key.Source
+		if key.Line > 0 {
+			source = fmt.Sprintf("%s:%d", key.Source, key.Line)
+		}
+		lines = append(lines, "Source: "+source)
+	}
+	if key.Comment != "" {
+		lines = append(lines, "Comment: "+key.Comment)
+	}
+	if key.Options != "" {
+		lines = append(lines, "Options: "+key.Options)
+	}
+	lines = append(lines, "", "Authorized key:", key.Render())
+	return lines
+}
+
 func authkeysKeyDetail(key authkeys.AuthorizedKey) string {
 	var parts []string
 	if key.Source != "" {
@@ -503,6 +658,29 @@ func authkeysKeyDetail(key authkeys.AuthorizedKey) string {
 		parts = append(parts, "comment="+key.Comment)
 	}
 	return strings.Join(parts, "  ")
+}
+
+func authkeysCurrentSummary(path string, keyCount int, diagnosticCount int) string {
+	summary := fmt.Sprintf("%s  %s", path, authkeysCountLabel(keyCount, "key", "keys"))
+	if diagnosticCount > 0 {
+		summary += fmt.Sprintf("  %s", authkeysCountLabel(diagnosticCount, "warning", "warnings"))
+	}
+	return summary
+}
+
+func authkeysDiagnosticLine(diagnostic authkeys.Diagnostic) string {
+	location := diagnostic.Path
+	if diagnostic.Line > 0 {
+		location = fmt.Sprintf("%s:%d", diagnostic.Path, diagnostic.Line)
+	}
+	if location == "" {
+		location = "-"
+	}
+	severity := strings.TrimSpace(diagnostic.Severity)
+	if severity == "" {
+		severity = "warning"
+	}
+	return fmt.Sprintf("%s: %s: %s", severity, location, diagnostic.Message)
 }
 
 func authkeysKeyBadge(keyType string) string {

@@ -12,8 +12,8 @@ import (
 
 func TestAuthkeysMenuItems(t *testing.T) {
 	items := authkeysMenuItems()
-	if len(items) != 5 {
-		t.Fatalf("len(items) = %d, want 5", len(items))
+	if len(items) != 6 {
+		t.Fatalf("len(items) = %d, want 6", len(items))
 	}
 	want := []struct {
 		token string
@@ -21,6 +21,7 @@ func TestAuthkeysMenuItems(t *testing.T) {
 		badge string
 		kind  ui.ItemKind
 	}{
+		{"view", "Inspect", "view", ui.ItemAuthkeys},
 		{"add", "Add Keys", "add", ui.ItemAuthkeys},
 		{"merge", "Add Keys", "merge", ui.ItemAuthkeys},
 		{"replace", "Overwrite", "repl", ui.ItemConfirmDelete},
@@ -33,8 +34,11 @@ func TestAuthkeysMenuItems(t *testing.T) {
 			t.Fatalf("item %d = %+v, want token %q group %q badge %q kind %q", i, item, w.token, w.group, w.badge, w.kind)
 		}
 	}
-	if !strings.Contains(items[3].Action, "fingerprint") {
-		t.Fatalf("delete action = %q", items[3].Action)
+	if !strings.Contains(items[0].Action, "read-only") {
+		t.Fatalf("view action = %q", items[0].Action)
+	}
+	if !strings.Contains(items[4].Action, "fingerprint") {
+		t.Fatalf("delete action = %q", items[4].Action)
 	}
 }
 
@@ -126,6 +130,62 @@ func TestAuthkeysFingerprintItemsPreserveFingerprintAndSource(t *testing.T) {
 	for _, want := range []string{"/home/test/.ssh/authorized_keys:7", `options=from="10.0.0.0/8"`, "comment=alice@example"} {
 		if !strings.Contains(item.Detail, want) {
 			t.Fatalf("detail missing %q: %q", want, item.Detail)
+		}
+	}
+}
+
+func TestAuthkeysCurrentKeyItemsUseReadOnlyStyle(t *testing.T) {
+	key, err := authkeys.ParsePublicKeyLine(`from="10.0.0.0/8" ` + testEd25519Key)
+	if err != nil {
+		t.Fatalf("ParsePublicKeyLine: %v", err)
+	}
+	key.Source = "/home/test/.ssh/authorized_keys"
+	key.Line = 7
+	fp, err := key.SHA256Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+
+	items := authkeysCurrentKeyItems([]authkeys.AuthorizedKey{key})
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	item := items[0]
+	if item.Kind != ui.ItemAuthkeys || item.Token != fp || item.Badge != "ed255" || item.Group != "Current Keys" {
+		t.Fatalf("current key item = %+v", item)
+	}
+	if item.Title != "alice@example" || !strings.Contains(item.Action, "details") {
+		t.Fatalf("title/action = %q / %q", item.Title, item.Action)
+	}
+	if !strings.Contains(item.Detail, `options=from="10.0.0.0/8"`) {
+		t.Fatalf("detail = %q", item.Detail)
+	}
+}
+
+func TestAuthkeysKeyViewLinesIncludeFullEntry(t *testing.T) {
+	key, err := authkeys.ParsePublicKeyLine(`from="10.0.0.0/8" ` + testEd25519Key)
+	if err != nil {
+		t.Fatalf("ParsePublicKeyLine: %v", err)
+	}
+	key.Source = "/home/test/.ssh/authorized_keys"
+	key.Line = 7
+	fp, err := key.SHA256Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+
+	text := strings.Join(authkeysKeyViewLines(key, fp), "\n")
+	for _, want := range []string{
+		"Fingerprint: " + fp,
+		"Type: ssh-ed25519",
+		"Source: /home/test/.ssh/authorized_keys:7",
+		"Comment: alice@example",
+		`Options: from="10.0.0.0/8"`,
+		"Authorized key:",
+		key.Render(),
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view lines missing %q:\n%s", want, text)
 		}
 	}
 }
