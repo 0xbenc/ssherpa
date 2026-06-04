@@ -215,6 +215,38 @@ func TestReplayRawControlledRestartBackAndCtrlC(t *testing.T) {
 	}
 }
 
+func TestDeleteAllLocalDataRemovesStateDirectory(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := state.WriteRecord(stateDir, state.SessionRecord{
+		ID:         "delete-test",
+		StartedAt:  time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+		RunnerMode: "supervised",
+	}); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if _, err := state.EnsureMachineIdentity(stateDir, "test", time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("EnsureMachineIdentity: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "extra.txt"), []byte("local data"), 0o600); err != nil {
+		t.Fatalf("write extra local data: %v", err)
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	result, err := deleteAllLocalData(stateDir, records)
+	if err != nil {
+		t.Fatalf("deleteAllLocalData: %v", err)
+	}
+	if result.Errors != 0 {
+		t.Fatalf("stop result = %#v, want no errors", result)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("state dir stat err = %v, want removed", err)
+	}
+}
+
 type scriptedReplayKey struct {
 	key byte
 	ok  bool

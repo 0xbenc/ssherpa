@@ -377,6 +377,9 @@ func runSessionBrowse(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	for {
+		if !cleanupStaleSessionState(stateDir, stderr) {
+			return 1
+		}
 		records, err := state.ListRecords(stateDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
@@ -1120,6 +1123,9 @@ func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1
 	}
+	if !cleanupStaleSessionState(stateDir, stderr) {
+		return 1
+	}
 	records, err := state.ListRecords(stateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
@@ -1267,6 +1273,9 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1
 	}
+	if !cleanupStaleSessionState(stateDir, stderr) {
+		return 1
+	}
 	records, err := state.ListRecords(stateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: map sessions: %v\n", err)
@@ -1303,6 +1312,9 @@ func runSessionMapViewer(flags connectFlags, output io.Writer, stderr io.Writer)
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1, false
 	}
+	if !cleanupStaleSessionState(stateDir, stderr) {
+		return 1, false
+	}
 	records, err := state.ListRecords(stateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: map sessions: %v\n", err)
@@ -1318,7 +1330,7 @@ func runSessionMapViewer(flags connectFlags, output io.Writer, stderr io.Writer)
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1, false
 	}
-	err = sessionview.ShowMap(context.Background(), sessionview.ShowOptions{
+	result, err := sessionview.ShowMapWithResult(context.Background(), sessionview.ShowOptions{
 		Input:       os.Stdin,
 		Output:      output,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -1328,12 +1340,15 @@ func runSessionMapViewer(flags connectFlags, output io.Writer, stderr io.Writer)
 			Records:  records,
 			Map:      sessionview.MapOptions{},
 			Theme:    theme.WithNoColor(theme.NoColor || flags.NoColor),
-			Help:     "press any key to return",
+			Help:     "q back / D delete all local data",
 		},
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: session map failed: %v\n", err)
 		return 1, false
+	}
+	if result.Action == sessionview.MapActionDeleteAllData {
+		return runDeleteAllLocalDataTUI(flags, output, stderr)
 	}
 	return 0, true
 }
@@ -1342,6 +1357,9 @@ func runSessionListViewer(flags connectFlags, stderr io.Writer) (int, bool) {
 	stateDir, err := state.ResolveDir(flags.StateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1, false
+	}
+	if !cleanupStaleSessionState(stateDir, stderr) {
 		return 1, false
 	}
 	records, err := state.ListRecords(stateDir)
@@ -1374,6 +1392,67 @@ func runSessionListViewer(flags connectFlags, stderr io.Writer) (int, bool) {
 	return 0, true
 }
 
+func cleanupStaleSessionState(stateDir string, stderr io.Writer) bool {
+	result, err := state.CleanupStaleRemoteMirrors(stateDir, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: cleanup stale session records: %v\n", err)
+		return false
+	}
+	if len(result.RemoteMirrors) > 0 {
+		fmt.Fprintf(stderr, "ssherpa: cleaned up %d stale remote session mirror(s)\n", len(result.RemoteMirrors))
+	}
+	return true
+}
+
+func runDeleteAllLocalDataTUI(flags connectFlags, stdout io.Writer, stderr io.Writer) (int, bool) {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1, false
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
+		return 1, false
+	}
+	message := fmt.Sprintf("Delete all local ssherpa data in %s?\n\nThis removes session records, transcripts, imported bundles, machine identity, saved forwards, and saved proxies. Tracked live local sessions will be stopped first. SSH config is not removed.", stateDir)
+	confirmed, answered, err := ui.ConfirmDelete(context.Background(), ui.ConfirmOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Delete all local ssherpa data",
+		Message:     message,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: delete confirmation failed: %v\n", err)
+		return 1, false
+	}
+	if !answered || !confirmed {
+		return 0, true
+	}
+	stopResult, err := deleteAllLocalData(stateDir, records)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: delete local data: %v\n", err)
+		return 1, false
+	}
+	fmt.Fprintf(stdout, "deleted local ssherpa data in %s\n", stateDir)
+	if stopResult.Signaled > 0 || stopResult.Errors > 0 {
+		fmt.Fprintf(stdout, "stopped %d tracked local session(s); pending %d; errors %d\n", stopResult.Stopped, stopResult.Pending, stopResult.Errors)
+	}
+	return boolToCode(stopResult.Errors == 0), true
+}
+
+func deleteAllLocalData(stateDir string, records []state.SessionRecord) (sessionStopAllResult, error) {
+	stopResult := stopAllLiveSessions(stateDir, records)
+	if err := os.RemoveAll(stateDir); err != nil {
+		return stopResult, err
+	}
+	return stopResult, nil
+}
+
 func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Writer, build BuildInfo) (int, bool) {
 	items := []ui.ManagementItem{
 		{Kind: ui.ItemSessions, Token: "transcripts", Title: "Browse transcripts", Description: "select a recorded session and view, search, follow, or replay its transcript", Group: "Sessions", Badge: "logs", Action: "Open transcript browser"},
@@ -1381,6 +1460,7 @@ func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Write
 		{Kind: ui.ItemSessions, Token: "map", Title: "Route map", Description: "show active supervised session lineage", Group: "Sessions", Badge: "map", Action: "Open session route map"},
 		{Kind: ui.ItemSessions, Token: "list", Title: "List sessions", Description: "browse recorded session metadata", Group: "Sessions", Badge: "list", Action: "Open session list"},
 		{Kind: ui.ItemSessions, Token: "identity", Title: "Machine identity", Description: "show this machine's ssherpa recording identity", Group: "Sessions", Badge: "id", Action: "Show machine identity"},
+		{Kind: ui.ItemConfirmDelete, Token: "delete-local-data", Title: "Delete all local data", Description: "stop tracked local sessions and remove ssherpa state data", Group: "Danger", Badge: "delete", Action: "Delete local ssherpa state after confirmation"},
 		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the home screen", Group: "Navigation", Badge: "back", Action: "Return without opening a session tool"},
 	}
 	item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
@@ -1416,6 +1496,8 @@ func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Write
 		return runSessionListViewer(flags, stderr)
 	case "identity":
 		return runMachineIdentityTUI(flags, stderr, build), true
+	case "delete-local-data":
+		return runDeleteAllLocalDataTUI(flags, stdout, stderr)
 	default:
 		return 0, true
 	}

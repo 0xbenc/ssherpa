@@ -561,12 +561,22 @@ func TestMapModelWaitsForKey(t *testing.T) {
 	if view.AltScreen {
 		t.Fatalf("AltScreen = true, want false")
 	}
-	if !strings.Contains(view.Content, "press any key to return") {
+	if !strings.Contains(view.Content, "D delete all local data") {
 		t.Fatalf("view missing return hint:\n%s", view.Content)
 	}
-	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
 	if cmd == nil {
 		t.Fatalf("key press did not request quit")
+	}
+	if updated.(mapModel).action != MapActionBack {
+		t.Fatalf("q action = %q, want back", updated.(mapModel).action)
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg(tea.Key{Code: 'D', Text: "D"}))
+	if cmd == nil {
+		t.Fatalf("D key press did not request quit")
+	}
+	if updated.(mapModel).action != MapActionDeleteAllData {
+		t.Fatalf("D action = %q, want delete all data", updated.(mapModel).action)
 	}
 }
 

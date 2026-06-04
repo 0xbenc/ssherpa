@@ -56,6 +56,17 @@ type ShowOptions struct {
 	View        ViewOptions
 }
 
+type MapAction string
+
+const (
+	MapActionBack          MapAction = "back"
+	MapActionDeleteAllData MapAction = "delete_all_data"
+)
+
+type ShowMapResult struct {
+	Action MapAction
+}
+
 type IdentityOptions struct {
 	Input       io.Reader
 	Output      io.Writer
@@ -175,6 +186,11 @@ func MapView(opts ViewOptions) tea.View {
 }
 
 func ShowMap(ctx context.Context, opts ShowOptions) error {
+	_, err := ShowMapWithResult(ctx, opts)
+	return err
+}
+
+func ShowMapWithResult(ctx context.Context, opts ShowOptions) (ShowMapResult, error) {
 	model := mapModel{
 		noAltScreen: opts.NoAltScreen,
 		view:        opts.View,
@@ -188,8 +204,18 @@ func ShowMap(ctx context.Context, opts ShowOptions) error {
 	if opts.Output != nil {
 		programOptions = append(programOptions, tea.WithOutput(opts.Output))
 	}
-	_, err := tea.NewProgram(model, programOptions...).Run()
-	return err
+	final, err := tea.NewProgram(model, programOptions...).Run()
+	if err != nil {
+		return ShowMapResult{}, err
+	}
+	mapFinal, ok := final.(mapModel)
+	if !ok {
+		return ShowMapResult{Action: MapActionBack}, nil
+	}
+	if mapFinal.action == "" {
+		mapFinal.action = MapActionBack
+	}
+	return ShowMapResult{Action: mapFinal.action}, nil
 }
 
 func ShowIdentity(ctx context.Context, opts IdentityOptions) error {
@@ -1161,6 +1187,7 @@ type mapModel struct {
 	view        ViewOptions
 	width       int
 	height      int
+	action      MapAction
 }
 
 func (m mapModel) Init() tea.Cmd {
@@ -1177,6 +1204,12 @@ func (m mapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "d", "D":
+			m.action = MapActionDeleteAllData
+		default:
+			m.action = MapActionBack
+		}
 		return m, tea.Quit
 	}
 	return m, nil
@@ -1187,7 +1220,7 @@ func (m mapModel) View() tea.View {
 	opts.Width = m.width
 	opts.Height = m.height
 	if strings.TrimSpace(opts.Help) == "" {
-		opts.Help = "press any key to return"
+		opts.Help = "q back / D delete all local data"
 	}
 	view := MapView(opts)
 	view.AltScreen = !m.noAltScreen

@@ -280,9 +280,82 @@ type PruneResult struct {
 	DryRun  bool            `json:"dry_run"`
 }
 
+type CleanupResult struct {
+	RemoteMirrors []SessionRecord `json:"remote_mirrors"`
+}
+
 type SessionNode struct {
 	Record   SessionRecord `json:"record"`
 	Children []SessionNode `json:"children,omitempty"`
+}
+
+func CleanupStaleRemoteMirrors(dir string, now time.Time) (CleanupResult, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	records, err := ListRecords(dir)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	byID := map[string]SessionRecord{}
+	for _, record := range records {
+		if record.ID != "" {
+			byID[record.ID] = record
+		}
+	}
+	result := CleanupResult{}
+	for _, record := range records {
+		if !staleRemoteMirror(record, byID) {
+			continue
+		}
+		endedAt := now.UTC()
+		exitCode := 0
+		record.EndedAt = &endedAt
+		record.ExitCode = &exitCode
+		record.DisconnectReason = "stale_remote_mirror_cleanup"
+		record.Events = append(record.Events, SessionEvent{
+			Time:    endedAt,
+			Type:    "stale_remote_mirror_cleanup",
+			Message: "remote mirror was closed because its local parent session is no longer active",
+		})
+		if err := WriteRecord(dir, record); err != nil {
+			return result, err
+		}
+		result.RemoteMirrors = append(result.RemoteMirrors, record)
+		byID[record.ID] = record
+	}
+	return result, nil
+}
+
+func staleRemoteMirror(record SessionRecord, byID map[string]SessionRecord) bool {
+	return staleRemoteMirrorSeen(record, byID, map[string]bool{})
+}
+
+func staleRemoteMirrorSeen(record SessionRecord, byID map[string]SessionRecord, seen map[string]bool) bool {
+	if !record.RemoteMirror || record.EndedAt != nil {
+		return false
+	}
+	if record.ID != "" {
+		if seen[record.ID] {
+			return true
+		}
+		seen[record.ID] = true
+	}
+	parentID := strings.TrimSpace(record.ParentID)
+	if parentID == "" || parentID == record.ID {
+		return true
+	}
+	parent, ok := byID[parentID]
+	if !ok {
+		return true
+	}
+	if parent.EndedAt != nil {
+		return true
+	}
+	if parent.RemoteMirror {
+		return staleRemoteMirrorSeen(parent, byID, seen)
+	}
+	return !ProcessAlive(parent)
 }
 
 func PruneRecords(dir string, olderThan time.Duration, now time.Time, dryRun bool) (PruneResult, error) {

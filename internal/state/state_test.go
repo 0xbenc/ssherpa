@@ -130,6 +130,52 @@ func TestProcessAlive(t *testing.T) {
 	}
 }
 
+func TestCleanupStaleRemoteMirrorsClosesOldOpenMirrors(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	ended := now.Add(-time.Minute)
+	parentExit := 0
+	records := []SessionRecord{
+		{ID: "missing-parent-child", ParentID: "missing", RemoteMirror: true, StartedAt: now.Add(-4 * time.Minute), RunnerMode: "supervised"},
+		{ID: "ended-parent", StartedAt: now.Add(-3 * time.Minute), EndedAt: &ended, ExitCode: &parentExit, RunnerMode: "supervised"},
+		{ID: "ended-parent-child", ParentID: "ended-parent", RemoteMirror: true, StartedAt: now.Add(-2 * time.Minute), RunnerMode: "supervised"},
+		{ID: "live-parent", StartedAt: now.Add(-time.Minute), LocalPID: os.Getpid(), RunnerMode: "supervised"},
+		{ID: "live-parent-child", ParentID: "live-parent", RemoteMirror: true, StartedAt: now, RunnerMode: "supervised"},
+	}
+	for _, record := range records {
+		if err := WriteRecord(dir, record); err != nil {
+			t.Fatalf("WriteRecord(%s): %v", record.ID, err)
+		}
+	}
+
+	result, err := CleanupStaleRemoteMirrors(dir, now)
+	if err != nil {
+		t.Fatalf("CleanupStaleRemoteMirrors returned error: %v", err)
+	}
+	if len(result.RemoteMirrors) != 2 {
+		t.Fatalf("cleanup result = %#v, want two closed stale mirrors", result)
+	}
+	for _, id := range []string{"missing-parent-child", "ended-parent-child"} {
+		record, err := ReadRecord(dir, id)
+		if err != nil {
+			t.Fatalf("ReadRecord(%s): %v", id, err)
+		}
+		if record.EndedAt == nil || record.DisconnectReason != "stale_remote_mirror_cleanup" {
+			t.Fatalf("%s = %#v, want stale mirror finalized", id, record)
+		}
+		if len(record.Events) == 0 || record.Events[len(record.Events)-1].Type != "stale_remote_mirror_cleanup" {
+			t.Fatalf("%s events = %#v, want cleanup event", id, record.Events)
+		}
+	}
+	live, err := ReadRecord(dir, "live-parent-child")
+	if err != nil {
+		t.Fatalf("ReadRecord(live-parent-child): %v", err)
+	}
+	if live.EndedAt != nil {
+		t.Fatalf("live-parent-child = %#v, want still open while parent process is alive", live)
+	}
+}
+
 func ptrTime(value time.Time) *time.Time { return &value }
 
 func TestListRecordsMissingDirIsEmpty(t *testing.T) {

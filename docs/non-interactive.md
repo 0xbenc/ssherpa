@@ -737,12 +737,15 @@ cryptographic authenticity guarantee.
 The interactive Sessions TUI supports browsing local/imported transcripts,
 importing bundles with a preview and confirmation, exporting a selected
 transcript as a bundle, viewing machine identity, and showing imported-origin
-metadata in the transcript viewer. Recording itself is started, paused, and
-resumed from the in-session `Ctrl-]` map overlay. Raw replay of imported
-recordings is treated as untrusted terminal output. During interactive raw
-replay, press `Ctrl-]` to pause playback and open local replay controls:
-`space` or `q` resumes, `r` restarts from the beginning, and `m` returns to the
-ssherpa menus. `Ctrl-C` also stops playback and returns to the menus.
+metadata in the transcript viewer. It also includes a confirmed
+delete-all-local-data action, available from the Sessions menu and from the
+route map with `D`; this removes ssherpa state data but does not remove SSH
+config. Recording itself is started, paused, and resumed from the in-session
+`Ctrl-]` map overlay. Raw replay of imported recordings is treated as untrusted
+terminal output. During interactive raw replay, press `Ctrl-]` to pause playback
+and open local replay controls: `space` or `q` resumes, `r` restarts from the
+beginning, and `m` returns to the ssherpa menus. `Ctrl-C` also stops playback and
+returns to the menus.
 
 ## Theme
 
