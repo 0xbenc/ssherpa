@@ -512,6 +512,58 @@ func TestPickerViewUsesCustomTheme(t *testing.T) {
 	}
 }
 
+func TestPickerPreviewDetailsUseThemeForeground(t *testing.T) {
+	opts := PickOptions{
+		NoAltScreen: true,
+		Theme: termstyle.Theme{
+			Name: "terminal",
+			Codes: map[termstyle.Role]string{
+				termstyle.RoleForeground: "35",
+				termstyle.RoleSubtle:     "90",
+			},
+		},
+	}
+	model := newPickerModel(BuildItems(nil), opts)
+	model.width = 120
+	model.cursor = pickerCursorForKind(t, model, ItemProxy)
+
+	text := model.View().Content
+	for _, want := range []string{
+		"\x1b[35mType\x1b[0m",
+		"\x1b[35mPROXY\x1b[0m",
+		"\x1b[35mToken\x1b[0m",
+		"\x1b[35mPROXY\x1b[0m",
+		"\x1b[35mStarts a local SOCKS proxy through an SSH alias.\x1b[0m",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("preview detail missing foreground-styled text %q:\n%q", want, text)
+		}
+	}
+	if strings.Contains(text, "\x1b[90mStarts a local SOCKS proxy through an SSH alias.") {
+		t.Fatalf("selection hint used subtle instead of foreground:\n%q", text)
+	}
+
+	model.cursor = pickerCursorForKind(t, model, ItemTransferFile)
+	text = model.View().Content
+	if !strings.Contains(text, "\x1b[35mTRANSFER_FILE\x1b[0m") {
+		t.Fatalf("transfer token did not use foreground:\n%q", text)
+	}
+
+	model = newPickerModel(BuildItemsWithOptions(nil, BuildItemsOptions{
+		SavedProxies: []SavedForwardItem{{Name: "corp", Description: "SOCKS :1080"}},
+	}), opts)
+	model.width = 120
+	text = model.View().Content
+	for _, want := range []string{
+		"\x1b[35mTarget\x1b[0m",
+		"\x1b[35mSOCKS :1080\x1b[0m",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("saved proxy target missing foreground-styled text %q:\n%q", want, text)
+		}
+	}
+}
+
 func TestPickerActionBadgeRolesAreIntentional(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	tests := []struct {

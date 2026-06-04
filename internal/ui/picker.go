@@ -673,7 +673,7 @@ func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
 	}
 	lines = append(lines, "")
 	for _, line := range wrapPlain(selectionHint(item), width, 2) {
-		lines = append(lines, theme.subtle(line))
+		lines = append(lines, theme.foreground(line))
 	}
 	return lines
 }
@@ -944,6 +944,10 @@ func (t pickerTheme) subtle(value string) string {
 	return t.theme.Style(termstyle.RoleSubtle, value)
 }
 
+func (t pickerTheme) foreground(value string) string {
+	return t.theme.Style(termstyle.RoleForeground, value)
+}
+
 func (t pickerTheme) empty(value string) string {
 	return t.theme.Style(termstyle.RoleWarning, value)
 }
@@ -1047,8 +1051,8 @@ func (t pickerTheme) previewTitle(value string) string {
 }
 
 func previewKV(theme pickerTheme, width int, key string, value string) string {
-	keyText := termstyle.PadRight(theme.subtle(key), 8)
-	valueText := theme.subtle(termstyle.Truncate(value, max(0, width-9)))
+	keyText := termstyle.PadRight(theme.foreground(key), 8)
+	valueText := theme.foreground(termstyle.Truncate(value, max(0, width-9)))
 	return keyText + " " + valueText
 }
 
@@ -1062,9 +1066,9 @@ func previewKVLines(theme pickerTheme, width int, key string, value string, maxL
 	for i, line := range wrapped {
 		keyText := strings.Repeat(" ", 8)
 		if i == 0 {
-			keyText = theme.subtle(key)
+			keyText = theme.foreground(key)
 		}
-		out = append(out, termstyle.PadRight(keyText, 8)+" "+theme.subtle(line))
+		out = append(out, termstyle.PadRight(keyText, 8)+" "+theme.foreground(line))
 	}
 	return out
 }
