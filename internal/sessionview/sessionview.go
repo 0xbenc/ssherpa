@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -73,7 +75,7 @@ func MapLinesWithOptions(stateDir string, records []state.SessionRecord, opts Ma
 	} else {
 		lines = append(lines, fmt.Sprintf("active: %d", active))
 	}
-	lines = append(lines, "", "ROUTE")
+	lines = append(lines, "", "ROUTES")
 
 	if len(visible) == 0 {
 		if opts.IncludeExited {
@@ -83,8 +85,9 @@ func MapLinesWithOptions(stateDir string, records []state.SessionRecord, opts Ma
 	}
 
 	roots := MapForest(visible)
+	theme := termstyle.TerminalTheme().WithNoColor(true)
 	for i, root := range roots {
-		lines = appendNodeLines(lines, root, "", i == len(roots)-1, opts.CurrentID)
+		lines = appendNodeLines(lines, root, "", i == len(roots)-1, opts.CurrentID, theme, 120)
 	}
 	return lines
 }
@@ -118,30 +121,27 @@ func MapView(opts ViewOptions) tea.View {
 	}
 
 	lines := []string{
-		theme.Style(termstyle.RoleBorder, "+"+strings.Repeat("-", innerWidth+2)+"+"),
-		"| " + termstyle.PadRight(theme.Style(termstyle.RoleTitle, title), innerWidth) + " |",
-		"| " + termstyle.PadRight(mapStats(theme, active, exited, len(opts.Records), len(visible), opts.Map.IncludeExited), innerWidth) + " |",
-		"| " + termstyle.PadRight(theme.Style(termstyle.RoleMuted, "state ")+theme.Style(termstyle.RoleForeground, truncateVisible(opts.StateDir, innerWidth-6)), innerWidth) + " |",
-		theme.Style(termstyle.RoleBorder, "+"+strings.Repeat("-", innerWidth+2)+"+"),
+		boxTop(theme, mapHeader(theme, title, opts.StateDir, active, exited, len(opts.Records), len(visible), opts.Map.IncludeExited), width),
 	}
 
-	bodyBudget := max(1, height-len(lines)-2)
+	reserved := 1
 	if opts.Help != "" {
-		bodyBudget--
+		reserved += 2
 	}
+	bodyBudget := max(1, height-len(lines)-reserved)
 	body := mapBodyLines(visible, opts.Map.CurrentID, theme, innerWidth)
 	if len(body) > bodyBudget {
 		hidden := len(body) - bodyBudget + 1
 		body = append(body[:max(0, bodyBudget-1)], theme.Style(termstyle.RoleMuted, fmt.Sprintf("... %d more line(s)", hidden)))
 	}
 	for _, line := range body {
-		lines = append(lines, "| "+termstyle.PadRight(truncateVisible(line, innerWidth), innerWidth)+" |")
+		lines = append(lines, boxLine(theme, line, width))
 	}
 	if opts.Help != "" {
-		lines = append(lines, theme.Style(termstyle.RoleBorder, "+"+strings.Repeat("-", innerWidth+2)+"+"))
-		lines = append(lines, "| "+termstyle.PadRight(theme.Style(termstyle.RoleMuted, truncateVisible(opts.Help, innerWidth)), innerWidth)+" |")
+		lines = append(lines, boxDivider(theme, width))
+		lines = append(lines, boxLine(theme, theme.Style(termstyle.RoleMuted, truncateVisible(opts.Help, innerWidth)), width))
 	}
-	lines = append(lines, theme.Style(termstyle.RoleBorder, "+"+strings.Repeat("-", innerWidth+2)+"+"))
+	lines = append(lines, boxBottom(theme, width))
 
 	return tea.NewView(strings.Join(lines, "\n"))
 }
@@ -204,7 +204,7 @@ func (m mapModel) View() tea.View {
 
 func CountStatuses(records []state.SessionRecord) (active int, exited int) {
 	for _, record := range records {
-		if IsActive(record) {
+		if IsRouteActive(record) {
 			active++
 		} else {
 			exited++
@@ -216,7 +216,7 @@ func CountStatuses(records []state.SessionRecord) (active int, exited int) {
 func ActiveRecords(records []state.SessionRecord) []state.SessionRecord {
 	active := make([]state.SessionRecord, 0, len(records))
 	for _, record := range records {
-		if IsActive(record) {
+		if IsRouteActive(record) {
 			active = append(active, record)
 		}
 	}
@@ -227,12 +227,19 @@ func IsActive(record state.SessionRecord) bool {
 	return state.ProcessAlive(record)
 }
 
+func IsRouteActive(record state.SessionRecord) bool {
+	return IsActive(record) || (record.RemoteMirror && record.EndedAt == nil)
+}
+
 func StatusLabel(record state.SessionRecord) string {
 	if record.Inherited {
 		return "inherited"
 	}
 	if IsActive(record) {
 		return "active"
+	}
+	if record.RemoteMirror && record.EndedAt == nil {
+		return "remote"
 	}
 	if record.EndedAt == nil {
 		return "orphan"
@@ -315,55 +322,26 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 	}
 }
 
-func appendNodeLines(lines []string, node state.SessionNode, prefix string, last bool, currentID string) []string {
-	connector := "+- "
-	nextPrefix := prefix + "|  "
-	if last {
-		nextPrefix = prefix + "   "
-	}
+func appendNodeLines(lines []string, node state.SessionNode, prefix string, last bool, currentID string, theme termstyle.Theme, width int) []string {
+	return appendPlainNodeLines(lines, node, prefix, last, currentID, theme, width, map[string]bool{})
+}
+
+func appendPlainNodeLines(lines []string, node state.SessionNode, prefix string, last bool, currentID string, theme termstyle.Theme, width int, managedTargets map[string]bool) []string {
 	record := node.Record
 	if record.Inherited {
-		lines = append(lines, fmt.Sprintf("%s%s%s [%s]", prefix, connector, Target(record), StatusLabel(record)))
+		nextManaged := inheritedManagedTargets(record, managedTargets)
 		for i, child := range node.Children {
-			lines = appendNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID)
+			lines = appendPlainNodeLines(lines, child, prefix, i == len(node.Children)-1, currentID, theme, width, nextManaged)
 		}
 		return lines
 	}
-	current := ""
-	if currentID != "" && record.ID == currentID {
-		current = "  current"
-	}
-	kind := KindBadge(record)
-	if kind != "" {
-		kind = " " + kind
-	}
-	lines = append(lines, fmt.Sprintf("%s%s%s%s [%s] depth=%d id=%s%s",
-		prefix,
-		connector,
-		Target(record),
-		kind,
-		StatusLabel(record),
-		record.Depth,
-		record.ID,
-		current,
-	))
-	if route := FormatRecordRoute(record); route != "-" {
-		lines = append(lines, fmt.Sprintf("%s   path: %s", prefix, route))
-	}
-	if forward := ForwardSummary(record); forward != "" {
-		lines = append(lines, fmt.Sprintf("%s   forward: %s", prefix, forward))
-	}
-	if proxy := ProxySummary(record); proxy != "" {
-		lines = append(lines, fmt.Sprintf("%s   proxy: %s", prefix, proxy))
-	}
-	if remote := RemoteSummary(record); remote != "" {
-		lines = append(lines, fmt.Sprintf("%s   remote: %s", prefix, remote))
-	}
-	if health := HealthSummary(record); health != "" {
-		lines = append(lines, fmt.Sprintf("%s   health: %s", prefix, health))
-	}
+	linePrefix, detailPrefix, nextPrefix := treePrefixes(prefix, last)
+	lines = append(lines, sessionSummaryLine(linePrefix, record, currentID, theme, width))
+	lines = append(lines, routeSpineLines(detailPrefix, displayRecordRouteParts(record), record, managedTargets, theme, width)...)
+	lines = append(lines, sessionDetailLines(detailPrefix, record, theme, width)...)
+	nextManaged := recordManagedTargets(record, managedTargets)
 	for i, child := range node.Children {
-		lines = appendNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID)
+		lines = appendPlainNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID, theme, width, nextManaged)
 	}
 	return lines
 }
@@ -373,66 +351,229 @@ func mapBodyLines(records []state.SessionRecord, currentID string, theme termsty
 		return []string{theme.Style(termstyle.RoleMuted, "No active supervised sessions.")}
 	}
 	roots := MapForest(records)
-	lines := []string{theme.Style(termstyle.RoleAccent, "ROUTE")}
+	lines := []string{}
 	for i, root := range roots {
-		lines = appendStyledNodeLines(lines, root, "", i == len(roots)-1, currentID, theme, width)
+		lines = appendStyledNodeLines(lines, root, "", i == len(roots)-1, currentID, theme, width, map[string]bool{})
 	}
 	return lines
 }
 
-func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string, last bool, currentID string, theme termstyle.Theme, width int) []string {
-	connector := "+- "
-	nextPrefix := prefix + "|  "
-	if last {
-		nextPrefix = prefix + "   "
-	}
+func appendStyledNodeLines(lines []string, node state.SessionNode, prefix string, last bool, currentID string, theme termstyle.Theme, width int, managedTargets map[string]bool) []string {
 	record := node.Record
 	if record.Inherited {
-		target := theme.Style(termstyle.RoleForeground, Target(record))
-		status := theme.Style(termstyle.RoleMuted, "["+StatusLabel(record)+"]")
-		line := fmt.Sprintf("%s%s%s %s", prefix, connector, target, status)
-		lines = append(lines, truncateVisible(line, width))
+		nextManaged := inheritedManagedTargets(record, managedTargets)
 		for i, child := range node.Children {
-			lines = appendStyledNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID, theme, width)
+			lines = appendStyledNodeLines(lines, child, prefix, i == len(node.Children)-1, currentID, theme, width, nextManaged)
 		}
 		return lines
 	}
-	target := theme.Style(termstyle.RoleForeground, Target(record))
-	statusRole := termstyle.RoleMuted
-	if IsActive(record) {
-		statusRole = termstyle.RoleSuccess
-	} else if record.EndedAt == nil {
-		statusRole = termstyle.RoleWarning
+	linePrefix, detailPrefix, nextPrefix := treePrefixes(prefix, last)
+	lines = append(lines, sessionSummaryLine(linePrefix, record, currentID, theme, width))
+	lines = append(lines, routeSpineLines(detailPrefix, displayRecordRouteParts(record), record, managedTargets, theme, width)...)
+	lines = append(lines, sessionDetailLines(detailPrefix, record, theme, width)...)
+	nextManaged := recordManagedTargets(record, managedTargets)
+	for i, child := range node.Children {
+		lines = appendStyledNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID, theme, width, nextManaged)
 	}
-	status := theme.Style(statusRole, "["+StatusLabel(record)+"]")
-	meta := fmt.Sprintf("depth %d  id %s", record.Depth, record.ID)
-	if currentID != "" && record.ID == currentID {
-		meta += "  current"
+	return lines
+}
+
+func treePrefixes(prefix string, last bool) (linePrefix string, detailPrefix string, nextPrefix string) {
+	if prefix == "" {
+		return "", "  ", "  "
 	}
-	kind := KindBadge(record)
-	if kind != "" {
-		kind = " " + theme.Style(termstyle.RoleInfo, kind)
+	connector := "├─ "
+	continuation := "│  "
+	if last {
+		connector = "└─ "
+		continuation = "   "
 	}
-	line := fmt.Sprintf("%s%s%s%s %s  %s", prefix, connector, target, kind, status, theme.Style(termstyle.RoleMuted, meta))
-	lines = append(lines, truncateVisible(line, width))
-	if parts := displayRecordRouteParts(record); len(parts) > 0 {
-		lines = append(lines, routeDiagramPartLines(prefix+"   ", parts, theme, width)...)
+	return prefix + connector, prefix + continuation, prefix + continuation
+}
+
+func sessionSummaryLine(prefix string, record state.SessionRecord, currentID string, theme termstyle.Theme, width int) string {
+	left := prefix + theme.Style(statusRole(record, currentID), statusMarker(record, currentID)) + "  " + theme.Style(termstyle.RoleForeground, Target(record))
+	if kind := KindBadge(record); kind != "" {
+		left += " " + theme.Style(termstyle.RoleInfo, kind)
+	}
+	right := theme.Style(termstyle.RoleMuted, fmt.Sprintf("depth %d  id %s", record.Depth, ShortSessionID(record.ID)))
+	return truncateVisible(joinVisible(left, right, width), width)
+}
+
+func statusMarker(record state.SessionRecord, currentID string) string {
+	current := currentID != "" && record.ID == currentID
+	switch {
+	case current && IsActive(record):
+		return "● current"
+	case record.RemoteMirror && record.EndedAt == nil:
+		return "◆ ssherpa"
+	case current:
+		return "◌ current"
+	case IsActive(record):
+		return "● active"
+	case record.EndedAt == nil:
+		return "◌ orphan"
+	case record.ExitCode != nil:
+		return "× " + StatusLabel(record)
+	default:
+		return "○ exited"
+	}
+}
+
+func statusRole(record state.SessionRecord, currentID string) termstyle.Role {
+	current := currentID != "" && record.ID == currentID
+	switch {
+	case current && IsActive(record):
+		return termstyle.RoleSelected
+	case record.RemoteMirror && record.EndedAt == nil:
+		return termstyle.RoleInfo
+	case IsActive(record):
+		return termstyle.RoleSuccess
+	case record.EndedAt == nil:
+		return termstyle.RoleWarning
+	case record.ExitCode != nil && *record.ExitCode != 0:
+		return termstyle.RoleDanger
+	default:
+		return termstyle.RoleMuted
+	}
+}
+
+func ShortSessionID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) <= 12 {
+		return id
+	}
+	if _, tail, ok := strings.Cut(id, "-"); ok && len(tail) >= 6 && len(tail) <= 12 {
+		return tail
+	}
+	return id[len(id)-8:]
+}
+
+func routeSpineLines(prefix string, parts []string, record state.SessionRecord, managedTargets map[string]bool, theme termstyle.Theme, width int) []string {
+	if len(parts) == 0 {
+		return nil
+	}
+	lines := []string{}
+	current := prefix + styledRoutePart(parts[0], 0, len(parts), managedTargets, theme)
+	for i := 1; i < len(parts); i++ {
+		connector := routeConnector(parts[i], i, len(parts), managedTargets, theme)
+		segment := connector + styledRoutePart(parts[i], i, len(parts), managedTargets, theme)
+		if termstyle.VisibleWidth(current+segment) > width && termstyle.VisibleWidth(current) > termstyle.VisibleWidth(prefix) {
+			lines = append(lines, truncateVisible(current, width))
+			current = prefix + theme.Style(termstyle.RoleBorder, "└▶ ") + styledRoutePart(parts[i], i, len(parts), managedTargets, theme)
+			continue
+		}
+		current += segment
+	}
+	lines = append(lines, truncateVisible(current, width))
+	return lines
+}
+
+func routeConnector(part string, index int, total int, managedTargets map[string]bool, theme termstyle.Theme) string {
+	role := termstyle.RoleBorder
+	connector := " ─▶ "
+	if isManagedRoutePart(part, managedTargets) {
+		role = termstyle.RoleInfo
+		connector = " ═▶ "
+	} else if index == total-1 {
+		role = termstyle.RoleSuccess
+		connector = " ━▶ "
+	}
+	return theme.Style(role, connector)
+}
+
+func styledRoutePart(part string, index int, total int, managedTargets map[string]bool, theme termstyle.Theme) string {
+	switch {
+	case index == 0 && total > 1:
+		return theme.Style(termstyle.RolePrimary, "⌂ "+part) + theme.Style(termstyle.RoleMuted, " local")
+	case isManagedRoutePart(part, managedTargets):
+		return theme.Style(termstyle.RoleInfo, "◆ "+part) + theme.Style(termstyle.RoleMuted, " ssherpa")
+	case index == total-1:
+		return theme.Style(termstyle.RoleSuccess, "● "+part) + theme.Style(termstyle.RoleMuted, " target")
+	default:
+		return theme.Style(termstyle.RoleForeground, "· "+part) + theme.Style(termstyle.RoleMuted, " hop")
+	}
+}
+
+func isManagedRoutePart(part string, managedTargets map[string]bool) bool {
+	return managedTargets[strings.TrimSpace(part)]
+}
+
+func inheritedManagedTargets(record state.SessionRecord, inherited map[string]bool) map[string]bool {
+	next := copyManagedTargets(inherited)
+	if record.Depth > 0 {
+		addManagedName(next, Target(record))
+	}
+	return next
+}
+
+func recordManagedTargets(record state.SessionRecord, inherited map[string]bool) map[string]bool {
+	next := copyManagedTargets(inherited)
+	addManagedName(next, Target(record))
+	if len(record.Route) > 0 {
+		addManagedName(next, record.Route[len(record.Route)-1])
+	}
+	return next
+}
+
+func copyManagedTargets(values map[string]bool) map[string]bool {
+	copied := make(map[string]bool, len(values)+2)
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
+}
+
+func addManagedName(values map[string]bool, name string) {
+	name = strings.TrimSpace(name)
+	if name != "" && name != "-" {
+		values[name] = true
+	}
+}
+
+func sessionDetailLines(prefix string, record state.SessionRecord, theme termstyle.Theme, width int) []string {
+	parts := []string{}
+	if mode := strings.TrimSpace(record.RunnerMode); mode != "" {
+		if record.RemoteMirror {
+			mode = "remote " + mode
+		}
+		parts = append(parts, mode)
+	}
+	if !record.StartedAt.IsZero() {
+		parts = append(parts, "started "+record.StartedAt.Local().Format("15:04:05"))
 	}
 	if forward := ForwardSummary(record); forward != "" {
-		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "FORWARD ")+theme.Style(termstyle.RoleForeground, forward), width))
+		parts = append(parts, "forward "+forward)
 	}
 	if proxy := ProxySummary(record); proxy != "" {
-		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "PROXY ")+theme.Style(termstyle.RoleForeground, proxy), width))
+		parts = append(parts, "proxy "+proxy)
 	}
 	if remote := RemoteSummary(record); remote != "" {
-		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleAccent, "REMOTE ")+theme.Style(termstyle.RoleForeground, remote), width))
+		parts = append(parts, "remote "+remote)
 	}
 	if health := HealthSummary(record); health != "" {
-		lines = append(lines, truncateVisible(prefix+"   "+theme.Style(termstyle.RoleWarning, "health ")+theme.Style(termstyle.RoleForeground, health), width))
+		parts = append(parts, "health "+health)
 	}
-	for i, child := range node.Children {
-		lines = appendStyledNodeLines(lines, child, nextPrefix, i == len(node.Children)-1, currentID, theme, width)
+	if len(parts) == 0 {
+		return nil
 	}
+	return dotJoinLines(prefix, parts, theme, width)
+}
+
+func dotJoinLines(prefix string, parts []string, theme termstyle.Theme, width int) []string {
+	sep := theme.Style(termstyle.RoleMuted, " · ")
+	lines := []string{}
+	current := prefix + theme.Style(termstyle.RoleMuted, parts[0])
+	for _, part := range parts[1:] {
+		next := sep + theme.Style(termstyle.RoleMuted, part)
+		if termstyle.VisibleWidth(current+next) > width && termstyle.VisibleWidth(current) > termstyle.VisibleWidth(prefix) {
+			lines = append(lines, truncateVisible(current, width))
+			current = prefix + theme.Style(termstyle.RoleMuted, part)
+			continue
+		}
+		current += next
+	}
+	lines = append(lines, truncateVisible(current, width))
 	return lines
 }
 
@@ -669,6 +810,15 @@ func forwardEndpoint(host string, port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
+func mapHeader(theme termstyle.Theme, title string, stateDir string, active int, exited int, total int, visible int, includeExited bool) string {
+	parts := []string{
+		theme.Style(termstyle.RoleTitle, title),
+		mapStats(theme, active, exited, total, visible, includeExited),
+		theme.Style(termstyle.RoleMuted, "state ") + theme.Style(termstyle.RoleForeground, compactStatePath(stateDir)),
+	}
+	return strings.Join(parts, theme.Style(termstyle.RoleBorder, " · "))
+}
+
 func mapStats(theme termstyle.Theme, active int, exited int, total int, visible int, includeExited bool) string {
 	stats := []string{
 		theme.Style(termstyle.RoleSuccess, fmt.Sprintf("active %d", active)),
@@ -679,6 +829,71 @@ func mapStats(theme termstyle.Theme, active int, exited int, total int, visible 
 	stats = append(stats, theme.Style(termstyle.RoleMuted, fmt.Sprintf("shown %d", visible)))
 	stats = append(stats, theme.Style(termstyle.RoleMuted, fmt.Sprintf("recorded %d", total)))
 	return strings.Join(stats, "  ")
+}
+
+func compactStatePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "-"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		home = filepath.Clean(home)
+		clean := filepath.Clean(path)
+		if clean == home {
+			return "~"
+		}
+		if rel, err := filepath.Rel(home, clean); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(filepath.Join("~", rel))
+		}
+	}
+	return filepath.ToSlash(path)
+}
+
+func boxTop(theme termstyle.Theme, label string, width int) string {
+	return boxEdge(theme, "╭", "╮", label, width)
+}
+
+func boxDivider(theme termstyle.Theme, width int) string {
+	return boxEdge(theme, "├", "┤", "", width)
+}
+
+func boxBottom(theme termstyle.Theme, width int) string {
+	return boxEdge(theme, "╰", "╯", "", width)
+}
+
+func boxEdge(theme termstyle.Theme, left string, right string, label string, width int) string {
+	inner := max(0, width-2)
+	if inner == 0 {
+		return theme.Style(termstyle.RoleBorder, left+right)
+	}
+	fill := strings.Repeat("─", inner)
+	label = strings.TrimSpace(label)
+	if label != "" {
+		label = " " + truncateVisible(label, max(0, inner-2)) + " "
+		if termstyle.VisibleWidth(label) < inner {
+			fill = label + strings.Repeat("─", inner-termstyle.VisibleWidth(label))
+		} else {
+			fill = truncateVisible(label, inner)
+		}
+	}
+	return theme.Style(termstyle.RoleBorder, left) + fill + theme.Style(termstyle.RoleBorder, right)
+}
+
+func boxLine(theme termstyle.Theme, line string, width int) string {
+	inner := max(0, width-4)
+	content := termstyle.PadRight(truncateVisible(line, inner), inner)
+	return theme.Style(termstyle.RoleBorder, "│ ") + content + theme.Style(termstyle.RoleBorder, " │")
+}
+
+func joinVisible(left string, right string, width int) string {
+	if strings.TrimSpace(right) == "" {
+		return left
+	}
+	gap := width - termstyle.VisibleWidth(left) - termstyle.VisibleWidth(right)
+	if gap < 2 {
+		return left + "  " + right
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func truncateVisible(value string, width int) string {

@@ -257,11 +257,11 @@ func TestPickerHeaderCombinesSummaryWhenItFits(t *testing.T) {
 	model.width = 140
 
 	lines := strings.Split(model.View().Content, "\n")
-	if !strings.Contains(lines[0], "SSHERPA dev") || !strings.Contains(lines[0], "SUPERVISED MODE") || !strings.HasSuffix(lines[0], "1 host  0 warnings  0 sessions  0 tunnels") {
-		t.Fatalf("first header line did not combine summary:\n%s", model.View().Content)
+	if !strings.Contains(lines[0], "SSHERPA  dev  SUPERVISED MODE") {
+		t.Fatalf("title line missing app/version/mode:\n%s", model.View().Content)
 	}
-	if strings.Contains(lines[1], "1 host") {
-		t.Fatalf("summary should not be repeated on second line:\n%s", model.View().Content)
+	if !strings.Contains(lines[1], "STATUS") || !strings.Contains(lines[1], "1 host  0 warnings  0 sessions  0 tunnels") {
+		t.Fatalf("status line missing summary:\n%s", model.View().Content)
 	}
 }
 
@@ -278,10 +278,10 @@ func TestPickerHeaderKeepsSummarySeparateWhenCombinedLineWouldNotFit(t *testing.
 
 	lines := strings.Split(model.View().Content, "\n")
 	if strings.Contains(lines[0], "1 host") {
-		t.Fatalf("summary should stay separate when it would not fit:\n%s", model.View().Content)
+		t.Fatalf("summary should stay out of framed title:\n%s", model.View().Content)
 	}
 	if !strings.Contains(lines[1], "1 host  0 warnings") {
-		t.Fatalf("summary missing from second line:\n%s", model.View().Content)
+		t.Fatalf("summary missing from status line:\n%s", model.View().Content)
 	}
 }
 
@@ -318,7 +318,11 @@ func TestPickerHostRowsOnlyShowNickname(t *testing.T) {
 	text := model.View().Content
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "[HOST]") {
-			left, _, _ := strings.Cut(line, "|")
+			parts := strings.Split(line, "│")
+			if len(parts) < 3 {
+				t.Fatalf("host row missing framed columns:\n%s", text)
+			}
+			left := parts[1]
 			if !strings.Contains(left, "prod") {
 				t.Fatalf("host row missing nickname:\n%s", text)
 			}
@@ -564,8 +568,8 @@ func TestPickerWideLayoutGivesSelectionMoreWidth(t *testing.T) {
 	text := model.View().Content
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "SELECTION") {
-			if got := strings.Index(line, "|"); got != 55 {
-				t.Fatalf("divider column = %d, want 55 in 120-column layout:\n%s", got, text)
+			if !strings.Contains(line, "│  SELECTION") {
+				t.Fatalf("selection header missing internal divider:\n%s", text)
 			}
 			return
 		}
@@ -627,8 +631,13 @@ func TestPickerViewUsesFullAvailableWidth(t *testing.T) {
 
 	text := model.View().Content
 	lines := strings.Split(text, "\n")
-	if len(lines) < 2 || len(lines[1]) != 180 {
-		t.Fatalf("rule width = %d, want 180:\n%s", len(lines[1]), text)
+	if len(lines) < 2 {
+		t.Fatalf("view too short:\n%s", text)
+	}
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if got := termstyle.VisibleWidth(line); got != 180 {
+			t.Fatalf("line width = %d, want 180: %q\n%s", got, line, text)
+		}
 	}
 }
 

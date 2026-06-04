@@ -198,56 +198,67 @@ func (m themeEditorModel) updateEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m themeEditorModel) View() tea.View {
-	width := clamp(m.width, 64, 140)
+	width := clamp(m.width, 48, 140)
 	theme := pickerTheme{theme: m.currentTheme()}
-	var b strings.Builder
-
-	title := theme.logo("SSHERPA THEME BUILDER")
-	b.WriteString(termstyle.PadRight(title, width))
-	b.WriteByte('\n')
-	if m.configPath != "" {
-		b.WriteString("  ")
-		b.WriteString(theme.summary(termstyle.Truncate("config  "+m.configPath, width-4)))
-		b.WriteByte('\n')
-	}
-	if m.warning != "" {
-		b.WriteString("  ")
-		b.WriteString(theme.empty(termstyle.Truncate(m.warning, width-4)))
-		b.WriteByte('\n')
-	}
-	if m.message != "" {
-		b.WriteString("  ")
-		b.WriteString(theme.summary(termstyle.Truncate(m.message, width-4)))
-		b.WriteByte('\n')
-	}
-	b.WriteString(theme.rule(width))
-	b.WriteByte('\n')
-
-	body := m.renderBody(width, theme)
-	for _, line := range body {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
+	bodyWidth := max(20, width-4)
+	body := m.renderStatusLines(bodyWidth, theme)
+	body = append(body, "")
+	body = append(body, m.renderBody(bodyWidth, theme)...)
 
 	footer := "s save  /  arrows change  /  e edit raw  /  d inherit  /  r reset  /  t contrast  /  Q cancel"
 	if m.editMode {
 		footer = "Enter accept  /  Esc cancel  /  Backspace edit  /  Ctrl-U clear"
 	}
-	chips := m.contrastChips()
-	keysWidth := width - termstyle.VisibleWidth(chips) - 2
-	if keysWidth < 0 {
-		keysWidth = 0
-	}
-	b.WriteString(theme.rule(width))
-	b.WriteByte('\n')
-	b.WriteString(m.plain(theme, termstyle.Truncate(footer, keysWidth)))
-	b.WriteString("  ")
-	b.WriteString(chips)
-	b.WriteByte('\n')
 
-	view := tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:  "SSHERPA THEME BUILDER",
+		Body:   body,
+		Footer: footer,
+	}))
 	view.AltScreen = !m.noAltScreen
 	return view
+}
+
+func (m themeEditorModel) renderStatusLines(width int, theme pickerTheme) []string {
+	path := m.configPath
+	if path == "" {
+		path = "(default theme path)"
+	}
+	lines := themeEditorKVLines(theme, width, "Config", path, termstyle.RoleSecondary, 2)
+	if m.warning != "" {
+		lines = append(lines, themeEditorKVLines(theme, width, "Warning", m.warning, termstyle.RoleWarning, 2)...)
+	}
+	if m.message != "" {
+		lines = append(lines, themeEditorKVLines(theme, width, "Status", m.message, termstyle.RoleSecondary, 2)...)
+	}
+	lines = append(lines, themeEditorKVLines(theme, width, "Contrast", m.contrastChips(), termstyle.RoleSubtle, 1)...)
+	return lines
+}
+
+func themeEditorKVLines(theme pickerTheme, width int, key string, value string, role termstyle.Role, maxLines int) []string {
+	labelWidth := 9
+	valueWidth := max(0, width-labelWidth-1)
+	keyText := theme.label(termstyle.PadRight(key, labelWidth))
+	if valueWidth <= 0 {
+		return []string{termstyle.Truncate(keyText, width)}
+	}
+	if maxLines <= 1 || strings.Contains(value, "\x1b[") {
+		line := theme.theme.Style(role, truncateStyled(value, valueWidth))
+		return []string{keyText + " " + line}
+	}
+	wrapped := wrapPlain(termstyle.Strip(value), valueWidth, maxLines)
+	if len(wrapped) == 0 {
+		wrapped = []string{""}
+	}
+	out := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		prefix := strings.Repeat(" ", labelWidth)
+		if i == 0 {
+			prefix = keyText
+		}
+		out = append(out, prefix+" "+theme.theme.Style(role, line))
+	}
+	return out
 }
 
 func (m themeEditorModel) renderBody(width int, theme pickerTheme) []string {
@@ -265,7 +276,7 @@ func (m themeEditorModel) renderBody(width int, theme pickerTheme) []string {
 	preview := m.renderPreviewLines(previewWidth, theme)
 	lines := max(len(editor), len(preview))
 	out := make([]string, 0, lines)
-	divider := theme.muted("|")
+	divider := theme.muted("│")
 	for i := 0; i < lines; i++ {
 		left := ""
 		if i < len(editor) {

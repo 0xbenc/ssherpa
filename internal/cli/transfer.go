@@ -326,7 +326,7 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 		}
 		if localPath == "" {
 			if flags.PickLocalDir && !flags.Print {
-				dir, ok, err := pickLocalDirectory(stderr, transferFilePickerOptions(flags), "Receive file: choose local folder", ".")
+				dir, ok, err := pickLocalDirectory(stderr, transferFilePickerOptions(flags), ".")
 				if err != nil {
 					fmt.Fprintf(stderr, "ssherpa: local folder picker failed: %v\n", err)
 					return sshcmd.SFTPTransfer{}, false, 1
@@ -545,31 +545,13 @@ func runTransferFileBuilder(flags connectFlags, inventory hostlist.Inventory, st
 }
 
 func chooseTransferDirection(flags connectFlags, stderr io.Writer) (sshcmd.SFTPTransferDirection, bool, error) {
-	items := []ui.Item{
-		{
-			Kind:        ui.ItemSendFile,
-			Token:       string(sshcmd.SFTPTransferSend),
-			Title:       "Send file",
-			Description: "local to remote",
-			Badge:       "send",
-		},
-		{
-			Kind:        ui.ItemReceiveFile,
-			Token:       string(sshcmd.SFTPTransferReceive),
-			Title:       "Receive file",
-			Description: "remote to local",
-			Badge:       "recv",
-		},
-	}
-	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+	direction, ok, err := ui.ChooseTransferDirection(context.Background(), ui.TransferDirectionOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		NoColor:     flags.NoColor,
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
-		Title:       "File transfer",
-		Footer:      "enter select  /  Q back",
 	})
 	if err != nil {
 		return "", false, err
@@ -577,13 +559,13 @@ func chooseTransferDirection(flags connectFlags, stderr io.Writer) (sshcmd.SFTPT
 	if !ok {
 		return "", false, nil
 	}
-	switch item.Kind {
-	case ui.ItemSendFile:
+	switch direction {
+	case ui.TransferDirectionSend:
 		return sshcmd.SFTPTransferSend, true, nil
-	case ui.ItemReceiveFile:
+	case ui.TransferDirectionReceive:
 		return sshcmd.SFTPTransferReceive, true, nil
 	default:
-		return "", false, fmt.Errorf("unexpected transfer direction item %q", item.Kind)
+		return "", false, fmt.Errorf("unexpected transfer direction %q", direction)
 	}
 }
 
@@ -898,7 +880,7 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 		fmt.Fprintln(stderr, "[skipped] receive cancelled")
 		return 0
 	}
-	dir, ok, err := pickLocalDirectory(stderr, transferFilePickerOptions(flags), "Receive file: choose local folder", ".")
+	dir, ok, err := pickLocalDirectory(stderr, transferFilePickerOptions(flags), ".")
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: local folder picker failed: %v\n", err)
 		return 1
@@ -1046,6 +1028,31 @@ func connectFilePickerOptions(flags connectFlags) filePickerOptions {
 	return filePickerOptions{NoColor: flags.NoColor, ThemeName: flags.ThemeName, ThemeFile: flags.ThemeFile}
 }
 
+func transferBrowserOptions(output io.Writer, opts filePickerOptions, title string, mode string, locationLabel string, location string, steps []string, currentStep int) ui.TransferBrowserOptions {
+	return ui.TransferBrowserOptions{
+		Input:         os.Stdin,
+		Output:        output,
+		NoAltScreen:   envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:       opts.NoColor,
+		ThemeName:     opts.ThemeName,
+		ThemeFile:     opts.ThemeFile,
+		Title:         title,
+		Mode:          mode,
+		LocationLabel: locationLabel,
+		Location:      location,
+		Steps:         steps,
+		CurrentStep:   currentStep,
+	}
+}
+
+func sendTransferSteps() []string {
+	return []string{"direction", "local", "host", "remote", "run"}
+}
+
+func receiveTransferSteps() []string {
+	return []string{"direction", "host", "remote", "local", "run"}
+}
+
 func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
 	cwd, err := expandLocalPath(start)
 	if err != nil {
@@ -1064,17 +1071,8 @@ func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (stri
 		if err != nil {
 			return "", false, err
 		}
-		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
-			Input:       os.Stdin,
-			Output:      stderr,
-			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-			NoColor:     opts.NoColor,
-			ThemeName:   opts.ThemeName,
-			ThemeFile:   opts.ThemeFile,
-			Title:       "Send file: choose local file",
-			Subtitle:    cwd,
-			Footer:      "enter open/select  /  Q cancel",
-		})
+		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND SOURCE", "local-file", "LOCAL", cwd, sendTransferSteps(), 1)
+		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err
 		}
@@ -1087,7 +1085,7 @@ func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (stri
 	}
 }
 
-func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, title string, start string) (string, bool, error) {
+func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
 	cwd, err := expandLocalPath(start)
 	if err != nil {
 		return "", false, err
@@ -1099,26 +1097,15 @@ func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, title string, 
 	if !info.IsDir() {
 		cwd = filepath.Dir(cwd)
 	}
-	if strings.TrimSpace(title) == "" {
-		title = "Choose local folder"
-	}
 
 	for {
 		items, err := localDirectoryPickerItems(cwd)
 		if err != nil {
 			return "", false, err
 		}
-		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
-			Input:       os.Stdin,
-			Output:      stderr,
-			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-			NoColor:     opts.NoColor,
-			ThemeName:   opts.ThemeName,
-			ThemeFile:   opts.ThemeFile,
-			Title:       title,
-			Subtitle:    cwd,
-			Footer:      "enter open/use  /  Q cancel",
-		})
+		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE TARGET", "local-folder", "LOCAL", cwd, receiveTransferSteps(), 3)
+		browserOpts.Footer = "enter open/use  /  type filter  /  arrows move  /  shift+arrows section  /  Q cancel"
+		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err
 		}
@@ -1328,17 +1315,8 @@ func pickRemoteFile(stderr io.Writer, opts filePickerOptions, flags transferFlag
 			current = listing.CWD
 		}
 		items := remoteFilePickerItems(current, listing.Entries)
-		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
-			Input:       os.Stdin,
-			Output:      stderr,
-			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-			NoColor:     opts.NoColor,
-			ThemeName:   opts.ThemeName,
-			ThemeFile:   opts.ThemeFile,
-			Title:       "Receive file: choose remote file",
-			Subtitle:    alias + ":" + current,
-			Footer:      "enter open/select  /  Q cancel",
-		})
+		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE SOURCE", "remote-file", alias, current, receiveTransferSteps(), 2)
+		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err
 		}
@@ -1365,17 +1343,9 @@ func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transfe
 			current = listing.CWD
 		}
 		items := remoteDirectoryPickerItems(current, listing.Dirs)
-		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
-			Input:       os.Stdin,
-			Output:      stderr,
-			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-			NoColor:     opts.NoColor,
-			ThemeName:   opts.ThemeName,
-			ThemeFile:   opts.ThemeFile,
-			Title:       "Send file: choose remote folder",
-			Subtitle:    alias + ":" + current,
-			Footer:      "enter open/use  /  Q cancel",
-		})
+		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND TARGET", "remote-folder", alias, current, sendTransferSteps(), 3)
+		browserOpts.Footer = "enter open/use  /  type filter  /  arrows move  /  shift+arrows section  /  Q cancel"
+		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err
 		}

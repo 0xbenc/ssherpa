@@ -1122,22 +1122,16 @@ func pickJumpRoute(aliases []hostlist.Alias, noColor bool, themeName string, the
 			break
 		}
 
-		items := []ui.Item{{
-			Kind:        ui.ItemKind("done"),
-			Token:       "DONE",
-			Title:       "ALL DONE",
-			Description: routeSummary(dest.Name, hops),
-		}}
-		items = append(items, aliasItems(choices)...)
-
-		item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
-			Input:       os.Stdin,
-			Output:      stderr,
-			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-			NoColor:     noColor,
-			ThemeName:   themeName,
-			ThemeFile:   themeFile,
-			Title:       "Jump: add another hop or finish",
+		choice, ok, err := ui.ChooseJumpHop(context.Background(), choices, ui.JumpHopChooserOptions{
+			Input:        os.Stdin,
+			Output:       stderr,
+			NoAltScreen:  envBool("SSHERPA_NO_ALT_SCREEN"),
+			NoColor:      noColor,
+			ThemeName:    themeName,
+			ThemeFile:    themeFile,
+			Destination:  dest.Name,
+			Hops:         hops,
+			RouteSummary: routeSummary(dest.Name, hops),
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -1147,10 +1141,10 @@ func pickJumpRoute(aliases []hostlist.Alias, noColor bool, themeName string, the
 			fmt.Fprintln(stderr, "[skipped] jump cancelled (additional hops)")
 			return "", nil, false, 0
 		}
-		if item.Token == "DONE" {
+		if choice.Done {
 			break
 		}
-		hops = append(hops, item.Token)
+		hops = append(hops, choice.Alias)
 	}
 
 	return dest.Name, hops, true, 0
@@ -1204,7 +1198,7 @@ func pickAlias(aliases []hostlist.Alias, noColor bool, themeName string, themeFi
 	if len(aliases) == 0 {
 		return hostlist.Alias{}, false, nil
 	}
-	item, ok, err := ui.Pick(context.Background(), aliasItems(aliases), ui.PickOptions{
+	token, ok, err := ui.ChooseHost(context.Background(), aliases, ui.HostChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -1212,15 +1206,75 @@ func pickAlias(aliases []hostlist.Alias, noColor bool, themeName string, themeFi
 		ThemeName:   themeName,
 		ThemeFile:   themeFile,
 		Title:       title,
+		Mode:        hostChooserMode(title),
+		Steps:       hostChooserSteps(title),
+		CurrentStep: hostChooserCurrentStep(title),
 	})
 	if err != nil || !ok {
 		return hostlist.Alias{}, ok, err
 	}
-	alias := findAlias(aliases, item.Token)
+	alias := findAlias(aliases, token)
 	if alias == nil {
-		return hostlist.Alias{}, false, fmt.Errorf("selected alias %q disappeared", item.Token)
+		return hostlist.Alias{}, false, fmt.Errorf("selected alias %q disappeared", token)
 	}
 	return *alias, true, nil
+}
+
+func hostChooserMode(title string) string {
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "jump: pick destination":
+		return "choose jump destination"
+	case "jump: pick first hop":
+		return "choose first hop"
+	case "proxy: pick host":
+		return "choose SOCKS proxy host"
+	case "forward: pick host":
+		return "choose tunnel host"
+	case "transfer: pick host":
+		return "choose transfer host"
+	case "send file: pick target":
+		return "choose send target"
+	case "receive file: pick source":
+		return "choose receive source"
+	case "check: pick host":
+		return "choose host to check"
+	default:
+		return "pick host"
+	}
+}
+
+func hostChooserSteps(title string) []string {
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "jump: pick destination", "jump: pick first hop":
+		return []string{"destination", "first hop", "extra hops", "run"}
+	case "proxy: pick host":
+		return []string{"host", "port", "run"}
+	case "forward: pick host":
+		return []string{"host", "local", "remote", "run"}
+	case "transfer: pick host":
+		return []string{"host", "paths", "confirm", "complete"}
+	case "send file: pick target":
+		return []string{"local", "target", "remote", "complete"}
+	case "receive file: pick source":
+		return []string{"source", "remote", "local", "complete"}
+	case "check: pick host":
+		return []string{"scope", "host", "results"}
+	default:
+		return nil
+	}
+}
+
+func hostChooserCurrentStep(title string) int {
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "jump: pick first hop":
+		return 1
+	case "send file: pick target":
+		return 1
+	case "check: pick host":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func promptProxyPort(stderr io.Writer) (int, bool) {

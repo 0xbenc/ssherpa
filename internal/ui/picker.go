@@ -401,16 +401,12 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m pickerModel) View() tea.View {
-	var b strings.Builder
 	width := max(56, m.width)
 	theme := pickerTheme{theme: m.theme}
-
-	b.WriteString(m.renderHeader(width, theme))
-	b.WriteByte('\n')
-	for _, line := range m.renderBody(width, theme) {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
+	bodyWidth := max(20, width-4)
+	body := m.renderHomeStatusLines(bodyWidth, theme)
+	body = append(body, m.renderFilterLine(bodyWidth, theme), "")
+	body = append(body, m.renderBody(bodyWidth, theme)...)
 
 	footer := m.footer
 	if footer == "" {
@@ -420,14 +416,69 @@ func (m pickerModel) View() tea.View {
 			footer = "enter select / type filter / arrows move / shift+arrows section / Q quit"
 		}
 	}
-	b.WriteString(theme.rule(width))
-	b.WriteByte('\n')
-	b.WriteString(theme.footer(termstyle.Truncate(footer, width)))
-	b.WriteByte('\n')
 
-	view := tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:  m.homeTitle(),
+		Body:   body,
+		Footer: footer,
+	}))
 	view.AltScreen = !m.noAltScreen
 	return view
+}
+
+func (m pickerModel) homeTitle() string {
+	title := strings.TrimSpace(m.title)
+	if title == "" {
+		title = "ssherpa"
+	}
+	parts := []string{strings.ToUpper(title)}
+	if version := strings.TrimSpace(m.version); version != "" {
+		parts = append(parts, version)
+	}
+	if subtitle := strings.TrimSpace(m.subtitle); subtitle != "" {
+		parts = append(parts, strings.ToUpper(subtitle))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m pickerModel) renderHomeStatusLines(width int, theme pickerTheme) []string {
+	if len(m.summary) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(m.summary))
+	for i, summary := range m.summary {
+		label := "STATUS"
+		if i > 0 {
+			label = "INFO"
+		}
+		lines = append(lines, homeMetaLine(theme, width, label, summary))
+	}
+	return lines
+}
+
+func homeMetaLine(theme pickerTheme, width int, label string, value string) string {
+	labelText := theme.label(termstyle.PadRight(strings.ToUpper(label), 7))
+	valueWidth := max(0, width-termstyle.VisibleWidth(labelText)-2)
+	valueText := theme.summary(termstyle.Truncate(value, valueWidth))
+	return labelText + "  " + termstyle.PadRight(valueText, valueWidth)
+}
+
+func (m pickerModel) renderFilterLine(width int, theme pickerTheme) string {
+	counter := fmt.Sprintf("%d/%d", len(m.filtered), len(m.items))
+	label := theme.label(termstyle.PadRight("FILTER", 7))
+	counterText := theme.counter(counter)
+	query := m.query
+	if query == "" {
+		query = "type to filter"
+	}
+	fieldWidth := max(8, width-termstyle.VisibleWidth(label)-termstyle.VisibleWidth(counterText)-6)
+	field := "[" + termstyle.PadRight(termstyle.Truncate(query, fieldWidth), fieldWidth) + "]"
+	if m.query == "" {
+		field = theme.muted(field)
+	} else {
+		field = theme.search(field)
+	}
+	return label + "  " + field + "  " + counterText
 }
 
 func (m pickerModel) renderHeader(width int, theme pickerTheme) string {
@@ -506,7 +557,7 @@ func (m pickerModel) renderBody(width int, theme pickerTheme) []string {
 	preview := m.renderPreviewLines(previewWidth, theme)
 	lines := max(len(list), len(preview))
 	out := make([]string, 0, lines)
-	divider := theme.muted("|")
+	divider := theme.muted("│")
 	for i := 0; i < lines; i++ {
 		left := ""
 		if i < len(list) {
@@ -543,7 +594,7 @@ func requiredListWidth(items []Item, filtered []int) int {
 
 func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
 	if len(m.filtered) == 0 {
-		return []string{"", "  " + theme.empty("No matches")}
+		return []string{"  " + theme.empty("No matches")}
 	}
 
 	// Budget the list against the actual terminal height. Each candidate row is
@@ -551,7 +602,7 @@ func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
 	// line is reserved for the "N more hidden" notice while items remain, so the
 	// list grows to fill a tall terminal instead of stopping at a fixed cap.
 	budget := listBudget(m.height, len(m.summary))
-	lines := []string{""}
+	lines := []string{}
 	start := m.normalizedScrollOffset()
 	if start > 0 {
 		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more above", start)))
@@ -601,7 +652,6 @@ func (m pickerModel) renderPreviewLines(width int, theme pickerTheme) []string {
 	}
 
 	lines := []string{
-		"",
 		theme.groupHeader("Selection", width),
 		theme.previewTitle(termstyle.Truncate(item.Title, width)),
 	}
@@ -763,7 +813,7 @@ func listWindowContainsCursor(items []Item, filtered []int, start int, cursor in
 	if len(filtered) == 0 || cursor < start || cursor < 0 || cursor >= len(filtered) {
 		return false
 	}
-	lines := 1 // leading blank spacer
+	lines := 0
 	if start > 0 {
 		lines++ // "N more above"
 	}
@@ -933,10 +983,26 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleDanger
 	case ItemForward, ItemSendFile, ItemReceiveFile:
 		role = termstyle.RolePrimary
+	case ItemKind("file"), ItemKind("remote_file"):
+		role = termstyle.RoleForeground
+	case ItemKind("file_dir"), ItemKind("remote_dir"):
+		role = termstyle.RoleInfo
+	case ItemKind("file_parent"), ItemKind("remote_up"):
+		role = termstyle.RoleSecondary
+	case ItemKind("file_here"), ItemKind("remote_here"):
+		role = termstyle.RoleSuccess
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
 	case ItemForwardActive, ItemProxyActive, ItemStopAllActive:
 		role = termstyle.RoleDanger
+	case ItemKind("edit_details"):
+		role = termstyle.RoleSuccess
+	case ItemKind("rename"):
+		role = termstyle.RoleInfo
+	case ItemKind("delete"):
+		role = termstyle.RoleDanger
+	case ItemKind("back"):
+		role = termstyle.RoleSecondary
 	case ItemCheck:
 		role = termstyle.RoleInfo
 	case ItemAuthkeys:

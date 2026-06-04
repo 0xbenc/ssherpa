@@ -318,31 +318,30 @@ func (m proxyBuilderModel) updateSaveName(msg tea.KeyPressMsg) (tea.Model, tea.C
 func (m proxyBuilderModel) View() tea.View {
 	width := clamp(m.width, 64, 140)
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
+	var body strings.Builder
 	title := "SSHERPA PROXY BUILDER"
 	if m.editMode {
 		title = "SSHERPA PROXY EDITOR"
 	}
-	b.WriteString(termstyle.PadRight(theme.logo(title), width))
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.muted(proxyStepBreadcrumb(m.step)))
-	b.WriteString("\n\n")
 	switch m.step {
 	case proxyStepDestination:
-		m.viewDestination(&b, theme, width)
+		m.viewDestination(&body, theme, width)
 	case proxyStepListener:
-		m.viewListener(&b, theme, width)
+		m.viewListener(&body, theme, width)
 	case proxyStepSummary:
-		m.viewSummary(&b, theme, width)
+		m.viewSummary(&body, theme, width)
 	case proxyStepSaveName:
-		m.viewSaveName(&b, theme, width)
+		m.viewSaveName(&body, theme, width)
 	}
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.muted(proxyStepFooter(m.step)))
-	b.WriteByte('\n')
-	return tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:   title,
+		Steps:   proxyStepLabels(m.step),
+		Current: proxyStepIndex(m.step),
+		Body:    workflowBodyLines(&body),
+		Footer:  proxyStepFooter(m.step),
+	}))
+	view.AltScreen = !m.noAltScreen
+	return view
 }
 
 func (m proxyBuilderModel) viewDestination(b *strings.Builder, theme pickerTheme, width int) {
@@ -427,20 +426,19 @@ func (m proxyBuilderModel) summaryActions() []summaryAction {
 	return builderSummaryActions
 }
 
-func proxyStepBreadcrumb(step proxyBuilderStep) string {
+func proxyStepLabels(step proxyBuilderStep) []string {
 	steps := []string{"destination", "listener", "summary"}
 	if step == proxyStepSaveName {
 		steps = append(steps, "save name")
 	}
-	highlighted := []string{}
-	for i, s := range steps {
-		if i == int(step) {
-			highlighted = append(highlighted, "["+s+"]")
-		} else {
-			highlighted = append(highlighted, " "+s+" ")
-		}
+	return steps
+}
+
+func proxyStepIndex(step proxyBuilderStep) int {
+	if step == proxyStepSaveName {
+		return 3
 	}
-	return strings.Join(highlighted, " -> ")
+	return int(step)
 }
 
 func proxyStepFooter(step proxyBuilderStep) string {

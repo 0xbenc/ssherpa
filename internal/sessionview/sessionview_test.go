@@ -40,13 +40,12 @@ func TestMapViewCarriesRouteDetails(t *testing.T) {
 		"ssherpa session map",
 		"active 1",
 		"state /tmp/ssherpa-state",
-		"+- prod [jump] [active]",
-		"depth 2  id child  current",
-		"PATH",
-		"● here  local",
-		"└─▶ laptop",
-		"└─▶ bastion",
-		"└─▶ prod",
+		"● current  prod [jump]",
+		"depth 2  id child",
+		"⌂ here local",
+		"· laptop hop",
+		"· bastion hop",
+		"● prod target",
 		"health disconnected: latency_timeout",
 		"q close",
 	} {
@@ -54,7 +53,7 @@ func TestMapViewCarriesRouteDetails(t *testing.T) {
 			t.Fatalf("view missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Index(text, "└─▶ laptop") >= strings.Index(text, "└─▶ bastion") || strings.Index(text, "└─▶ bastion") >= strings.Index(text, "└─▶ prod") {
+	if strings.Index(text, "· laptop hop") >= strings.Index(text, "· bastion hop") || strings.Index(text, "· bastion hop") >= strings.Index(text, "● prod target") {
 		t.Fatalf("route nodes are not ordered as a chain:\n%s", text)
 	}
 }
@@ -86,20 +85,18 @@ func TestMapViewSynthesizesInheritedLineage(t *testing.T) {
 		"active 1",
 		"shown 1",
 		"recorded 1",
-		"+- A [inherited]",
-		"+- B [inherited]",
-		"+- C [jump] [active]",
-		"depth 2  id c-session  current",
-		"● A",
-		"└─▶ B",
-		"└─▶ C",
+		"● current  C [jump]",
+		"depth 2  id c-session",
+		"⌂ A local",
+		"◆ B ssherpa",
+		"● C target",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Index(text, "+- A [inherited]") >= strings.Index(text, "+- B [inherited]") ||
-		strings.Index(text, "+- B [inherited]") >= strings.Index(text, "+- C [jump] [active]") {
+	if strings.Index(text, "⌂ A local") >= strings.Index(text, "◆ B ssherpa") ||
+		strings.Index(text, "◆ B ssherpa") >= strings.Index(text, "● C target") {
 		t.Fatalf("inherited lineage is not ordered as a chain:\n%s", text)
 	}
 }
@@ -119,14 +116,66 @@ func TestMapLinesSynthesizesInheritedLineage(t *testing.T) {
 	text := strings.Join(MapLines("/tmp/ssherpa-state", []state.SessionRecord{record}, "c-session"), "\n")
 	for _, want := range []string{
 		"active: 1",
-		"+- A [inherited]",
-		"+- B [inherited]",
-		"+- C [jump] [active] depth=2 id=c-session  current",
-		"path: A -> B -> C",
+		"● current  C [jump]",
+		"depth 2  id c-session",
+		"⌂ A local",
+		"◆ B ssherpa",
+		"● C target",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("map lines missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestMapMarksRemoteSSHERPABoundaryDistinctFromPlainHops(t *testing.T) {
+	root := state.SessionRecord{
+		ID:          "root-session",
+		OriginHost:  "A",
+		TargetAlias: "B",
+		Route:       []string{"B"},
+		StartedAt:   time.Unix(1700000000, 0),
+		LocalPID:    os.Getpid(),
+		RunnerMode:  "supervised",
+	}
+	child := state.SessionRecord{
+		ID:           "child-session",
+		ParentID:     "root-session",
+		Depth:        1,
+		OriginHost:   "A",
+		TargetAlias:  "E",
+		Route:        []string{"B", "C", "D", "E"},
+		Hops:         []string{"C", "D"},
+		StartedAt:    time.Unix(1700000060, 0),
+		RunnerMode:   "supervised",
+		RemoteMirror: true,
+	}
+	records := []state.SessionRecord{root, child}
+
+	active, exited := CountStatuses(records)
+	if active != 2 || exited != 0 {
+		t.Fatalf("CountStatuses = active %d exited %d, want local and remote supervised sessions active", active, exited)
+	}
+	if got := StatusLabel(child); got != "remote" {
+		t.Fatalf("StatusLabel(remote mirror) = %q, want remote", got)
+	}
+
+	text := strings.Join(MapLines("/tmp/ssherpa-state", records, "root-session"), "\n")
+	for _, want := range []string{
+		"● current  B",
+		"◆ ssherpa  E [jump]",
+		"◆ B ssherpa",
+		"· C hop",
+		"· D hop",
+		"● E target",
+		"remote supervised",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("map missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "◆ C ssherpa") || strings.Contains(text, "◆ D ssherpa") {
+		t.Fatalf("plain SSH hops were marked as ssherpa boundaries:\n%s", text)
 	}
 }
 
@@ -169,12 +218,12 @@ func TestSessionViewTreatsOpenDeadRecordsAsOrphans(t *testing.T) {
 
 	activeText := strings.Join(MapLines("/tmp/ssherpa-state", records, ""), "\n")
 	assertContainsText(t, activeText, "active: 1")
-	assertContainsText(t, activeText, "+- prod [active]")
+	assertContainsText(t, activeText, "● active  prod")
 	assertNotContainsText(t, activeText, "old-prod [orphan]")
 
 	allText := strings.Join(MapLinesWithOptions("/tmp/ssherpa-state", records, MapOptions{IncludeExited: true}), "\n")
 	assertContainsText(t, allText, "active: 1  exited: 2  total: 3")
-	assertContainsText(t, allText, "+- old-prod [orphan] depth=0 id=stale")
+	assertContainsText(t, allText, "◌ orphan  old-prod")
 }
 
 func TestMapForestMarksInheritedLineage(t *testing.T) {
@@ -219,7 +268,7 @@ func TestMapViewShowsLocalOriginForSingleHopRoute(t *testing.T) {
 		Height:   20,
 	})
 
-	if !strings.Contains(view.Content, "● here  local") || !strings.Contains(view.Content, "└─▶ prod") {
+	if !strings.Contains(view.Content, "⌂ here local") || !strings.Contains(view.Content, "● prod target") {
 		t.Fatalf("view missing local origin:\n%s", view.Content)
 	}
 }
@@ -255,8 +304,8 @@ func TestMapViewDoesNotRenderSeparateHopsRow(t *testing.T) {
 		t.Fatalf("view rendered separate hops row:\n%s", view.Content)
 	}
 	for _, want := range []string{
-		"+- prod [forward] [active]",
-		"FORWARD local :15432 -> remote :5432",
+		"● active  prod [forward]",
+		"forward local :15432 -> remote :5432",
 	} {
 		if !strings.Contains(view.Content, want) {
 			t.Fatalf("view missing %q:\n%s", want, view.Content)
@@ -324,8 +373,8 @@ func TestMapViewShowsProxyDetails(t *testing.T) {
 		Height:   20,
 	})
 	for _, want := range []string{
-		"+- bastion [proxy] [active]",
-		"PROXY SOCKS :1080  (saved corp-proxy, background)",
+		"● active  bastion [proxy]",
+		"proxy SOCKS :1080  (saved corp-proxy, background)",
 	} {
 		if !strings.Contains(view.Content, want) {
 			t.Fatalf("view missing %q:\n%s", want, view.Content)
@@ -353,7 +402,7 @@ func TestMapViewShowsRemoteCWDAndPrompt(t *testing.T) {
 		Height:   20,
 	})
 	for _, want := range []string{
-		"REMOTE cwd prod.example.com:/srv/app  prompt idle",
+		"remote cwd prod.example.com:/srv/app  prompt idle",
 	} {
 		if !strings.Contains(view.Content, want) {
 			t.Fatalf("view missing %q:\n%s", want, view.Content)

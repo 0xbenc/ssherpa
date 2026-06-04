@@ -337,40 +337,34 @@ func (m addAliasModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m addAliasModel) View() tea.View {
 	width := clamp(m.width, 64, 140)
 	theme := pickerTheme{theme: m.theme}
-	var b strings.Builder
-
-	title := theme.logo("SSHERPA ADD ALIAS")
-	b.WriteString(termstyle.PadRight(title, width))
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.label(addBreadcrumb(m.step)))
-	b.WriteString("\n\n")
+	var body strings.Builder
 
 	switch m.step {
 	case addStepHost:
-		m.viewHost(&b, theme, width)
+		m.viewHost(&body, theme, width)
 	case addStepAlias:
-		m.viewAlias(&b, theme, width)
+		m.viewAlias(&body, theme, width)
 	case addStepUser:
-		m.viewUser(&b, theme, width)
+		m.viewUser(&body, theme, width)
 	case addStepPort:
-		m.viewPort(&b, theme, width)
+		m.viewPort(&body, theme, width)
 	case addStepIdentity:
-		m.viewIdentity(&b, theme, width)
+		m.viewIdentity(&body, theme, width)
 	case addStepIdentityCustom:
-		m.viewIdentityCustom(&b, theme, width)
+		m.viewIdentityCustom(&body, theme, width)
 	case addStepIdentitiesOnly:
-		m.viewIdentitiesOnly(&b, theme, width)
+		m.viewIdentitiesOnly(&body, theme, width)
 	case addStepReview:
-		m.viewReview(&b, theme, width)
+		m.viewReview(&body, theme, width)
 	}
 
-	b.WriteByte('\n')
-	b.WriteString("  ")
-	b.WriteString(theme.muted(addFooter(m.step)))
-	b.WriteByte('\n')
-
-	view := tea.NewView(b.String())
+	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+		Title:   "SSHERPA ADD ALIAS",
+		Steps:   addStepLabels(),
+		Current: int(m.step),
+		Body:    workflowBodyLines(&body),
+		Footer:  addFooter(m.step),
+	}))
 	view.AltScreen = !m.noAltScreen
 	return view
 }
@@ -410,30 +404,40 @@ func (m addAliasModel) viewIdentity(b *strings.Builder, theme pickerTheme, width
 	maxLines := clamp(m.height-10, 5, 14)
 	from, to := windowRange(m.idCursorRow, len(m.idChoices), maxLines)
 	for i := from; i < to; i++ {
-		choice := m.idChoices[i]
-		label := choice
-		desc := ""
-		switch choice {
-		case addIdentityNone:
-			label = "(none)"
-			desc = "do not write IdentityFile"
-		case addIdentityCustom:
-			label = "Custom path..."
-			desc = "type another key path"
-		default:
-			desc = "write IdentityFile " + choice
-		}
-		cursor := "  "
-		if i == m.idCursorRow {
-			cursor = "> "
-		}
-		line := cursor + termstyle.PadRight(label, 28) + theme.rowDesc(termstyle.Truncate(desc, max(0, width-32)), false)
-		if i == m.idCursorRow {
-			line = theme.rowTitle(line, true)
-		}
 		b.WriteString("  ")
-		b.WriteString(line)
+		b.WriteString(identityChoiceLine(m.idChoices[i], i == m.idCursorRow, width, theme))
 		b.WriteByte('\n')
+	}
+}
+
+func identityChoiceLine(choice string, selected bool, width int, theme pickerTheme) string {
+	label, desc := identityChoiceText(choice)
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+	available := max(24, width-8)
+	labelWidth := clamp(available/2, 18, 42)
+	descWidth := max(0, available-len(cursor)-labelWidth-2)
+
+	line := cursor + termstyle.PadRight(termstyle.Truncate(label, labelWidth), labelWidth)
+	if desc != "" && descWidth >= 8 {
+		line += "  " + theme.rowDesc(termstyle.Truncate(desc, descWidth), false)
+	}
+	if selected {
+		line = theme.rowTitle(line, true)
+	}
+	return line
+}
+
+func identityChoiceText(choice string) (label string, desc string) {
+	switch choice {
+	case addIdentityNone:
+		return "(none)", "do not write IdentityFile"
+	case addIdentityCustom:
+		return "Custom path...", "type another key path"
+	default:
+		return choice, "write IdentityFile"
 	}
 }
 
@@ -481,19 +485,8 @@ func (m addAliasModel) viewReview(b *strings.Builder, theme pickerTheme, width i
 	_ = width
 }
 
-func addBreadcrumb(step addAliasStep) string {
-	steps := []string{"host", "alias", "user", "port", "identity", "custom", "auth", "review"}
-	parts := make([]string, 0, len(steps))
-	for i, s := range steps {
-		if i == int(step) {
-			parts = append(parts, "["+s+"]")
-		} else if i == len(steps)-1 {
-			parts = append(parts, " "+s)
-		} else {
-			parts = append(parts, " "+s+" ")
-		}
-	}
-	return strings.Join(parts, " -> ")
+func addStepLabels() []string {
+	return []string{"host", "alias", "user", "port", "identity", "custom", "auth", "review"}
 }
 
 func addFooter(step addAliasStep) string {
