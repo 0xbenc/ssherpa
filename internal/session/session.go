@@ -23,6 +23,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/ssherpa/internal/transcript"
 	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 )
@@ -73,20 +74,22 @@ type Metadata struct {
 }
 
 type Options struct {
-	StateDir  string
-	Stdin     *os.File
-	Stdout    io.Writer
-	Stderr    io.Writer
-	Env       []string
-	Now       func() time.Time
-	Watchdog  WatchdogOptions
-	Composer  ComposerOptions
-	Overlay   OverlayOptions
-	Reconnect ReconnectOptions
-	Theme     termstyle.Theme
-	ThemeName string
-	ThemeFile string
-	NoColor   bool
+	StateDir       string
+	Stdin          *os.File
+	Stdout         io.Writer
+	Stderr         io.Writer
+	Env            []string
+	Now            func() time.Time
+	Watchdog       WatchdogOptions
+	Composer       ComposerOptions
+	Overlay        OverlayOptions
+	Reconnect      ReconnectOptions
+	Theme          termstyle.Theme
+	ThemeName      string
+	ThemeFile      string
+	NoColor        bool
+	NoRecord       bool
+	RecordMaxBytes int64
 	// Detached runs the supervisor in non-interactive daemon mode:
 	// no PTY raw mode, no copyInput goroutine, no overlay/composer.
 	// forwardSignals stays installed so `ssherpa forward stop` can
@@ -279,6 +282,38 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	}
 	overlayBase := overlayTransferRequestFromRecord("", stateDir, record)
 	var recordMu sync.Mutex
+	var transcriptWriter *transcript.Writer
+	if !opts.NoRecord {
+		writer, spec, err := transcript.OpenWriter(transcript.WriterOptions{
+			Path:    transcript.Path(stateDir, record.ID),
+			Started: record.StartedAt,
+			Header: transcript.Header{
+				Width:   120,
+				Height:  40,
+				Command: sshcmd.QuoteArgv(command.Argv),
+				Title:   defaultTranscriptTitle(record.TargetAlias),
+				Env:     transcriptEnv(env),
+			},
+			MaxBytes: opts.RecordMaxBytes,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: transcript recording disabled: %v\n", err)
+		} else {
+			transcriptWriter = writer
+			record.Transcript = &spec
+			defer func() {
+				if transcriptWriter != nil {
+					spec, err := transcriptWriter.Close(now().UTC())
+					if err == nil {
+						recordMu.Lock()
+						record.Transcript = &spec
+						_ = state.WriteRecord(stateDir, record)
+						recordMu.Unlock()
+					}
+				}
+			}()
+		}
+	}
 
 	// Detached mode has no PTY consumer — skip raw mode entirely.
 	// makeRawIfTerminal handles a non-tty stdin gracefully too, but
@@ -433,6 +468,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			procRef:              procRefShared,
 			output:               output,
 			outputTap:            tap,
+			transcript:           transcriptWriter,
 			startupInterruptible: startupInterruptible,
 			watchdog:             opts.Watchdog,
 			stderr:               stderr,
@@ -484,6 +520,9 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 		_ = state.WriteRecord(stateDir, record)
 		recordMu.Unlock()
+		if transcriptWriter != nil {
+			transcriptWriter.WriteMarker(now().UTC(), fmt.Sprintf("reconnect scheduled after attempt %d failed: %v", attempt, waitErr))
+		}
 		fmt.Fprintf(stderr, "\r\nssherpa: session attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
 		timer := time.NewTimer(backoff)
 		select {
@@ -1678,16 +1717,17 @@ func (r *procRef) get() *os.Process {
 // per-attempt scratch (proc, ptmx) or a long-lived pointer that the
 // shared state (record, refs) writes through.
 type attemptContext struct {
-	command   sshcmd.Command
-	stateDir  string
-	record    *state.SessionRecord
-	recordMu  *sync.Mutex
-	env       []string
-	stdin     *os.File
-	ptmxRef   *ptmxRef
-	procRef   *procRef
-	output    *lockedWriter
-	outputTap *outputTap
+	command    sshcmd.Command
+	stateDir   string
+	record     *state.SessionRecord
+	recordMu   *sync.Mutex
+	env        []string
+	stdin      *os.File
+	ptmxRef    *ptmxRef
+	procRef    *procRef
+	output     *lockedWriter
+	outputTap  *outputTap
+	transcript *transcript.Writer
 	// startupInterruptible is true while the current child attempt has not
 	// emitted any PTY output. copyInput uses that window to treat Ctrl+C as a
 	// local abort instead of forwarding it to an ssh client blocked in connect.
@@ -1801,6 +1841,9 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 				}
 				if !suppress {
 					_, _ = ac.output.Write(clean)
+					if ac.transcript != nil {
+						ac.transcript.WriteOutput(time.Now().UTC(), clean)
+					}
 				}
 			}
 			if observed.RemoteChanged {
@@ -1814,6 +1857,24 @@ func copyOutput(ac attemptContext, ptmx *os.File) {
 			return
 		}
 	}
+}
+
+func transcriptEnv(env []string) map[string]string {
+	out := map[string]string{}
+	for _, key := range []string{"SHELL", "TERM", "USER", "LOGNAME"} {
+		if value := strings.TrimSpace(sessionEnvValue(env, key)); value != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func defaultTranscriptTitle(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "ssherpa session"
+	}
+	return value
 }
 
 func emitSessionTelemetry(output io.Writer, record state.SessionRecord, env []string) {

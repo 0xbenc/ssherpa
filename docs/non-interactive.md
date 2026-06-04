@@ -156,6 +156,8 @@ Connect flags:
 | `--latency-disconnect DURATION` | Disconnect after sustained unhealthy probes. Requires `--latency-warn`. |
 | `--composer-key KEY` | Change queued-input composer control key. Example: `ctrl-r`. |
 | `--no-composer` | Disable the queued-input composer. |
+| `--no-record` | Disable output transcript recording for this supervised session. |
+| `--record-max-bytes BYTES` | Cap the transcript file size. Accepts suffixes like `50MB` or `100MiB`; default `50MB`. |
 | `--no-kitty` | Disable Kitty SSH command detection. |
 | `--no-color` | Disable color styling. |
 | `--theme VALUE` | Deprecated compatibility flag; theme files are the active source. |
@@ -182,6 +184,11 @@ Supervised-session keys:
 | `Ctrl-]`, `X`, `X` | Pull the escape rope after confirmation. |
 | `Ctrl-]` three times quickly | Panic escape rope, no confirmation. |
 | `Ctrl-G` | Open queued-input composer by default. |
+
+Supervised sessions record visible terminal output to
+`STATE_DIR/sessions/SESSION_ID.cast` unless `--no-record` is set. Transcripts
+use an asciinema-v2-compatible JSONL format and are stored with `0600`
+permissions. Local input is not recorded.
 
 ## Config Mutation
 
@@ -651,6 +658,11 @@ records in the state directory.
 ssherpa session list [--json] [--state-dir PATH]
 ssherpa session map [--json] [--all] [--state-dir PATH]
 ssherpa session show SESSION_ID [--json] [--state-dir PATH]
+ssherpa session log SESSION_ID [--raw] [--tail N] [--follow] [--state-dir PATH]
+ssherpa session replay SESSION_ID [--speed N] [--no-delay] [--state-dir PATH]
+ssherpa session grep SESSION_ID PATTERN [--ignore-case] [--json] [--state-dir PATH]
+ssherpa session export SESSION_ID [--format text|asciicast] [--output PATH] [--state-dir PATH]
+ssherpa session browse [--state-dir PATH]
 ssherpa session stop-all [--json] [--state-dir PATH]
 ssherpa session prune [--older-than DURATION] [--dry-run] [--json] [--state-dir PATH]
 ```
@@ -662,6 +674,11 @@ Subcommands:
 | `list` | Flat list of recorded sessions. |
 | `map` | Tree of active sessions by default. |
 | `show` | One session record. |
+| `log` | Print a readable cleaned transcript, or raw terminal output with `--raw`. |
+| `replay` | Replay recorded terminal output with original timing. |
+| `grep` | Search cleaned transcript output and print timestamped matches. |
+| `export` | Export transcript text or the original asciicast stream. |
+| `browse` | Open the TUI transcript browser and viewer. |
 | `stop-all` | Signal every active tracked session. |
 | `prune` | Remove ended records older than a duration. |
 
@@ -672,6 +689,14 @@ Flags:
 | `--json` | all | Emit JSON. |
 | `--state-dir PATH` | all | Override state dir. |
 | `--all` | `map` | Include exited sessions. |
+| `--raw` | `log` | Print raw recorded terminal output instead of cleaned text. |
+| `--tail N` | `log` | Show only the last N output frames. |
+| `--follow` | `log` | Continue printing while the session is active. |
+| `--speed N` | `replay` | Replay speed multiplier. Default `1`. |
+| `--no-delay` | `replay` | Replay as fast as possible. |
+| `--ignore-case`, `-i` | `grep` | Case-insensitive regular-expression search. |
+| `--format text\|asciicast` | `export` | Export cleaned text or asciinema-compatible JSONL. |
+| `--output PATH` | `export` | Write export output to this path. |
 | `--older-than DURATION` | `prune` | Age threshold. Default `168h`. |
 | `--dry-run` | `prune` | Show what would be removed. |
 
@@ -682,6 +707,11 @@ ssherpa session list --json
 ssherpa session map
 ssherpa session map --all
 ssherpa session show 20260529T090238.208041000Z-c8eb1976 --json
+ssherpa session browse
+ssherpa session log 20260529T090238.208041000Z-c8eb1976 --tail 100
+ssherpa session grep 20260529T090238.208041000Z-c8eb1976 "permission denied" -i
+ssherpa session replay 20260529T090238.208041000Z-c8eb1976 --speed 2
+ssherpa session export 20260529T090238.208041000Z-c8eb1976 --format asciicast --output prod.cast
 ssherpa session stop-all
 ssherpa session prune --older-than 720h --dry-run
 ```
@@ -725,6 +755,7 @@ Commands supporting `--json`:
 - `ssherpa session list --json`
 - `ssherpa session map --json`
 - `ssherpa session show SESSION_ID --json`
+- `ssherpa session grep SESSION_ID PATTERN --json`
 - `ssherpa session stop-all --json`
 - `ssherpa session prune --json`
 

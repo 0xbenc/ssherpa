@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/ssherpa/internal/transcript"
 )
 
 func WriteList(w io.Writer, stateDir string, records []state.SessionRecord) {
@@ -162,6 +164,301 @@ func ShowMap(ctx context.Context, opts ShowOptions) error {
 	}
 	_, err := tea.NewProgram(model, programOptions...).Run()
 	return err
+}
+
+type TranscriptOptions struct {
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	StateDir    string
+	Record      state.SessionRecord
+	Theme       termstyle.Theme
+	Raw         bool
+	Follow      bool
+}
+
+func ShowTranscript(ctx context.Context, opts TranscriptOptions) error {
+	theme := opts.Theme
+	if theme.Codes == nil {
+		theme = termstyle.TerminalTheme()
+	}
+	model := transcriptModel{
+		noAltScreen: opts.NoAltScreen,
+		stateDir:    opts.StateDir,
+		record:      opts.Record,
+		theme:       theme,
+		raw:         opts.Raw,
+		follow:      opts.Follow,
+		width:       100,
+		height:      28,
+	}
+	model.reload()
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	if opts.Input != nil {
+		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	}
+	if opts.Output != nil {
+		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	}
+	_, err := tea.NewProgram(model, programOptions...).Run()
+	return err
+}
+
+type transcriptTickMsg struct{}
+
+type transcriptModel struct {
+	noAltScreen bool
+	stateDir    string
+	record      state.SessionRecord
+	theme       termstyle.Theme
+	raw         bool
+	follow      bool
+	searching   bool
+	query       string
+	lines       []string
+	errText     string
+	scroll      int
+	width       int
+	height      int
+}
+
+func (m transcriptModel) Init() tea.Cmd {
+	return tea.Batch(tea.RequestWindowSize, transcriptTick())
+}
+
+func (m transcriptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
+		m.clampScroll()
+	case transcriptTickMsg:
+		if m.follow {
+			m.reload()
+			m.scroll = m.maxScroll()
+		}
+		return m, transcriptTick()
+	case tea.KeyPressMsg:
+		key := msg.String()
+		if m.searching {
+			switch key {
+			case "esc":
+				m.searching = false
+			case "enter":
+				m.searching = false
+				m.jumpToQuery(1)
+			case "backspace":
+				if m.query != "" {
+					m.query = m.query[:len(m.query)-1]
+				}
+			default:
+				if msg.Text != "" {
+					m.query += msg.Text
+				}
+			}
+			return m, nil
+		}
+		switch key {
+		case "ctrl+c", "esc", "q", "Q":
+			return m, tea.Quit
+		case "up", "k":
+			m.scroll--
+		case "down", "j":
+			m.scroll++
+		case "pgup":
+			m.scroll -= m.bodyHeight()
+		case "pgdown":
+			m.scroll += m.bodyHeight()
+		case "home", "g":
+			m.scroll = 0
+		case "end", "G":
+			m.scroll = m.maxScroll()
+		case "/":
+			m.searching = true
+			m.query = ""
+		case "n":
+			m.jumpToQuery(1)
+		case "N":
+			m.jumpToQuery(-1)
+		case "r":
+			m.raw = !m.raw
+			m.reload()
+		case "f":
+			m.follow = !m.follow
+			if m.follow {
+				m.reload()
+				m.scroll = m.maxScroll()
+			}
+		}
+		m.clampScroll()
+	}
+	return m, nil
+}
+
+func (m transcriptModel) View() tea.View {
+	width := max(64, m.width)
+	height := max(12, m.height)
+	inner := max(20, width-4)
+	lines := []string{
+		boxTop(m.theme, transcriptHeader(m, inner), width),
+	}
+	meta := transcriptMetaLine(m)
+	if meta != "" {
+		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, truncateVisible(meta, inner)), width))
+		lines = append(lines, boxDivider(m.theme, width))
+	}
+	if m.errText != "" {
+		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleDanger, truncateVisible(m.errText, inner)), width))
+	} else {
+		bodyHeight := max(1, height-len(lines)-3)
+		body := m.visibleLines(bodyHeight, inner)
+		for _, line := range body {
+			lines = append(lines, boxLine(m.theme, line, width))
+		}
+		for len(body) < bodyHeight {
+			lines = append(lines, boxLine(m.theme, "", width))
+			body = append(body, "")
+		}
+	}
+	lines = append(lines, boxDivider(m.theme, width))
+	footer := "arrows scroll / / search / n next / r raw / f follow / q back"
+	if m.searching {
+		footer = "/ " + m.query
+	}
+	lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, truncateVisible(footer, inner)), width))
+	lines = append(lines, boxBottom(m.theme, width))
+	view := tea.NewView(strings.Join(lines, "\n"))
+	view.AltScreen = !m.noAltScreen
+	return view
+}
+
+func (m *transcriptModel) reload() {
+	path := transcriptPath(m.stateDir, m.record)
+	rec, err := transcript.Read(path)
+	if err != nil {
+		m.errText = err.Error()
+		m.lines = nil
+		return
+	}
+	m.errText = ""
+	text := transcript.Text(rec, transcript.TextOptions{Raw: m.raw})
+	m.lines = strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(m.lines) == 1 && m.lines[0] == "" {
+		m.lines = nil
+	}
+	m.clampScroll()
+}
+
+func (m transcriptModel) visibleLines(count int, width int) []string {
+	if len(m.lines) == 0 {
+		return []string{m.theme.Style(termstyle.RoleMuted, "No transcript output recorded.")}
+	}
+	end := min(len(m.lines), m.scroll+count)
+	out := make([]string, 0, end-m.scroll)
+	for i := m.scroll; i < end; i++ {
+		line := truncateVisible(m.lines[i], width)
+		if m.query != "" && strings.Contains(strings.ToLower(termstyle.Strip(line)), strings.ToLower(m.query)) {
+			line = m.theme.Style(termstyle.RoleSelected, line)
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func (m *transcriptModel) jumpToQuery(direction int) {
+	q := strings.ToLower(strings.TrimSpace(m.query))
+	if q == "" || len(m.lines) == 0 {
+		return
+	}
+	start := m.scroll
+	for step := 1; step <= len(m.lines); step++ {
+		index := (start + step*direction) % len(m.lines)
+		if index < 0 {
+			index += len(m.lines)
+		}
+		if strings.Contains(strings.ToLower(termstyle.Strip(m.lines[index])), q) {
+			m.scroll = index
+			return
+		}
+	}
+}
+
+func (m transcriptModel) bodyHeight() int {
+	return max(1, m.height-6)
+}
+
+func (m transcriptModel) maxScroll() int {
+	return max(0, len(m.lines)-m.bodyHeight())
+}
+
+func (m *transcriptModel) clampScroll() {
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+	if max := m.maxScroll(); m.scroll > max {
+		m.scroll = max
+	}
+}
+
+func transcriptTick() tea.Cmd {
+	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg {
+		return transcriptTickMsg{}
+	})
+}
+
+func transcriptHeader(m transcriptModel, width int) string {
+	target := Target(m.record)
+	mode := "clean"
+	if m.raw {
+		mode = "raw"
+	}
+	if m.follow {
+		mode += " follow"
+	}
+	left := strings.ToUpper("transcript " + target)
+	right := mode + "  " + strconv.Itoa(m.scroll+1) + "/" + strconv.Itoa(max(1, len(m.lines)))
+	return joinVisible(m.theme.Style(termstyle.RoleForeground, left), m.theme.Style(termstyle.RoleMuted, right), width)
+}
+
+func transcriptMetaLine(m transcriptModel) string {
+	parts := []string{
+		"id " + ShortSessionID(m.record.ID),
+		StatusLabel(m.record),
+		"route " + FormatRecordRoute(m.record),
+	}
+	if m.record.Transcript != nil {
+		parts = append(parts, humanBytes(m.record.Transcript.Bytes))
+		if m.record.Transcript.Truncated {
+			parts = append(parts, "truncated")
+		}
+	} else if info, err := os.Stat(transcriptPath(m.stateDir, m.record)); err == nil {
+		parts = append(parts, humanBytes(info.Size()))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func transcriptPath(stateDir string, record state.SessionRecord) string {
+	if record.Transcript != nil && strings.TrimSpace(record.Transcript.Path) != "" {
+		return record.Transcript.Path
+	}
+	return filepath.Join(state.SessionsDir(stateDir), record.ID+".cast")
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1024*1024*1024))
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.1f KiB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 type mapModel struct {
@@ -318,6 +615,9 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 		)
 		if health := HealthSummary(record); health != "" {
 			fmt.Fprintf(w, "\thealth=%s\n", health)
+		}
+		if record.Transcript != nil {
+			fmt.Fprintf(w, "\ttranscript=%s\tbytes=%s\n", record.Transcript.Path, humanBytes(record.Transcript.Bytes))
 		}
 	}
 }

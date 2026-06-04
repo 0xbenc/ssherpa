@@ -42,32 +42,33 @@ const (
 )
 
 type SessionRecord struct {
-	ID               string         `json:"id"`
-	ParentID         string         `json:"parent_id,omitempty"`
-	Depth            int            `json:"depth"`
-	Route            []string       `json:"route,omitempty"`
-	OriginHost       string         `json:"origin_host,omitempty"`
-	TargetAlias      string         `json:"target_alias,omitempty"`
-	Hops             []string       `json:"hops,omitempty"`
-	SSHArgv          []string       `json:"ssh_argv,omitempty"`
-	ControlPath      string         `json:"control_path,omitempty"`
-	Kind             string         `json:"kind,omitempty"`
-	Forward          *ForwardSpec   `json:"forward,omitempty"`
-	Proxy            *ProxySpec     `json:"proxy,omitempty"`
-	RemoteHost       string         `json:"remote_host,omitempty"`
-	RemoteCWD        string         `json:"remote_cwd,omitempty"`
-	RemotePrompt     string         `json:"remote_prompt,omitempty"`
-	StartedAt        time.Time      `json:"started_at"`
-	EndedAt          *time.Time     `json:"ended_at,omitempty"`
-	LocalPID         int            `json:"local_pid"`
-	SSHPID           int            `json:"ssh_pid,omitempty"`
-	ExitCode         *int           `json:"exit_code,omitempty"`
-	RunnerMode       string         `json:"runner_mode"`
-	Events           []SessionEvent `json:"events,omitempty"`
-	DisconnectReason string         `json:"disconnect_reason,omitempty"`
-	StateVersion     int            `json:"state_version"`
-	Inherited        bool           `json:"inherited,omitempty"`
-	RemoteMirror     bool           `json:"remote_mirror,omitempty"`
+	ID               string          `json:"id"`
+	ParentID         string          `json:"parent_id,omitempty"`
+	Depth            int             `json:"depth"`
+	Route            []string        `json:"route,omitempty"`
+	OriginHost       string          `json:"origin_host,omitempty"`
+	TargetAlias      string          `json:"target_alias,omitempty"`
+	Hops             []string        `json:"hops,omitempty"`
+	SSHArgv          []string        `json:"ssh_argv,omitempty"`
+	ControlPath      string          `json:"control_path,omitempty"`
+	Kind             string          `json:"kind,omitempty"`
+	Forward          *ForwardSpec    `json:"forward,omitempty"`
+	Proxy            *ProxySpec      `json:"proxy,omitempty"`
+	Transcript       *TranscriptSpec `json:"transcript,omitempty"`
+	RemoteHost       string          `json:"remote_host,omitempty"`
+	RemoteCWD        string          `json:"remote_cwd,omitempty"`
+	RemotePrompt     string          `json:"remote_prompt,omitempty"`
+	StartedAt        time.Time       `json:"started_at"`
+	EndedAt          *time.Time      `json:"ended_at,omitempty"`
+	LocalPID         int             `json:"local_pid"`
+	SSHPID           int             `json:"ssh_pid,omitempty"`
+	ExitCode         *int            `json:"exit_code,omitempty"`
+	RunnerMode       string          `json:"runner_mode"`
+	Events           []SessionEvent  `json:"events,omitempty"`
+	DisconnectReason string          `json:"disconnect_reason,omitempty"`
+	StateVersion     int             `json:"state_version"`
+	Inherited        bool            `json:"inherited,omitempty"`
+	RemoteMirror     bool            `json:"remote_mirror,omitempty"`
 }
 
 // ForwardSpec captures the runtime shape of a port-forward tunnel
@@ -108,6 +109,18 @@ type ProxySpec struct {
 	SavedAlias string `json:"saved_alias,omitempty"`
 	Detached   bool   `json:"detached,omitempty"`
 	RetryCount int    `json:"retry_count,omitempty"`
+}
+
+type TranscriptSpec struct {
+	Path      string     `json:"path,omitempty"`
+	Format    string     `json:"format"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Bytes     int64      `json:"bytes"`
+	Frames    int64      `json:"frames"`
+	MaxBytes  int64      `json:"max_bytes,omitempty"`
+	Truncated bool       `json:"truncated,omitempty"`
+	Input     bool       `json:"input,omitempty"`
 }
 
 func (r SessionRecord) Status() string {

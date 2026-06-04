@@ -26,7 +26,9 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   overwrite protection and picker-driven paths.
 - **Escape rope:** `Ctrl-]`, `X`, `X` disconnects every supervised layer below
   you and returns to the outer shell.
-- **Session recording:** view a log your commands and outputs.
+- **Session recording:** supervised sessions keep replayable output transcripts;
+  browse them from the TUI or use `ssherpa session log`, `grep`, `replay`, and
+  `export`.
 - **Presets:** save reusable local port-forward and SOCKS proxy entries, launch
   them later, and stop tracked background sessions by name.
 - **Full Theming:** adjust the colors to your liking and save presets.

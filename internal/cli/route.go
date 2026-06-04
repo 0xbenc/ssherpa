@@ -13,6 +13,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/transcript"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -75,17 +76,19 @@ type forwardFlags struct {
 }
 
 type connectOptions struct {
-	Print     bool
-	Supervise bool
-	StateDir  string
-	Config    string
-	SSHBinary string
-	Watchdog  session.WatchdogOptions
-	Composer  session.ComposerOptions
-	Reconnect session.ReconnectOptions
-	NoColor   bool
-	ThemeName string
-	ThemeFile string
+	Print          bool
+	Supervise      bool
+	StateDir       string
+	Config         string
+	SSHBinary      string
+	Watchdog       session.WatchdogOptions
+	Composer       session.ComposerOptions
+	Reconnect      session.ReconnectOptions
+	NoColor        bool
+	ThemeName      string
+	ThemeFile      string
+	NoRecord       bool
+	RecordMaxBytes int64
 	// Detached and RecordID flow through to session.Options for the
 	// `forward --background` daemon path. Other commands leave these
 	// at their zero values and get the interactive supervisor.
@@ -110,9 +113,11 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 			Hotkey:     flags.ComposerKey,
 			HotkeyName: flags.ComposerKeyName,
 		},
-		NoColor:   flags.NoColor,
-		ThemeName: flags.ThemeName,
-		ThemeFile: flags.ThemeFile,
+		NoColor:        flags.NoColor,
+		ThemeName:      flags.ThemeName,
+		ThemeFile:      flags.ThemeFile,
+		NoRecord:       flags.NoRecord,
+		RecordMaxBytes: flags.RecordMaxBytes,
 	}
 }
 
@@ -540,6 +545,26 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--no-record":
+			flags.NoRecord = true
+		case arg == "--record-max-bytes":
+			value, ok := nextArg(args, &i, stderr, "--record-max-bytes")
+			if !ok {
+				return flags, false
+			}
+			size, err := transcript.ParseSize(value)
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
+		case strings.HasPrefix(arg, "--record-max-bytes="):
+			size, err := transcript.ParseSize(strings.TrimPrefix(arg, "--record-max-bytes="))
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
 		case arg == "--dest" || arg == "--destination":
 			value, ok := nextArg(args, &i, stderr, arg)
 			if !ok {
@@ -725,6 +750,26 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--no-record":
+			flags.NoRecord = true
+		case arg == "--record-max-bytes":
+			value, ok := nextArg(args, &i, stderr, "--record-max-bytes")
+			if !ok {
+				return flags, false
+			}
+			size, err := transcript.ParseSize(value)
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
+		case strings.HasPrefix(arg, "--record-max-bytes="):
+			size, err := transcript.ParseSize(strings.TrimPrefix(arg, "--record-max-bytes="))
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -919,6 +964,26 @@ func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--no-record":
+			flags.NoRecord = true
+		case arg == "--record-max-bytes":
+			value, ok := nextArg(args, &i, stderr, "--record-max-bytes")
+			if !ok {
+				return flags, false
+			}
+			size, err := transcript.ParseSize(value)
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
+		case strings.HasPrefix(arg, "--record-max-bytes="):
+			size, err := transcript.ParseSize(strings.TrimPrefix(arg, "--record-max-bytes="))
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -1439,19 +1504,21 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			fmt.Fprintln(stderr)
 		}
 		return session.RunSupervised(cmd, metadata, session.Options{
-			StateDir:  options.StateDir,
-			Stdin:     os.Stdin,
-			Stdout:    stdout,
-			Stderr:    stderr,
-			Watchdog:  options.Watchdog,
-			Composer:  options.Composer,
-			Overlay:   overlayTransferOptions(options, metadata, stdout, stderr),
-			Reconnect: options.Reconnect,
-			ThemeName: options.ThemeName,
-			ThemeFile: options.ThemeFile,
-			NoColor:   options.NoColor,
-			Detached:  options.Detached,
-			RecordID:  options.RecordID,
+			StateDir:       options.StateDir,
+			Stdin:          os.Stdin,
+			Stdout:         stdout,
+			Stderr:         stderr,
+			Watchdog:       options.Watchdog,
+			Composer:       options.Composer,
+			Overlay:        overlayTransferOptions(options, metadata, stdout, stderr),
+			Reconnect:      options.Reconnect,
+			ThemeName:      options.ThemeName,
+			ThemeFile:      options.ThemeFile,
+			NoColor:        options.NoColor,
+			NoRecord:       options.NoRecord,
+			RecordMaxBytes: options.RecordMaxBytes,
+			Detached:       options.Detached,
+			RecordID:       options.RecordID,
 		})
 	}
 
@@ -1784,6 +1851,12 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.NoComposer {
 		args = append(args, "--no-composer")
+	}
+	if flags.NoRecord {
+		args = append(args, "--no-record")
+	}
+	if flags.RecordMaxBytes > 0 {
+		args = append(args, "--record-max-bytes", strconv.FormatInt(flags.RecordMaxBytes, 10))
 	}
 	if flags.NoKitty {
 		args = append(args, "--no-kitty")

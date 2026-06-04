@@ -17,6 +17,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/ssherpa/internal/transcript"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -64,6 +65,9 @@ Connect Flags:
   --composer-key KEY
                      Open local queued-input composer with KEY; default ctrl-g
   --no-composer      Disable local queued-input composer
+  --no-record        Disable output transcript recording for this supervised session
+  --record-max-bytes BYTES
+                     Cap transcript size; default 50MB
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
   --theme-file PATH  Load UI theme config from PATH
@@ -232,6 +236,8 @@ type connectFlags struct {
 	ComposerKey       byte
 	ComposerKeyName   string
 	NoComposer        bool
+	NoRecord          bool
+	RecordMaxBytes    int64
 	NoKitty           bool
 	NoColor           bool
 	ThemeName         string
@@ -381,7 +387,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			return code
 		case ui.ItemSessions:
-			code, returnHome := runSessionMapViewer(flags, stderr, stderr)
+			code, returnHome := runSessionToolsPicker(flags, stdout, stderr)
 			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}
@@ -550,6 +556,26 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--no-record":
+			flags.NoRecord = true
+		case arg == "--record-max-bytes":
+			value, ok := nextArg(args, &i, stderr, "--record-max-bytes")
+			if !ok {
+				return flags, false
+			}
+			size, err := transcript.ParseSize(value)
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
+		case strings.HasPrefix(arg, "--record-max-bytes="):
+			size, err := transcript.ParseSize(strings.TrimPrefix(arg, "--record-max-bytes="))
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: --record-max-bytes: %v\n", err)
+				return flags, false
+			}
+			flags.RecordMaxBytes = size
 		case arg == "--select":
 			value, ok := nextArg(args, &i, stderr, "--select")
 			if !ok {
@@ -801,6 +827,11 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		scope = append(scope, "composer=off")
 	} else if flags.ComposerKeyName != "" {
 		scope = append(scope, "composer="+flags.ComposerKeyName)
+	}
+	if flags.NoRecord {
+		scope = append(scope, "recording=off")
+	} else if flags.RecordMaxBytes > 0 {
+		scope = append(scope, fmt.Sprintf("record-max=%d", flags.RecordMaxBytes))
 	}
 	if flags.ThemeFile != "" {
 		scope = append(scope, "theme-file="+flags.ThemeFile)
