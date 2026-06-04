@@ -18,13 +18,36 @@ func TestThemeEditorViewHonorsNoColor(t *testing.T) {
 
 	view := model.View()
 	text := view.Content
-	for _, want := range []string{"SSHERPA THEME BUILDER", "SCHEMA", "PREVIEW", "theme.conf", "primary"} {
+	for _, want := range []string{"╭ SSHERPA THEME BUILDER", "Config", "Contrast", "SCHEMA", "PREVIEW", "theme.conf", "primary", "s save"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view = %q, want substring %q", text, want)
 		}
 	}
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("view contains ANSI escapes with NoColor: %q", text)
+	}
+}
+
+func TestThemeEditorViewStaysInsideNarrowFrame(t *testing.T) {
+	model := newThemeEditorModel(ThemeEditorOptions{
+		NoAltScreen: true,
+		NoColor:     true,
+		ConfigPath:  "/tmp/very/long/path/to/ssherpa/theme/config/file/theme.conf",
+		Warning:     "existing theme config did not parse; saving will replace it",
+	})
+	model.width = 52
+	model.height = 18
+
+	text := model.View().Content
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if got := termstyle.VisibleWidth(line); got > 52 {
+			t.Fatalf("line width = %d, want <= 52: %q\n%s", got, line, text)
+		}
+	}
+	for _, want := range []string{"SSHERPA THEME", "Warning", "SCHEMA", "PREVIEW"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view missing %q:\n%s", want, text)
+		}
 	}
 }
 

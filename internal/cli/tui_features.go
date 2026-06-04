@@ -249,14 +249,7 @@ func checkBaseArgs(flags connectFlags) []string {
 }
 
 func runDocsPicker(stdout io.Writer, stderr io.Writer, flags connectFlags) (int, bool) {
-	items := []ui.Item{
-		{Kind: ui.ItemDocs, Token: "bash", Title: "Bash completion", Description: "completions/ssherpa.bash", Badge: "bash"},
-		{Kind: ui.ItemDocs, Token: "zsh", Title: "Zsh completion", Description: "completions/ssherpa.zsh", Badge: "zsh"},
-		{Kind: ui.ItemDocs, Token: "fish", Title: "Fish completion", Description: "completions/ssherpa.fish", Badge: "fish"},
-		{Kind: ui.ItemDocs, Token: "man", Title: "Manpage", Description: "man/ssherpa.1", Badge: "man"},
-		{Kind: ui.ItemDocs, Token: "back", Title: "Back", Description: "return to the home screen", Badge: "back"},
-	}
-	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+	item, ok, err := ui.ChooseManagement(context.Background(), docsArtifactItems(), ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -264,7 +257,11 @@ func runDocsPicker(stdout io.Writer, stderr io.Writer, flags connectFlags) (int,
 		ThemeName:   flags.ThemeName,
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Completions and manpage",
-		Footer:      "enter show path  /  Q back",
+		Mode:        "choose artifact path",
+		Steps:       []string{"artifact", "path"},
+		CurrentStep: 0,
+		Summary:     "4 artifacts",
+		Footer:      "enter show path  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: docs picker failed: %v\n", err)
@@ -279,30 +276,98 @@ func runDocsPicker(stdout io.Writer, stderr io.Writer, flags connectFlags) (int,
 }
 
 func printArtifactInfo(stdout io.Writer, token string) {
-	rel := map[string]string{
-		"bash": "completions/ssherpa.bash",
-		"zsh":  "completions/ssherpa.zsh",
-		"fish": "completions/ssherpa.fish",
-		"man":  "man/ssherpa.1",
-	}[token]
-	if rel == "" {
+	artifact, ok := docsArtifactByToken(token)
+	if !ok {
 		return
 	}
-	abs, err := filepath.Abs(rel)
+	abs, err := filepath.Abs(artifact.RelPath)
 	if err != nil {
-		abs = rel
+		abs = artifact.RelPath
 	}
 	fmt.Fprintf(stdout, "%s\n", abs)
-	switch token {
-	case "bash":
-		fmt.Fprintln(stdout, "source this file or install it as bash completion for ssherpa")
-	case "zsh":
-		fmt.Fprintln(stdout, "install this file as _ssherpa in a directory on fpath")
-	case "fish":
-		fmt.Fprintln(stdout, "install this file as ssherpa.fish in fish vendor_completions.d")
-	case "man":
-		fmt.Fprintln(stdout, "view with: man ./man/ssherpa.1")
+	fmt.Fprintln(stdout, artifact.Hint)
+}
+
+type docsArtifact struct {
+	Token   string
+	Title   string
+	RelPath string
+	Badge   string
+	Group   string
+	Hint    string
+}
+
+func docsArtifacts() []docsArtifact {
+	return []docsArtifact{
+		{
+			Token:   "bash",
+			Title:   "Bash completion",
+			RelPath: "completions/ssherpa.bash",
+			Badge:   "bash",
+			Group:   "Completions",
+			Hint:    "source this file or install it as bash completion for ssherpa",
+		},
+		{
+			Token:   "zsh",
+			Title:   "Zsh completion",
+			RelPath: "completions/ssherpa.zsh",
+			Badge:   "zsh",
+			Group:   "Completions",
+			Hint:    "install this file as _ssherpa in a directory on fpath",
+		},
+		{
+			Token:   "fish",
+			Title:   "Fish completion",
+			RelPath: "completions/ssherpa.fish",
+			Badge:   "fish",
+			Group:   "Completions",
+			Hint:    "install this file as ssherpa.fish in fish vendor_completions.d",
+		},
+		{
+			Token:   "man",
+			Title:   "Manpage",
+			RelPath: "man/ssherpa.1",
+			Badge:   "man",
+			Group:   "Manual",
+			Hint:    "view with: man ./man/ssherpa.1",
+		},
 	}
+}
+
+func docsArtifactItems() []ui.ManagementItem {
+	artifacts := docsArtifacts()
+	items := make([]ui.ManagementItem, 0, len(artifacts)+1)
+	for _, artifact := range artifacts {
+		items = append(items, ui.ManagementItem{
+			Kind:        ui.ItemDocs,
+			Token:       artifact.Token,
+			Title:       artifact.Title,
+			Description: artifact.RelPath,
+			Detail:      artifact.Hint,
+			Group:       artifact.Group,
+			Badge:       artifact.Badge,
+			Action:      "Print this artifact path",
+		})
+	}
+	items = append(items, ui.ManagementItem{
+		Kind:        ui.ItemKind("back"),
+		Token:       "back",
+		Title:       "Back",
+		Description: "return to the home screen",
+		Group:       "Navigation",
+		Badge:       "back",
+		Action:      "Return without printing an artifact path",
+	})
+	return items
+}
+
+func docsArtifactByToken(token string) (docsArtifact, bool) {
+	for _, artifact := range docsArtifacts() {
+		if artifact.Token == token {
+			return artifact, true
+		}
+	}
+	return docsArtifact{}, false
 }
 
 func savedForwardNames(stateDirOverride string) []string {

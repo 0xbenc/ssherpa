@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -74,5 +75,64 @@ func TestCheckSummaries(t *testing.T) {
 	}
 	if got, want := checkCountLabel(1, "forward", "forwards"), "1 forward"; got != want {
 		t.Fatalf("checkCountLabel singular = %q, want %q", got, want)
+	}
+}
+
+func TestDocsArtifactItems(t *testing.T) {
+	items := docsArtifactItems()
+	if len(items) != 5 {
+		t.Fatalf("len(items) = %d, want 5", len(items))
+	}
+	want := []struct {
+		token string
+		group string
+		badge string
+		path  string
+	}{
+		{"bash", "Completions", "bash", "completions/ssherpa.bash"},
+		{"zsh", "Completions", "zsh", "completions/ssherpa.zsh"},
+		{"fish", "Completions", "fish", "completions/ssherpa.fish"},
+		{"man", "Manual", "man", "man/ssherpa.1"},
+		{"back", "Navigation", "back", "return to the home screen"},
+	}
+	for i, w := range want {
+		item := items[i]
+		if item.Token != w.token || item.Group != w.group || item.Badge != w.badge || item.Description != w.path {
+			t.Fatalf("item %d = %+v, want token %q group %q badge %q description %q", i, item, w.token, w.group, w.badge, w.path)
+		}
+	}
+	if items[0].Kind != ui.ItemDocs || items[4].Kind != ui.ItemKind("back") {
+		t.Fatalf("unexpected docs item kinds: %+v", items)
+	}
+	if !strings.Contains(items[0].Action, "Print") {
+		t.Fatalf("artifact action = %q", items[0].Action)
+	}
+}
+
+func TestDocsArtifactByTokenAndPrintInfo(t *testing.T) {
+	artifact, ok := docsArtifactByToken("zsh")
+	if !ok {
+		t.Fatalf("docsArtifactByToken zsh returned false")
+	}
+	if artifact.RelPath != "completions/ssherpa.zsh" || !strings.Contains(artifact.Hint, "fpath") {
+		t.Fatalf("artifact = %+v", artifact)
+	}
+	if _, ok := docsArtifactByToken("missing"); ok {
+		t.Fatalf("docsArtifactByToken missing returned true")
+	}
+
+	var out bytes.Buffer
+	printArtifactInfo(&out, "man")
+	text := out.String()
+	for _, want := range []string{"man/ssherpa.1", "view with: man ./man/ssherpa.1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("artifact output missing %q:\n%s", want, text)
+		}
+	}
+
+	out.Reset()
+	printArtifactInfo(&out, "missing")
+	if out.Len() != 0 {
+		t.Fatalf("missing artifact output = %q, want empty", out.String())
 	}
 }

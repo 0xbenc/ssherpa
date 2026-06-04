@@ -296,12 +296,16 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 	}
 
 	for {
-		item, ok, err := ui.Pick(context.Background(), authkeysMenuItems(), ui.PickOptions{
+		item, ok, err := ui.ChooseManagement(context.Background(), authkeysMenuItems(), ui.ManagementChooserOptions{
 			Input:       os.Stdin,
 			Output:      stderr,
 			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 			Title:       "authorized_keys manager",
-			Footer:      "enter select  /  type filter  /  Q back",
+			Mode:        "manage authorized_keys",
+			Steps:       []string{"action", "input", "confirm"},
+			CurrentStep: 0,
+			Summary:     path,
+			Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)
@@ -390,33 +394,22 @@ func pickAuthkeysFingerprint(path string, stderr io.Writer) (string, bool, int) 
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return "", false, 1
 	}
-	var items []ui.Item
-	for _, key := range doc.Keys() {
-		fp, err := key.SHA256Fingerprint()
-		if err != nil {
-			continue
-		}
-		title := fp
-		if key.Comment != "" {
-			title = key.Comment
-		}
-		items = append(items, ui.Item{
-			Kind:        ui.ItemAlias,
-			Token:       fp,
-			Title:       title,
-			Description: key.Type + " " + fp,
-		})
-	}
+	items := authkeysFingerprintItems(doc.Keys())
 	if len(items) == 0 {
 		fmt.Fprintf(stderr, "[skipped] no keys found in %s\n", path)
 		return "", false, 0
 	}
 
-	item, ok, err := ui.Pick(context.Background(), items, ui.PickOptions{
+	item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		Title:       "Select key to delete",
+		Mode:        "choose key fingerprint",
+		Steps:       []string{"key", "confirm"},
+		CurrentStep: 0,
+		Summary:     authkeysCountLabel(len(items), "key", "keys"),
+		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)
@@ -429,14 +422,79 @@ func pickAuthkeysFingerprint(path string, stderr io.Writer) (string, bool, int) 
 	return item.Token, true, 0
 }
 
-func authkeysMenuItems() []ui.Item {
-	return []ui.Item{
-		{Kind: ui.ItemAuthkeys, Token: "add", Title: "Add single key (paste)", Description: "append one public key"},
-		{Kind: ui.ItemAuthkeys, Token: "merge", Title: "Add keys from directory (merge)", Description: "read authorized_keys/ or *.pub"},
-		{Kind: ui.ItemAuthkeys, Token: "replace", Title: "Replace keys from directory (overwrite)", Description: "backup, then replace file contents"},
-		{Kind: ui.ItemAuthkeys, Token: "delete", Title: "Delete keys", Description: "select one key to remove"},
-		{Kind: ui.ItemAuthkeys, Token: "back", Title: "Back", Description: "return to the previous menu"},
+func authkeysMenuItems() []ui.ManagementItem {
+	return []ui.ManagementItem{
+		{Kind: ui.ItemAuthkeys, Token: "add", Title: "Add single key (paste)", Description: "append one public key", Group: "Add Keys", Badge: "add", Action: "Paste one public key and append it"},
+		{Kind: ui.ItemAuthkeys, Token: "merge", Title: "Add keys from directory (merge)", Description: "read authorized_keys/ or *.pub", Group: "Add Keys", Badge: "merge", Action: "Merge keys from a directory without removing existing keys"},
+		{Kind: ui.ItemConfirmDelete, Token: "replace", Title: "Replace keys from directory (overwrite)", Description: "backup, then replace file contents", Group: "Overwrite", Badge: "repl", Action: "Replace authorized_keys after confirmation"},
+		{Kind: ui.ItemConfirmDelete, Token: "delete", Title: "Delete keys", Description: "select one key to remove", Group: "Remove", Badge: "delete", Action: "Choose one key fingerprint to delete"},
+		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the previous menu", Group: "Navigation", Badge: "back", Action: "Return without changing authorized_keys"},
 	}
+}
+
+func authkeysFingerprintItems(keys []authkeys.AuthorizedKey) []ui.ManagementItem {
+	items := make([]ui.ManagementItem, 0, len(keys))
+	for _, key := range keys {
+		fp, err := key.SHA256Fingerprint()
+		if err != nil {
+			continue
+		}
+		title := fp
+		if key.Comment != "" {
+			title = key.Comment
+		}
+		items = append(items, ui.ManagementItem{
+			Kind:        ui.ItemConfirmDelete,
+			Token:       fp,
+			Title:       title,
+			Description: key.Type + "  " + fp,
+			Detail:      authkeysKeyDetail(key),
+			Group:       "Authorized Keys",
+			Badge:       authkeysKeyBadge(key.Type),
+			Action:      "Delete this key after confirmation",
+		})
+	}
+	return items
+}
+
+func authkeysKeyDetail(key authkeys.AuthorizedKey) string {
+	var parts []string
+	if key.Source != "" {
+		if key.Line > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d", key.Source, key.Line))
+		} else {
+			parts = append(parts, key.Source)
+		}
+	}
+	if key.Options != "" {
+		parts = append(parts, "options="+key.Options)
+	}
+	if key.Comment != "" {
+		parts = append(parts, "comment="+key.Comment)
+	}
+	return strings.Join(parts, "  ")
+}
+
+func authkeysKeyBadge(keyType string) string {
+	keyType = strings.TrimPrefix(strings.TrimSpace(keyType), "ssh-")
+	keyType = strings.TrimPrefix(keyType, "sk-")
+	switch {
+	case strings.Contains(keyType, "ed25519"):
+		return "ed255"
+	case strings.Contains(keyType, "ecdsa"):
+		return "ecdsa"
+	case strings.Contains(keyType, "rsa"):
+		return "rsa"
+	default:
+		return "key"
+	}
+}
+
+func authkeysCountLabel(count int, singular string, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
 }
 
 func parseAuthkeysMenuFlags(args []string, stderr io.Writer) (authkeysFlags, bool) {
