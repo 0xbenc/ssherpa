@@ -864,23 +864,43 @@ func TestRunSupervisedOverlayInbandSendWritesRemoteFile(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatalf("interactive shell did not become ready; stderr=%q stdout=%q", stderr.String(), stdout.String())
 	}
-	if _, err := userPTY.Write(append([]byte{OverlayHotkey, 's'}, []byte("exit\n")...)); err != nil {
-		t.Fatalf("write overlay input: %v", err)
+	if _, err := userPTY.Write([]byte{OverlayHotkey}); err != nil {
+		t.Fatalf("write overlay hotkey: %v", err)
+	}
+	waitForBufferContains(t, stdout, "s send", 3*time.Second, func() string {
+		return "stderr=" + stderr.String()
+	})
+	if _, err := userPTY.Write([]byte{'s'}); err != nil {
+		t.Fatalf("write overlay send action: %v", err)
+	}
+
+	var result InbandSendResult
+	select {
+	case err := <-callbackErrs:
+		_, _ = userPTY.Write([]byte("exit\n"))
+		t.Fatalf("overlay callback error: %s; stderr=%q stdout=%q", err, stderr.String(), stdout.String())
+	case result = <-results:
+	case <-time.After(35 * time.Second):
+		_, _ = userPTY.Write([]byte{0x03})
+		_, _ = userPTY.Write([]byte("exit\n"))
+		t.Fatalf("in-band result was not reported; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+
+	if result.RemotePath != remotePath || result.Size != int64(len("hello over pty")) || result.SHA256 == "" {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := userPTY.Write([]byte("exit\n")); err != nil {
+		t.Fatalf("write shell exit: %v", err)
 	}
 
 	var code int
 	select {
 	case code = <-done:
-	case <-time.After(35 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("RunSupervised did not return after in-band send; stderr=%q stdout=%q", stderr.String(), stdout.String())
 	}
 	if code != 0 {
 		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
-	}
-	select {
-	case err := <-callbackErrs:
-		t.Fatalf("overlay callback error: %s; stderr=%q stdout=%q", err, stderr.String(), stdout.String())
-	default:
 	}
 	got, err := os.ReadFile(remotePath)
 	if err != nil {
@@ -888,14 +908,6 @@ func TestRunSupervisedOverlayInbandSendWritesRemoteFile(t *testing.T) {
 	}
 	if string(got) != "hello over pty" {
 		t.Fatalf("remote payload = %q", got)
-	}
-	select {
-	case result := <-results:
-		if result.RemotePath != remotePath || result.Size != int64(len("hello over pty")) || result.SHA256 == "" {
-			t.Fatalf("result = %#v", result)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("in-band result was not reported")
 	}
 	if strings.Contains(stdout.String(), "aGVsbG8") {
 		t.Fatalf("stdout leaked base64 payload: %q", stdout.String())
@@ -1516,6 +1528,22 @@ func (b *notifyingBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func waitForBufferContains(t *testing.T, b *notifyingBuffer, needle string, timeout time.Duration, detail func() string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(b.String(), needle) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	extra := ""
+	if detail != nil {
+		extra = "; " + detail()
+	}
+	t.Fatalf("buffer did not contain %q within %s%s; stdout=%q", needle, timeout, extra, b.String())
 }
 
 func fixedClock() func() time.Time {
