@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 	"github.com/0xbenc/ssherpa/internal/transcript"
 	"github.com/0xbenc/ssherpa/internal/ui"
+	"github.com/charmbracelet/x/term"
 )
 
 const sessionUsage = `Usage:
@@ -526,7 +528,12 @@ func runTranscriptActionMenu(stateDir string, record state.SessionRecord, stdout
 		if !ok {
 			return 2, false
 		}
-		if err := transcript.Replay(stderr, rec, 1, false); err != nil {
+		theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{NoColor: false})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1, false
+		}
+		if err := replayRawWithControls(os.Stdin, stderr, rec, theme); err != nil {
 			fmt.Fprintf(stderr, "ssherpa: replay transcript: %v\n", err)
 			return 1, false
 		}
@@ -571,6 +578,358 @@ func transcriptActionItems(record state.SessionRecord) []ui.ManagementItem {
 	}
 	remove := ui.ManagementItem{Kind: ui.ItemConfirmDelete, Token: "remove-import", Title: "Remove imported transcript", Description: "delete imported session record and transcript file", Group: "Remove", Badge: "delete", Action: "Remove imported transcript after confirmation"}
 	return append(items[:3], append([]ui.ManagementItem{remove}, items[3:]...)...)
+}
+
+const replayOverlayHotkey = byte(0x1d)
+
+type replayCommand int
+
+const (
+	replayCommandNone replayCommand = iota
+	replayCommandResume
+	replayCommandRestart
+	replayCommandBack
+)
+
+type replayKeyReader interface {
+	ReadKey() (byte, bool, error)
+}
+
+type replayFileKeyReader struct {
+	file *os.File
+}
+
+func (r replayFileKeyReader) ReadKey() (byte, bool, error) {
+	if r.file == nil {
+		return 0, false, nil
+	}
+	var buf [32]byte
+	n, err := r.file.Read(buf[:])
+	if n > 0 {
+		return buf[0], true, nil
+	}
+	if err == nil || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, io.EOF) {
+		return 0, false, nil
+	}
+	return 0, false, err
+}
+
+type replayControlOptions struct {
+	Speed       float64
+	NoDelay     bool
+	Sleep       func(time.Duration)
+	ShowOverlay func(replayProgress) replayCommand
+}
+
+type replayProgress struct {
+	Index int
+	Total int
+	Next  transcript.Frame
+}
+
+func replayRawWithControls(stdin *os.File, output io.Writer, rec transcript.Recording, theme termstyle.Theme) error {
+	restore, interactive, err := prepareReplayTerminal(stdin)
+	if err != nil {
+		return err
+	}
+	defer restore()
+	if !interactive {
+		return transcript.Replay(output, rec, 1, false)
+	}
+	reader := replayFileKeyReader{file: stdin}
+	return replayRawControlled(output, rec, reader, replayControlOptions{
+		Speed: 1,
+		ShowOverlay: func(progress replayProgress) replayCommand {
+			return showReplayOverlay(output, stdin, theme, progress)
+		},
+	})
+}
+
+func replayRawControlled(output io.Writer, rec transcript.Recording, keys replayKeyReader, opts replayControlOptions) error {
+	frames := replayOutputFrames(rec)
+	if len(frames) == 0 {
+		return nil
+	}
+	speed := opts.Speed
+	if speed <= 0 {
+		speed = 1
+	}
+	sleep := opts.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	showOverlay := opts.ShowOverlay
+	if showOverlay == nil {
+		showOverlay = func(replayProgress) replayCommand { return replayCommandResume }
+	}
+
+	index := 0
+	var previous float64
+	var delayRemaining time.Duration
+	haveDelay := false
+	for index < len(frames) {
+		progress := replayProgress{Index: index, Total: len(frames), Next: frames[index]}
+		cmd, err := replayPollCommand(keys, showOverlay, progress)
+		if err != nil {
+			return err
+		}
+		switch cmd {
+		case replayCommandRestart:
+			index = 0
+			previous = 0
+			delayRemaining = 0
+			haveDelay = false
+			_, _ = io.WriteString(output, "\x1b[0m\x1b[2J\x1b[H")
+			continue
+		case replayCommandBack:
+			return nil
+		}
+
+		if !haveDelay {
+			delayRemaining = replayFrameDelay(frames[index], previous, speed, opts.NoDelay)
+			haveDelay = true
+		}
+		if delayRemaining > 0 {
+			var waitCmd replayCommand
+			waitCmd, delayRemaining, err = replayWait(delayRemaining, sleep, keys, showOverlay, progress)
+			if err != nil {
+				return err
+			}
+			switch waitCmd {
+			case replayCommandRestart:
+				index = 0
+				previous = 0
+				delayRemaining = 0
+				haveDelay = false
+				_, _ = io.WriteString(output, "\x1b[0m\x1b[2J\x1b[H")
+				continue
+			case replayCommandBack:
+				return nil
+			}
+			if delayRemaining > 0 {
+				continue
+			}
+		}
+
+		if _, err := io.WriteString(output, frames[index].Data); err != nil {
+			return err
+		}
+		previous = frames[index].Offset
+		index++
+		haveDelay = false
+	}
+	return nil
+}
+
+func replayOutputFrames(rec transcript.Recording) []transcript.Frame {
+	frames := make([]transcript.Frame, 0, len(rec.Frames))
+	for _, frame := range rec.Frames {
+		if frame.Stream == "o" {
+			frames = append(frames, frame)
+		}
+	}
+	return frames
+}
+
+func replayFrameDelay(frame transcript.Frame, previous float64, speed float64, noDelay bool) time.Duration {
+	if noDelay {
+		return 0
+	}
+	delay := frame.Offset - previous
+	if delay <= 0 {
+		return 0
+	}
+	return time.Duration(delay / speed * float64(time.Second))
+}
+
+func replayWait(remaining time.Duration, sleep func(time.Duration), keys replayKeyReader, showOverlay func(replayProgress) replayCommand, progress replayProgress) (replayCommand, time.Duration, error) {
+	const tick = 20 * time.Millisecond
+	for remaining > 0 {
+		cmd, err := replayPollCommand(keys, showOverlay, progress)
+		if err != nil || cmd != replayCommandNone {
+			return cmd, remaining, err
+		}
+		step := remaining
+		if step > tick {
+			step = tick
+		}
+		started := time.Now()
+		sleep(step)
+		elapsed := time.Since(started)
+		if elapsed <= 0 {
+			elapsed = step
+		}
+		remaining -= elapsed
+	}
+	return replayCommandNone, 0, nil
+}
+
+func replayPollCommand(keys replayKeyReader, showOverlay func(replayProgress) replayCommand, progress replayProgress) (replayCommand, error) {
+	if keys == nil {
+		return replayCommandNone, nil
+	}
+	key, ok, err := keys.ReadKey()
+	if err != nil || !ok {
+		return replayCommandNone, err
+	}
+	switch key {
+	case replayOverlayHotkey:
+		return showOverlay(progress), nil
+	case 0x03:
+		return replayCommandBack, nil
+	default:
+		return replayCommandNone, nil
+	}
+}
+
+func prepareReplayTerminal(stdin *os.File) (func(), bool, error) {
+	if stdin == nil || !term.IsTerminal(stdin.Fd()) {
+		return func() {}, false, nil
+	}
+	fd := int(stdin.Fd())
+	state, err := term.MakeRaw(uintptr(fd))
+	if err != nil {
+		return func() {}, false, err
+	}
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		_ = term.Restore(uintptr(fd), state)
+		return func() {}, false, err
+	}
+	restore := func() {
+		_ = syscall.SetNonblock(fd, false)
+		_ = term.Restore(uintptr(fd), state)
+	}
+	return restore, true, nil
+}
+
+type replayOverlayFrame struct {
+	terminal bool
+	startRow int
+	lines    int
+}
+
+func showReplayOverlay(output io.Writer, stdin *os.File, theme termstyle.Theme, progress replayProgress) replayCommand {
+	frame := drawReplayOverlay(output, stdin, theme, progress)
+	defer clearReplayOverlay(output, frame)
+	reader := replayFileKeyReader{file: stdin}
+	for {
+		key, ok, err := reader.ReadKey()
+		if err != nil {
+			return replayCommandBack
+		}
+		if !ok {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		switch key {
+		case 'r', 'R':
+			return replayCommandRestart
+		case 'm', 'M', 'b', 'B', 0x03:
+			return replayCommandBack
+		case ' ', 'p', 'P', 'c', 'C', 'q', 'Q', '\r', '\n', 0x1b, replayOverlayHotkey:
+			return replayCommandResume
+		}
+	}
+}
+
+func drawReplayOverlay(output io.Writer, stdin *os.File, theme termstyle.Theme, progress replayProgress) replayOverlayFrame {
+	next := "done"
+	if progress.Index < progress.Total {
+		next = fmt.Sprintf("next frame %d/%d at %s", progress.Index+1, progress.Total, replayOffset(progress.Next.Offset))
+	}
+	lines := []string{
+		theme.Style(termstyle.RoleForeground, "ssherpa raw replay"),
+		theme.Style(termstyle.RoleWarning, "Playback is paused while this local overlay is open."),
+		theme.Style(termstyle.RoleMuted, next),
+		theme.Style(termstyle.RoleMuted, "space/q resume   r restart   m menus   Ctrl-C stop"),
+	}
+	width, height, ok := replayOverlaySize(stdin)
+	if !ok {
+		fmt.Fprintln(output)
+		for _, line := range lines {
+			fmt.Fprintln(output, termstyle.Strip(line))
+		}
+		return replayOverlayFrame{}
+	}
+	visibleLines := replayMin(len(lines), replayMax(3, height-2))
+	startRow := replayMax(1, height-visibleLines+1)
+	fmt.Fprint(output, "\x1b7\x1b[?25l")
+	for i := 0; i < visibleLines; i++ {
+		row := startRow + i
+		fmt.Fprintf(output, "\x1b[%d;1H\x1b[2K%s", row, replayTruncateLine(lines[i], width))
+	}
+	return replayOverlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
+}
+
+func clearReplayOverlay(output io.Writer, frame replayOverlayFrame) {
+	if !frame.terminal {
+		fmt.Fprintln(output, "----- ssherpa replay resumed -----")
+		return
+	}
+	for i := 0; i < frame.lines; i++ {
+		fmt.Fprintf(output, "\x1b[%d;1H\x1b[2K", frame.startRow+i)
+	}
+	fmt.Fprint(output, "\x1b8\x1b[?25h")
+}
+
+func replayOverlaySize(stdin *os.File) (int, int, bool) {
+	if stdin == nil || !term.IsTerminal(stdin.Fd()) {
+		return 80, 24, false
+	}
+	width, height, err := term.GetSize(stdin.Fd())
+	if err != nil || width <= 0 || height <= 0 {
+		return 80, 24, true
+	}
+	return width, height, true
+}
+
+func replayTruncateLine(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if termstyle.VisibleWidth(value) <= width {
+		return value
+	}
+	plain := termstyle.Strip(value)
+	if len(plain) <= width {
+		return plain
+	}
+	if width == 1 {
+		return "…"
+	}
+	runes := []rune(plain)
+	if len(runes) <= width {
+		return plain
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func replayOffset(offset float64) string {
+	if offset < 0 {
+		offset = 0
+	}
+	total := int(offset)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+func replayMin(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func replayMax(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func runTranscriptBundleExportTUI(stateDir string, record state.SessionRecord, stdout io.Writer, stderr io.Writer) int {

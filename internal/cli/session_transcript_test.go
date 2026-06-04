@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 	"github.com/0xbenc/ssherpa/internal/transcript"
 )
 
@@ -162,6 +163,74 @@ func TestTranscriptActionItemsOmitRedundantCleanReplay(t *testing.T) {
 	if !containsToken(importedTokens, "remove-import") {
 		t.Fatalf("imported tokens = %#v, want remove-import", importedTokens)
 	}
+}
+
+func TestReplayRawControlledRestartBackAndCtrlC(t *testing.T) {
+	rec := transcript.Recording{Frames: []transcript.Frame{
+		{Offset: 0, Stream: "o", Data: "one"},
+		{Offset: 1, Stream: "o", Data: "two"},
+	}}
+
+	var restarted bytes.Buffer
+	err := replayRawControlled(&restarted, rec, &scriptedReplayKeys{
+		events: []scriptedReplayKey{{}, {key: replayOverlayHotkey, ok: true}},
+	}, replayControlOptions{
+		NoDelay: true,
+		ShowOverlay: func(replayProgress) replayCommand {
+			return replayCommandRestart
+		},
+	})
+	if err != nil {
+		t.Fatalf("restart replay returned error: %v", err)
+	}
+	if got := termstyle.Strip(restarted.String()); got != "oneonetwo" {
+		t.Fatalf("restart replay output = %q, want first frame then restarted replay", got)
+	}
+
+	var backed bytes.Buffer
+	err = replayRawControlled(&backed, rec, &scriptedReplayKeys{
+		events: []scriptedReplayKey{{}, {key: replayOverlayHotkey, ok: true}},
+	}, replayControlOptions{
+		NoDelay: true,
+		ShowOverlay: func(replayProgress) replayCommand {
+			return replayCommandBack
+		},
+	})
+	if err != nil {
+		t.Fatalf("back replay returned error: %v", err)
+	}
+	if got := termstyle.Strip(backed.String()); got != "one" {
+		t.Fatalf("back replay output = %q, want only first frame before returning to menus", got)
+	}
+
+	var interrupted bytes.Buffer
+	err = replayRawControlled(&interrupted, rec, &scriptedReplayKeys{
+		events: []scriptedReplayKey{{}, {key: 0x03, ok: true}},
+	}, replayControlOptions{NoDelay: true})
+	if err != nil {
+		t.Fatalf("ctrl-c replay returned error: %v", err)
+	}
+	if got := termstyle.Strip(interrupted.String()); got != "one" {
+		t.Fatalf("ctrl-c replay output = %q, want only first frame before stop", got)
+	}
+}
+
+type scriptedReplayKey struct {
+	key byte
+	ok  bool
+}
+
+type scriptedReplayKeys struct {
+	events []scriptedReplayKey
+}
+
+func (s *scriptedReplayKeys) ReadKey() (byte, bool, error) {
+	if len(s.events) == 0 {
+		return 0, false, nil
+	}
+	event := s.events[0]
+	s.events = s.events[1:]
+	return event.key, event.ok, nil
 }
 
 func containsToken(tokens []string, want string) bool {
