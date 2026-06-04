@@ -1,7 +1,9 @@
 package transcript
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -206,6 +208,38 @@ type Recording struct {
 	Frames []Frame
 }
 
+type BundleManifest struct {
+	BundleVersion       int       `json:"bundle_version"`
+	ExportedAt          time.Time `json:"exported_at"`
+	ExportedByMachineID string    `json:"exported_by_machine_id,omitempty"`
+	SourceMachineID     string    `json:"source_machine_id,omitempty"`
+	SourceSessionID     string    `json:"source_session_id"`
+	Target              string    `json:"target,omitempty"`
+	Route               []string  `json:"route,omitempty"`
+	TranscriptSHA256    string    `json:"transcript_sha256"`
+	RecordSHA256        string    `json:"record_sha256"`
+}
+
+type BundleExportResult struct {
+	Path     string         `json:"path"`
+	Manifest BundleManifest `json:"manifest"`
+	Bytes    int64          `json:"bytes"`
+}
+
+type BundleImportResult struct {
+	Record         state.SessionRecord `json:"record"`
+	Manifest       BundleManifest      `json:"manifest"`
+	OriginClass    string              `json:"origin_class"`
+	BundleSHA256   string              `json:"bundle_sha256"`
+	TranscriptPath string              `json:"transcript_path"`
+}
+
+type BundlePreview struct {
+	Manifest     BundleManifest `json:"manifest"`
+	BundleSHA256 string         `json:"bundle_sha256"`
+	Bytes        int64          `json:"bytes"`
+}
+
 func Read(path string) (Recording, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -213,6 +247,243 @@ func Read(path string) (Recording, error) {
 	}
 	defer file.Close()
 	return read(file)
+}
+
+func ExportBundle(stateDir string, record state.SessionRecord, identity state.MachineIdentity, outputPath string, now time.Time) (BundleExportResult, error) {
+	outputPath = strings.TrimSpace(outputPath)
+	if outputPath == "" {
+		return BundleExportResult{}, errors.New("output path is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	transcriptPath := PathForRecord(stateDir, record)
+	transcriptBytes, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		return BundleExportResult{}, fmt.Errorf("read transcript: %w", err)
+	}
+	recordForExport := record
+	if recordForExport.Transcript != nil {
+		copySpec := *recordForExport.Transcript
+		copySpec.Path = "transcript.cast"
+		recordForExport.Transcript = &copySpec
+	}
+	recordBytes, err := json.MarshalIndent(recordForExport, "", "  ")
+	if err != nil {
+		return BundleExportResult{}, fmt.Errorf("marshal session record: %w", err)
+	}
+	recordBytes = append(recordBytes, '\n')
+	sourceMachineID := identity.MachineID
+	sourceSessionID := record.ID
+	if record.RecordedBy != nil && strings.TrimSpace(record.RecordedBy.MachineID) != "" {
+		sourceMachineID = record.RecordedBy.MachineID
+	}
+	if record.Import != nil {
+		if strings.TrimSpace(record.Import.SourceMachineID) != "" {
+			sourceMachineID = record.Import.SourceMachineID
+		}
+		if strings.TrimSpace(record.Import.SourceSessionID) != "" {
+			sourceSessionID = record.Import.SourceSessionID
+		}
+	}
+	manifest := BundleManifest{
+		BundleVersion:       1,
+		ExportedAt:          now.UTC(),
+		ExportedByMachineID: identity.MachineID,
+		SourceMachineID:     sourceMachineID,
+		SourceSessionID:     sourceSessionID,
+		Target:              record.TargetAlias,
+		Route:               append([]string(nil), record.Route...),
+		TranscriptSHA256:    state.SHA256Hex(transcriptBytes),
+		RecordSHA256:        state.SHA256Hex(recordBytes),
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return BundleExportResult{}, fmt.Errorf("marshal manifest: %w", err)
+	}
+	manifestBytes = append(manifestBytes, '\n')
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		return BundleExportResult{}, fmt.Errorf("create export directory: %w", err)
+	}
+	file, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return BundleExportResult{}, fmt.Errorf("create bundle: %w", err)
+	}
+	zw := zip.NewWriter(file)
+	for _, entry := range []struct {
+		name string
+		data []byte
+	}{
+		{"manifest.json", manifestBytes},
+		{"session.json", recordBytes},
+		{"transcript.cast", transcriptBytes},
+	} {
+		w, err := zw.Create(entry.name)
+		if err != nil {
+			_ = zw.Close()
+			_ = file.Close()
+			return BundleExportResult{}, fmt.Errorf("create bundle entry %s: %w", entry.name, err)
+		}
+		if _, err := w.Write(entry.data); err != nil {
+			_ = zw.Close()
+			_ = file.Close()
+			return BundleExportResult{}, fmt.Errorf("write bundle entry %s: %w", entry.name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		_ = file.Close()
+		return BundleExportResult{}, fmt.Errorf("finalize bundle: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return BundleExportResult{}, fmt.Errorf("close bundle: %w", err)
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		return BundleExportResult{}, fmt.Errorf("stat bundle: %w", err)
+	}
+	return BundleExportResult{Path: outputPath, Manifest: manifest, Bytes: info.Size()}, nil
+}
+
+func ImportBundle(stateDir string, bundlePath string, identity state.MachineIdentity, now time.Time) (BundleImportResult, error) {
+	bundleBytes, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return BundleImportResult{}, fmt.Errorf("read bundle: %w", err)
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	reader, err := zip.NewReader(bytes.NewReader(bundleBytes), int64(len(bundleBytes)))
+	if err != nil {
+		return BundleImportResult{}, fmt.Errorf("open bundle: %w", err)
+	}
+	manifestBytes, err := readZipEntry(reader, "manifest.json")
+	if err != nil {
+		return BundleImportResult{}, err
+	}
+	recordBytes, err := readZipEntry(reader, "session.json")
+	if err != nil {
+		return BundleImportResult{}, err
+	}
+	transcriptBytes, err := readZipEntry(reader, "transcript.cast")
+	if err != nil {
+		return BundleImportResult{}, err
+	}
+	var manifest BundleManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return BundleImportResult{}, fmt.Errorf("parse bundle manifest: %w", err)
+	}
+	if manifest.BundleVersion != 1 {
+		return BundleImportResult{}, fmt.Errorf("unsupported bundle version %d", manifest.BundleVersion)
+	}
+	if manifest.TranscriptSHA256 != "" && manifest.TranscriptSHA256 != state.SHA256Hex(transcriptBytes) {
+		return BundleImportResult{}, errors.New("transcript hash mismatch")
+	}
+	if manifest.RecordSHA256 != "" && manifest.RecordSHA256 != state.SHA256Hex(recordBytes) {
+		return BundleImportResult{}, errors.New("session record hash mismatch")
+	}
+	var source state.SessionRecord
+	if err := json.Unmarshal(recordBytes, &source); err != nil {
+		return BundleImportResult{}, fmt.Errorf("parse bundled session record: %w", err)
+	}
+	sourceID := strings.TrimSpace(manifest.SourceSessionID)
+	if sourceID == "" {
+		sourceID = source.ID
+	}
+	newID := state.NewSessionID(now.UTC())
+	localTranscriptPath := Path(stateDir, newID)
+	if err := os.MkdirAll(filepath.Dir(localTranscriptPath), 0o700); err != nil {
+		return BundleImportResult{}, fmt.Errorf("create sessions directory: %w", err)
+	}
+	if err := os.WriteFile(localTranscriptPath, transcriptBytes, 0o600); err != nil {
+		return BundleImportResult{}, fmt.Errorf("write imported transcript: %w", err)
+	}
+	record := source
+	record.ID = newID
+	record.ParentID = ""
+	record.LocalPID = 0
+	record.SSHPID = 0
+	record.Inherited = false
+	record.RemoteMirror = false
+	if record.Transcript == nil {
+		record.Transcript = &state.TranscriptSpec{Format: FormatAsciicast}
+	}
+	record.Transcript.Path = localTranscriptPath
+	record.Transcript.Bytes = int64(len(transcriptBytes))
+	originClass := state.OriginClass(identity, manifest.SourceMachineID)
+	record.Import = &state.ImportSpec{
+		ImportedAt:      now.UTC(),
+		ImportedBy:      identity.MachineID,
+		SourceMachineID: manifest.SourceMachineID,
+		SourceSessionID: sourceID,
+		OriginClass:     originClass,
+		BundleSHA256:    state.SHA256Hex(bundleBytes),
+	}
+	if record.RecordedBy == nil && strings.TrimSpace(manifest.SourceMachineID) != "" {
+		record.RecordedBy = &state.RecordingOrigin{
+			MachineID:      manifest.SourceMachineID,
+			IdentitySchema: state.IdentitySchemaVersion,
+		}
+	}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		return BundleImportResult{}, err
+	}
+	return BundleImportResult{
+		Record:         record,
+		Manifest:       manifest,
+		OriginClass:    originClass,
+		BundleSHA256:   record.Import.BundleSHA256,
+		TranscriptPath: localTranscriptPath,
+	}, nil
+}
+
+func PreviewBundle(bundlePath string) (BundlePreview, error) {
+	bundleBytes, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return BundlePreview{}, fmt.Errorf("read bundle: %w", err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(bundleBytes), int64(len(bundleBytes)))
+	if err != nil {
+		return BundlePreview{}, fmt.Errorf("open bundle: %w", err)
+	}
+	manifestBytes, err := readZipEntry(reader, "manifest.json")
+	if err != nil {
+		return BundlePreview{}, err
+	}
+	var manifest BundleManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return BundlePreview{}, fmt.Errorf("parse bundle manifest: %w", err)
+	}
+	return BundlePreview{
+		Manifest:     manifest,
+		BundleSHA256: state.SHA256Hex(bundleBytes),
+		Bytes:        int64(len(bundleBytes)),
+	}, nil
+}
+
+func PathForRecord(stateDir string, record state.SessionRecord) string {
+	if record.Transcript != nil && strings.TrimSpace(record.Transcript.Path) != "" {
+		return record.Transcript.Path
+	}
+	return Path(stateDir, record.ID)
+}
+
+func readZipEntry(reader *zip.Reader, name string) ([]byte, error) {
+	for _, file := range reader.File {
+		if file.Name != name {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return nil, fmt.Errorf("open bundle entry %s: %w", name, err)
+		}
+		defer rc.Close()
+		data, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("read bundle entry %s: %w", name, err)
+		}
+		return data, nil
+	}
+	return nil, fmt.Errorf("bundle missing %s", name)
 }
 
 func read(r io.Reader) (Recording, error) {

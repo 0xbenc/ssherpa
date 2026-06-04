@@ -204,7 +204,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 	case "theme":
 		return runTheme(args[1:], stdout, stderr)
 	case "session":
-		return runSession(args[1:], stdout, stderr)
+		return runSession(args[1:], stdout, stderr, build)
 	case "version", "--version", "-v":
 		if len(args) > 1 {
 			fmt.Fprintf(stderr, "ssherpa: version does not accept arguments: %s\n", strings.Join(args[1:], " "))
@@ -369,7 +369,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			if flags.StateDir != "" {
 				stopArgs = append(stopArgs, "--state-dir", flags.StateDir)
 			}
-			code := runSession(stopArgs, stdout, stderr)
+			code := runSession(stopArgs, stdout, stderr, build)
 			if code == 0 && flags.Select == "" {
 				continue
 			}
@@ -387,7 +387,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			}
 			return code
 		case ui.ItemSessions:
-			code, returnHome := runSessionToolsPicker(flags, stdout, stderr)
+			code, returnHome := runSessionToolsPicker(flags, stdout, stderr, build)
 			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}

@@ -56,6 +56,32 @@ type ShowOptions struct {
 	View        ViewOptions
 }
 
+type IdentityOptions struct {
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	StateDir    string
+	Identity    state.MachineIdentity
+	Theme       termstyle.Theme
+}
+
+type MetadataOptions struct {
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	Record      state.SessionRecord
+	Theme       termstyle.Theme
+}
+
+type ListOptions struct {
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	StateDir    string
+	Records     []state.SessionRecord
+	Theme       termstyle.Theme
+}
+
 func MapLines(stateDir string, records []state.SessionRecord, currentID string) []string {
 	return MapLinesWithOptions(stateDir, records, MapOptions{CurrentID: currentID})
 }
@@ -166,6 +192,633 @@ func ShowMap(ctx context.Context, opts ShowOptions) error {
 	return err
 }
 
+func ShowIdentity(ctx context.Context, opts IdentityOptions) error {
+	theme := opts.Theme
+	if theme.Codes == nil {
+		theme = termstyle.TerminalTheme()
+	}
+	model := identityModel{
+		noAltScreen: opts.NoAltScreen,
+		stateDir:    opts.StateDir,
+		identity:    opts.Identity,
+		theme:       theme,
+		width:       86,
+		height:      14,
+	}
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	if opts.Input != nil {
+		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	}
+	if opts.Output != nil {
+		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	}
+	_, err := tea.NewProgram(model, programOptions...).Run()
+	return err
+}
+
+func ShowMetadata(ctx context.Context, opts MetadataOptions) error {
+	theme := opts.Theme
+	if theme.Codes == nil {
+		theme = termstyle.TerminalTheme()
+	}
+	model := metadataModel{
+		noAltScreen: opts.NoAltScreen,
+		record:      opts.Record,
+		theme:       theme,
+		width:       100,
+		height:      24,
+	}
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	if opts.Input != nil {
+		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	}
+	if opts.Output != nil {
+		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	}
+	_, err := tea.NewProgram(model, programOptions...).Run()
+	return err
+}
+
+func ShowList(ctx context.Context, opts ListOptions) error {
+	theme := opts.Theme
+	if theme.Codes == nil {
+		theme = termstyle.TerminalTheme()
+	}
+	model := listModel{
+		noAltScreen: opts.NoAltScreen,
+		stateDir:    opts.StateDir,
+		records:     append([]state.SessionRecord(nil), opts.Records...),
+		theme:       theme,
+		width:       110,
+		height:      30,
+		mode:        "all",
+	}
+	model.applyFilter()
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	if opts.Input != nil {
+		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	}
+	if opts.Output != nil {
+		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	}
+	_, err := tea.NewProgram(model, programOptions...).Run()
+	return err
+}
+
+type listModel struct {
+	noAltScreen bool
+	stateDir    string
+	records     []state.SessionRecord
+	filtered    []int
+	cursor      int
+	scroll      int
+	mode        string
+	theme       termstyle.Theme
+	width       int
+	height      int
+}
+
+func (m listModel) Init() tea.Cmd {
+	return tea.RequestWindowSize
+}
+
+func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
+		m.ensureListCursor()
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc", "q", "Q":
+			return m, tea.Quit
+		case "up", "k":
+			m.cursor--
+		case "down", "j":
+			m.cursor++
+		case "pgup":
+			m.cursor -= m.listHeight()
+		case "pgdown":
+			m.cursor += m.listHeight()
+		case "home", "g":
+			m.cursor = 0
+		case "end", "G":
+			m.cursor = len(m.filtered) - 1
+		case "a":
+			m.mode = "all"
+			m.applyFilter()
+		case "l":
+			m.mode = "local"
+			m.applyFilter()
+		case "i":
+			m.mode = "imported"
+			m.applyFilter()
+		case "v":
+			m.mode = "active"
+			m.applyFilter()
+		case "x":
+			m.mode = "exited"
+			m.applyFilter()
+		}
+		m.ensureListCursor()
+	}
+	return m, nil
+}
+
+func (m listModel) View() tea.View {
+	width := max(72, m.width)
+	height := max(16, m.height)
+	inner := max(20, width-4)
+	active, exited := CountStatuses(m.records)
+	imported := 0
+	for _, record := range m.records {
+		if record.Import != nil {
+			imported++
+		}
+	}
+	title := joinVisible(
+		m.theme.Style(termstyle.RoleForeground, "SESSIONS"),
+		m.theme.Style(termstyle.RoleMuted, fmt.Sprintf("%s  active %d  exited %d  imported %d  total %d", strings.ToUpper(m.mode), active, exited, imported, len(m.records))),
+		inner,
+	)
+	lines := []string{boxTop(m.theme, title, width)}
+	listHeight := min(m.listHeight(), max(1, height-12))
+	if len(m.filtered) == 0 {
+		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, "No sessions for this filter."), width))
+	} else {
+		m.ensureListCursor()
+		end := min(len(m.filtered), m.scroll+listHeight)
+		for row := m.scroll; row < end; row++ {
+			record := m.records[m.filtered[row]]
+			lines = append(lines, boxLine(m.theme, sessionListRow(record, row == m.cursor, m.theme, inner), width))
+		}
+		for row := end - m.scroll; row < listHeight; row++ {
+			lines = append(lines, boxLine(m.theme, "", width))
+		}
+	}
+	lines = append(lines, boxDivider(m.theme, width))
+	if selected, ok := m.selectedRecord(); ok {
+		for _, line := range sessionListDetailLines(selected, m.theme, inner, max(3, height-len(lines)-3)) {
+			lines = append(lines, boxLine(m.theme, line, width))
+		}
+	} else {
+		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, "No session selected."), width))
+	}
+	lines = append(lines, boxDivider(m.theme, width))
+	lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, "arrows move / a all / v active / x exited / l local / i imported / q back"), width))
+	lines = append(lines, boxBottom(m.theme, width))
+	view := tea.NewView(strings.Join(lines, "\n"))
+	view.AltScreen = !m.noAltScreen
+	return view
+}
+
+func (m *listModel) applyFilter() {
+	m.filtered = m.filtered[:0]
+	for i, record := range m.records {
+		switch m.mode {
+		case "local":
+			if record.Import != nil {
+				continue
+			}
+		case "imported":
+			if record.Import == nil {
+				continue
+			}
+		case "active":
+			if !IsRouteActive(record) {
+				continue
+			}
+		case "exited":
+			if IsRouteActive(record) {
+				continue
+			}
+		}
+		m.filtered = append(m.filtered, i)
+	}
+	m.cursor = 0
+	m.scroll = 0
+}
+
+func (m *listModel) ensureListCursor() {
+	if len(m.filtered) == 0 {
+		m.cursor = 0
+		m.scroll = 0
+		return
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor >= len(m.filtered) {
+		m.cursor = len(m.filtered) - 1
+	}
+	height := m.listHeight()
+	if m.cursor < m.scroll {
+		m.scroll = m.cursor
+	}
+	if m.cursor >= m.scroll+height {
+		m.scroll = m.cursor - height + 1
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+}
+
+func (m listModel) listHeight() int {
+	return clamp(m.height/3, 5, 12)
+}
+
+func (m listModel) selectedRecord() (state.SessionRecord, bool) {
+	if len(m.filtered) == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
+		return state.SessionRecord{}, false
+	}
+	return m.records[m.filtered[m.cursor]], true
+}
+
+func sessionListRow(record state.SessionRecord, selected bool, theme termstyle.Theme, width int) string {
+	marker := "  "
+	role := statusRole(record, "")
+	if selected {
+		marker = "▶ "
+		role = termstyle.RoleSelected
+	}
+	left := marker + theme.Style(role, StatusLabel(record)) + "  " + theme.Style(termstyle.RoleForeground, Target(record))
+	if kind := KindBadge(record); kind != "" {
+		left += " " + theme.Style(termstyle.RoleInfo, kind)
+	}
+	if record.Import != nil {
+		left += " " + theme.Style(termstyle.RoleWarning, importBadge(record))
+	}
+	rightParts := []string{ShortSessionID(record.ID)}
+	if !record.StartedAt.IsZero() {
+		rightParts = append(rightParts, record.StartedAt.Local().Format("Jan 02 15:04"))
+	}
+	if record.Transcript != nil {
+		rightParts = append(rightParts, humanBytes(record.Transcript.Bytes))
+	}
+	right := theme.Style(termstyle.RoleMuted, strings.Join(rightParts, "  "))
+	return truncateVisible(joinVisible(left, right, width), width)
+}
+
+func sessionListDetailLines(record state.SessionRecord, theme termstyle.Theme, width int, maxLines int) []string {
+	lines := []string{}
+	lines = append(lines, detailLine(theme, "id", record.ID, width))
+	lines = append(lines, detailLine(theme, "target", Target(record), width))
+	lines = append(lines, detailLine(theme, "route", FormatRecordRoute(record), width))
+	lines = append(lines, detailLine(theme, "status", StatusLabel(record), width))
+	if !record.StartedAt.IsZero() {
+		lines = append(lines, detailLine(theme, "started", record.StartedAt.Local().Format(time.RFC3339), width))
+	}
+	if record.EndedAt != nil {
+		lines = append(lines, detailLine(theme, "ended", record.EndedAt.Local().Format(time.RFC3339), width))
+	}
+	if record.ExitCode != nil {
+		lines = append(lines, detailLine(theme, "exit", fmt.Sprintf("%d", *record.ExitCode), width))
+	}
+	if record.Transcript != nil {
+		transcriptParts := []string{record.Transcript.Path, humanBytes(record.Transcript.Bytes)}
+		if record.Transcript.Truncated {
+			transcriptParts = append(transcriptParts, "truncated")
+		}
+		lines = append(lines, detailLine(theme, "transcript", strings.Join(transcriptParts, " · "), width))
+	}
+	if record.RecordedBy != nil {
+		lines = append(lines, detailLine(theme, "recorded by", shortMachineID(record.RecordedBy.MachineID)+" · "+defaultString(record.RecordedBy.SSHerpaVersion, "unknown"), width))
+	}
+	if record.Import != nil {
+		lines = append(lines, detailLine(theme, "import", record.Import.OriginClass+" · source "+defaultString(record.Import.SourceSessionID, "unknown")+" · machine "+shortMachineID(record.Import.SourceMachineID), width))
+	}
+	if forward := ForwardSummary(record); forward != "" {
+		lines = append(lines, detailLine(theme, "forward", forward, width))
+	}
+	if proxy := ProxySummary(record); proxy != "" {
+		lines = append(lines, detailLine(theme, "proxy", proxy, width))
+	}
+	if remote := RemoteSummary(record); remote != "" {
+		lines = append(lines, detailLine(theme, "remote", remote, width))
+	}
+	if health := HealthSummary(record); health != "" {
+		lines = append(lines, detailLine(theme, "health", health, width))
+	}
+	if len(record.Events) > 0 {
+		last := record.Events[len(record.Events)-1]
+		lines = append(lines, detailLine(theme, "last event", last.Type+" · "+last.Message, width))
+	}
+	if len(lines) > maxLines {
+		hidden := len(lines) - maxLines + 1
+		lines = append(lines[:max(0, maxLines-1)], theme.Style(termstyle.RoleMuted, fmt.Sprintf("... %d more detail line(s)", hidden)))
+	}
+	return lines
+}
+
+func detailLine(theme termstyle.Theme, label string, value string, width int) string {
+	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 12))
+	valueWidth := max(0, width-termstyle.VisibleWidth(labelText)-2)
+	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(value, "-"), valueWidth))
+}
+
+func importBadge(record state.SessionRecord) string {
+	if record.Import == nil {
+		return ""
+	}
+	switch record.Import.OriginClass {
+	case "imported_self":
+		return "[imported self]"
+	case "imported_other":
+		return "[imported other]"
+	default:
+		return "[imported unknown]"
+	}
+}
+
+type metadataModel struct {
+	noAltScreen bool
+	record      state.SessionRecord
+	theme       termstyle.Theme
+	width       int
+	height      int
+	scroll      int
+}
+
+func (m metadataModel) Init() tea.Cmd {
+	return tea.RequestWindowSize
+}
+
+func (m metadataModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
+		m.clampMetadataScroll()
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc", "q", "Q":
+			return m, tea.Quit
+		case "up", "k":
+			m.scroll--
+		case "down", "j":
+			m.scroll++
+		case "pgup":
+			m.scroll -= m.metadataBodyHeight()
+		case "pgdown":
+			m.scroll += m.metadataBodyHeight()
+		case "home", "g":
+			m.scroll = 0
+		case "end", "G":
+			m.scroll = m.maxMetadataScroll()
+		}
+		m.clampMetadataScroll()
+	}
+	return m, nil
+}
+
+func (m metadataModel) View() tea.View {
+	width := clamp(m.width, 72, 120)
+	height := max(14, m.height)
+	inner := max(20, width-4)
+	bodyHeight := max(1, height-4)
+	all := metadataLines(m.record, m.theme, inner)
+	end := min(len(all), m.scroll+bodyHeight)
+	body := all[m.scroll:end]
+	title := joinVisible(
+		m.theme.Style(termstyle.RoleForeground, "SESSION METADATA"),
+		m.theme.Style(termstyle.RoleMuted, ShortSessionID(m.record.ID)),
+		inner,
+	)
+	lines := []string{boxTop(m.theme, title, width)}
+	for _, line := range body {
+		lines = append(lines, boxLine(m.theme, line, width))
+	}
+	for len(body) < bodyHeight {
+		lines = append(lines, boxLine(m.theme, "", width))
+		body = append(body, "")
+	}
+	lines = append(lines, boxDivider(m.theme, width))
+	footer := fmt.Sprintf("arrows scroll / q back  %d/%d", min(m.scroll+1, max(1, len(all))), max(1, len(all)))
+	lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, truncateVisible(footer, inner)), width))
+	lines = append(lines, boxBottom(m.theme, width))
+	view := tea.NewView(strings.Join(lines, "\n"))
+	view.AltScreen = !m.noAltScreen
+	return view
+}
+
+func (m metadataModel) metadataBodyHeight() int {
+	return max(1, m.height-4)
+}
+
+func (m metadataModel) maxMetadataScroll() int {
+	return max(0, len(metadataLines(m.record, m.theme, max(20, clamp(m.width, 72, 120)-4)))-m.metadataBodyHeight())
+}
+
+func (m *metadataModel) clampMetadataScroll() {
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+	if max := m.maxMetadataScroll(); m.scroll > max {
+		m.scroll = max
+	}
+}
+
+func metadataLines(record state.SessionRecord, theme termstyle.Theme, width int) []string {
+	lines := []string{}
+	add := func(label string, value string) {
+		lines = append(lines, metadataLine(theme, label, value, width))
+	}
+	add("id", record.ID)
+	add("status", StatusLabel(record))
+	add("target", Target(record))
+	add("depth", fmt.Sprintf("%d", record.Depth))
+	add("route", FormatRecordRoute(record))
+	add("hops", FormatRoute(record.Hops))
+	if forward := ForwardSummary(record); forward != "" {
+		add("forward", forward)
+	}
+	if proxy := ProxySummary(record); proxy != "" {
+		add("proxy", proxy)
+	}
+	if remote := RemoteSummary(record); remote != "" {
+		add("remote", remote)
+	}
+	add("started", metadataTime(record.StartedAt))
+	add("ended", metadataOptionalTime(record.EndedAt))
+	if record.ExitCode != nil {
+		add("exit code", fmt.Sprintf("%d", *record.ExitCode))
+	}
+	if record.Transcript != nil {
+		add("transcript", record.Transcript.Path)
+		add("format", record.Transcript.Format)
+		add("bytes", humanBytes(record.Transcript.Bytes))
+		add("frames", fmt.Sprintf("%d", record.Transcript.Frames))
+		if record.Transcript.Truncated {
+			add("truncated", "yes")
+		}
+	}
+	if record.RecordedBy != nil {
+		add("recorded by", record.RecordedBy.MachineID)
+		add("identity", fmt.Sprintf("schema %d · version %s", record.RecordedBy.IdentitySchema, defaultString(record.RecordedBy.SSHerpaVersion, "unknown")))
+	}
+	if record.Import != nil {
+		add("imported at", metadataTime(record.Import.ImportedAt))
+		add("origin", record.Import.OriginClass)
+		add("source", defaultString(record.Import.SourceSessionID, "unknown"))
+		add("machine", defaultString(record.Import.SourceMachineID, "unknown"))
+		add("bundle", record.Import.BundleSHA256)
+	}
+	if record.DisconnectReason != "" {
+		add("disconnect", record.DisconnectReason)
+	}
+	add("local pid", fmt.Sprintf("%d", record.LocalPID))
+	add("ssh pid", fmt.Sprintf("%d", record.SSHPID))
+	add("runner", record.RunnerMode)
+	add("argv", strings.Join(record.SSHArgv, " "))
+	if len(record.Events) > 0 {
+		lines = append(lines, theme.Style(termstyle.RoleAccent, "events"))
+		for _, event := range record.Events {
+			value := event.Time.Local().Format(time.RFC3339) + " · " + event.Type
+			if event.LatencyMillis > 0 {
+				value += fmt.Sprintf(" · latency %dms", event.LatencyMillis)
+			}
+			if event.ThresholdMillis > 0 {
+				value += fmt.Sprintf(" · threshold %dms", event.ThresholdMillis)
+			}
+			if event.Message != "" {
+				value += " · " + event.Message
+			}
+			lines = append(lines, wrapMetadataValue(theme, "event", value, width)...)
+		}
+	}
+	return lines
+}
+
+func metadataLine(theme termstyle.Theme, label string, value string, width int) string {
+	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 13))
+	valueWidth := max(0, width-termstyle.VisibleWidth(labelText)-2)
+	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(value, "-"), valueWidth))
+}
+
+func wrapMetadataValue(theme termstyle.Theme, label string, value string, width int) []string {
+	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 13))
+	valueWidth := max(1, width-termstyle.VisibleWidth(labelText)-2)
+	wrapped := wrapIdentityText(defaultString(value, "-"), valueWidth)
+	out := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		currentLabel := labelText
+		if i > 0 {
+			currentLabel = strings.Repeat(" ", termstyle.VisibleWidth(labelText))
+		}
+		out = append(out, currentLabel+"  "+theme.Style(termstyle.RoleForeground, line))
+	}
+	return out
+}
+
+func metadataTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Local().Format(time.RFC3339)
+}
+
+func metadataOptionalTime(value *time.Time) string {
+	if value == nil {
+		return "-"
+	}
+	return metadataTime(*value)
+}
+
+type identityModel struct {
+	noAltScreen bool
+	stateDir    string
+	identity    state.MachineIdentity
+	theme       termstyle.Theme
+	width       int
+	height      int
+}
+
+func (m identityModel) Init() tea.Cmd {
+	return tea.RequestWindowSize
+}
+
+func (m identityModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
+	case tea.KeyPressMsg:
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m identityModel) View() tea.View {
+	width := clamp(m.width, 58, 110)
+	inner := max(20, width-4)
+	lines := []string{
+		boxTop(m.theme, m.theme.Style(termstyle.RoleForeground, "MACHINE IDENTITY"), width),
+		boxLine(m.theme, identityFieldLine(m.theme, "machine id", m.identity.MachineID, inner), width),
+		boxLine(m.theme, identityFieldLine(m.theme, "schema", fmt.Sprintf("%d", m.identity.SchemaVersion), inner), width),
+		boxLine(m.theme, identityFieldLine(m.theme, "created", m.identity.CreatedAt.Local().Format(time.RFC3339), inner), width),
+		boxLine(m.theme, identityFieldLine(m.theme, "created by", defaultString(m.identity.CreatedByVersion, "unknown"), inner), width),
+		boxLine(m.theme, identityFieldLine(m.theme, "state", m.stateDir, inner), width),
+		boxDivider(m.theme, width),
+	}
+	for _, line := range wrapIdentityText("This UUID classifies imported bundles as this machine, another machine, or unknown origin. It is not cryptographic proof.", inner) {
+		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleForeground, line), width))
+	}
+	lines = append(lines,
+		boxDivider(m.theme, width),
+		boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, "press any key to return"), width),
+		boxBottom(m.theme, width),
+	)
+	view := tea.NewView(strings.Join(lines, "\n"))
+	view.AltScreen = !m.noAltScreen
+	return view
+}
+
+func identityFieldLine(theme termstyle.Theme, label string, value string, width int) string {
+	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 11))
+	valueWidth := max(0, width-termstyle.VisibleWidth(labelText)-2)
+	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(value, "-"), valueWidth))
+}
+
+func defaultString(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func wrapIdentityText(value string, width int) []string {
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	lines := []string{}
+	current := words[0]
+	for _, word := range words[1:] {
+		candidate := current + " " + word
+		if termstyle.VisibleWidth(candidate) <= width {
+			current = candidate
+			continue
+		}
+		lines = append(lines, current)
+		current = word
+	}
+	lines = append(lines, current)
+	return lines
+}
+
 type TranscriptOptions struct {
 	Input       io.Reader
 	Output      io.Writer
@@ -214,6 +867,7 @@ type transcriptModel struct {
 	raw         bool
 	follow      bool
 	searching   bool
+	rawWarning  bool
 	query       string
 	lines       []string
 	errText     string
@@ -285,6 +939,11 @@ func (m transcriptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "N":
 			m.jumpToQuery(-1)
 		case "r":
+			if m.record.Import != nil && !m.raw && !m.rawWarning {
+				m.rawWarning = true
+				return m, nil
+			}
+			m.rawWarning = false
 			m.raw = !m.raw
 			m.reload()
 		case "f":
@@ -326,6 +985,9 @@ func (m transcriptModel) View() tea.View {
 	}
 	lines = append(lines, boxDivider(m.theme, width))
 	footer := "arrows scroll / / search / n next / r raw / f follow / q back"
+	if m.rawWarning {
+		footer = "imported raw output is untrusted; press r again to show raw / q back"
+	}
 	if m.searching {
 		footer = "/ " + m.query
 	}
@@ -419,6 +1081,9 @@ func transcriptHeader(m transcriptModel, width int) string {
 	if m.follow {
 		mode += " follow"
 	}
+	if m.record.Import != nil {
+		mode = importedHeaderLabel(m.record) + "  " + mode
+	}
 	left := strings.ToUpper("transcript " + target)
 	right := mode + "  " + strconv.Itoa(m.scroll+1) + "/" + strconv.Itoa(max(1, len(m.lines)))
 	return joinVisible(m.theme.Style(termstyle.RoleForeground, left), m.theme.Style(termstyle.RoleMuted, right), width)
@@ -430,6 +1095,11 @@ func transcriptMetaLine(m transcriptModel) string {
 		StatusLabel(m.record),
 		"route " + FormatRecordRoute(m.record),
 	}
+	if m.record.Import != nil {
+		parts = append(parts, "source "+ShortSessionID(m.record.Import.SourceSessionID))
+		parts = append(parts, "machine "+shortMachineID(m.record.Import.SourceMachineID))
+		parts = append(parts, m.record.Import.OriginClass)
+	}
 	if m.record.Transcript != nil {
 		parts = append(parts, humanBytes(m.record.Transcript.Bytes))
 		if m.record.Transcript.Truncated {
@@ -439,6 +1109,31 @@ func transcriptMetaLine(m transcriptModel) string {
 		parts = append(parts, humanBytes(info.Size()))
 	}
 	return strings.Join(parts, " · ")
+}
+
+func importedHeaderLabel(record state.SessionRecord) string {
+	if record.Import == nil {
+		return ""
+	}
+	switch record.Import.OriginClass {
+	case "imported_self":
+		return "IMPORTED SELF"
+	case "imported_other":
+		return "IMPORTED OTHER"
+	default:
+		return "IMPORTED UNKNOWN"
+	}
+}
+
+func shortMachineID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "unknown"
+	}
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:8]
 }
 
 func transcriptPath(stateDir string, record state.SessionRecord) string {
@@ -532,6 +1227,9 @@ func StatusLabel(record state.SessionRecord) string {
 	if record.Inherited {
 		return "inherited"
 	}
+	if record.Import != nil && record.EndedAt == nil {
+		return "imported"
+	}
 	if IsActive(record) {
 		return "active"
 	}
@@ -618,6 +1316,9 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 		}
 		if record.Transcript != nil {
 			fmt.Fprintf(w, "\ttranscript=%s\tbytes=%s\n", record.Transcript.Path, humanBytes(record.Transcript.Bytes))
+		}
+		if record.Import != nil {
+			fmt.Fprintf(w, "\timport=%s\tsource_session=%s\tsource_machine=%s\n", record.Import.OriginClass, record.Import.SourceSessionID, shortMachineID(record.Import.SourceMachineID))
 		}
 	}
 }

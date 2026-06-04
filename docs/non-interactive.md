@@ -156,8 +156,8 @@ Connect flags:
 | `--latency-disconnect DURATION` | Disconnect after sustained unhealthy probes. Requires `--latency-warn`. |
 | `--composer-key KEY` | Change queued-input composer control key. Example: `ctrl-r`. |
 | `--no-composer` | Disable the queued-input composer. |
-| `--no-record` | Disable output transcript recording for this supervised session. |
-| `--record-max-bytes BYTES` | Cap the transcript file size. Accepts suffixes like `50MB` or `100MiB`; default `50MB`. |
+| `--no-record` | Disable overlay-controlled transcript recording for this supervised session. |
+| `--record-max-bytes BYTES` | Cap the transcript file size once recording is started. Accepts suffixes like `50MB` or `100MiB`; default `50MB`. |
 | `--no-kitty` | Disable Kitty SSH command detection. |
 | `--no-color` | Disable color styling. |
 | `--theme VALUE` | Deprecated compatibility flag; theme files are the active source. |
@@ -181,14 +181,16 @@ Supervised-session keys:
 | Key | Action |
 | --- | --- |
 | `Ctrl-]` | Open or close the local session-map overlay. |
+| `Ctrl-]`, `T` | Start transcript recording. Press `T` again in the overlay to pause or resume. |
 | `Ctrl-]`, `X`, `X` | Pull the escape rope after confirmation. |
 | `Ctrl-]` three times quickly | Panic escape rope, no confirmation. |
 | `Ctrl-G` | Open queued-input composer by default. |
 
-Supervised sessions record visible terminal output to
-`STATE_DIR/sessions/SESSION_ID.cast` unless `--no-record` is set. Transcripts
-use an asciinema-v2-compatible JSONL format and are stored with `0600`
-permissions. Local input is not recorded.
+Supervised sessions do not record immediately. Open the local session-map
+overlay with `Ctrl-]` and press `T` to start, pause, or resume visible terminal
+output recording. Recording writes to `STATE_DIR/sessions/SESSION_ID.cast` in an
+asciinema-v2-compatible JSONL format with `0600` permissions. Local input is not
+recorded. `--no-record` removes this opt-in recording path for the session.
 
 ## Config Mutation
 
@@ -662,6 +664,9 @@ ssherpa session log SESSION_ID [--raw] [--tail N] [--follow] [--state-dir PATH]
 ssherpa session replay SESSION_ID [--speed N] [--no-delay] [--state-dir PATH]
 ssherpa session grep SESSION_ID PATTERN [--ignore-case] [--json] [--state-dir PATH]
 ssherpa session export SESSION_ID [--format text|asciicast] [--output PATH] [--state-dir PATH]
+ssherpa session bundle export SESSION_ID --output PATH [--json] [--state-dir PATH]
+ssherpa session bundle import PATH [--json] [--state-dir PATH]
+ssherpa session identity [--json] [--state-dir PATH]
 ssherpa session browse [--state-dir PATH]
 ssherpa session stop-all [--json] [--state-dir PATH]
 ssherpa session prune [--older-than DURATION] [--dry-run] [--json] [--state-dir PATH]
@@ -678,6 +683,9 @@ Subcommands:
 | `replay` | Replay recorded terminal output with original timing. |
 | `grep` | Search cleaned transcript output and print timestamped matches. |
 | `export` | Export transcript text or the original asciicast stream. |
+| `bundle export` | Export a portable `.ssherpa-session` bundle containing manifest, session metadata, and transcript. |
+| `bundle import` | Import a portable bundle as a new local session record. |
+| `identity` | Show or create this machine's local ssherpa recording identity. |
 | `browse` | Open the TUI transcript browser and viewer. |
 | `stop-all` | Signal every active tracked session. |
 | `prune` | Remove ended records older than a duration. |
@@ -712,9 +720,26 @@ ssherpa session log 20260529T090238.208041000Z-c8eb1976 --tail 100
 ssherpa session grep 20260529T090238.208041000Z-c8eb1976 "permission denied" -i
 ssherpa session replay 20260529T090238.208041000Z-c8eb1976 --speed 2
 ssherpa session export 20260529T090238.208041000Z-c8eb1976 --format asciicast --output prod.cast
+ssherpa session bundle export 20260529T090238.208041000Z-c8eb1976 --output prod.ssherpa-session
+ssherpa session bundle import prod.ssherpa-session
+ssherpa session identity
 ssherpa session stop-all
 ssherpa session prune --older-than 720h --dry-run
 ```
+
+Portable bundles preserve the source machine ID and source session ID but are
+imported under a new local session ID to avoid collisions. Imported transcripts
+are classified as `imported_self`, `imported_other`, or `imported_unknown` by
+comparing the bundle's source machine ID with this machine's
+`STATE_DIR/identity.json`. The classification is advisory; it is not a
+cryptographic authenticity guarantee.
+
+The interactive Sessions TUI supports browsing local/imported transcripts,
+importing bundles with a preview and confirmation, exporting a selected
+transcript as a bundle, viewing machine identity, and showing imported-origin
+metadata in the transcript viewer. Recording itself is started, paused, and
+resumed from the in-session `Ctrl-]` map overlay. Raw replay of imported
+recordings is treated as untrusted terminal output.
 
 ## Theme
 
@@ -756,6 +781,9 @@ Commands supporting `--json`:
 - `ssherpa session map --json`
 - `ssherpa session show SESSION_ID --json`
 - `ssherpa session grep SESSION_ID PATTERN --json`
+- `ssherpa session bundle export SESSION_ID --json`
+- `ssherpa session bundle import PATH --json`
+- `ssherpa session identity --json`
 - `ssherpa session stop-all --json`
 - `ssherpa session prune --json`
 

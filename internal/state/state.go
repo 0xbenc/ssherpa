@@ -2,6 +2,7 @@ package state
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,8 +19,9 @@ import (
 )
 
 const (
-	StateVersion = 1
-	DefaultPrune = 7 * 24 * time.Hour
+	StateVersion          = 1
+	IdentitySchemaVersion = 1
+	DefaultPrune          = 7 * 24 * time.Hour
 
 	// KindInteractive marks a normal interactive SSH session. It is the
 	// implicit kind for any record without a Kind field set, so existing
@@ -42,33 +44,35 @@ const (
 )
 
 type SessionRecord struct {
-	ID               string          `json:"id"`
-	ParentID         string          `json:"parent_id,omitempty"`
-	Depth            int             `json:"depth"`
-	Route            []string        `json:"route,omitempty"`
-	OriginHost       string          `json:"origin_host,omitempty"`
-	TargetAlias      string          `json:"target_alias,omitempty"`
-	Hops             []string        `json:"hops,omitempty"`
-	SSHArgv          []string        `json:"ssh_argv,omitempty"`
-	ControlPath      string          `json:"control_path,omitempty"`
-	Kind             string          `json:"kind,omitempty"`
-	Forward          *ForwardSpec    `json:"forward,omitempty"`
-	Proxy            *ProxySpec      `json:"proxy,omitempty"`
-	Transcript       *TranscriptSpec `json:"transcript,omitempty"`
-	RemoteHost       string          `json:"remote_host,omitempty"`
-	RemoteCWD        string          `json:"remote_cwd,omitempty"`
-	RemotePrompt     string          `json:"remote_prompt,omitempty"`
-	StartedAt        time.Time       `json:"started_at"`
-	EndedAt          *time.Time      `json:"ended_at,omitempty"`
-	LocalPID         int             `json:"local_pid"`
-	SSHPID           int             `json:"ssh_pid,omitempty"`
-	ExitCode         *int            `json:"exit_code,omitempty"`
-	RunnerMode       string          `json:"runner_mode"`
-	Events           []SessionEvent  `json:"events,omitempty"`
-	DisconnectReason string          `json:"disconnect_reason,omitempty"`
-	StateVersion     int             `json:"state_version"`
-	Inherited        bool            `json:"inherited,omitempty"`
-	RemoteMirror     bool            `json:"remote_mirror,omitempty"`
+	ID               string           `json:"id"`
+	ParentID         string           `json:"parent_id,omitempty"`
+	Depth            int              `json:"depth"`
+	Route            []string         `json:"route,omitempty"`
+	OriginHost       string           `json:"origin_host,omitempty"`
+	TargetAlias      string           `json:"target_alias,omitempty"`
+	Hops             []string         `json:"hops,omitempty"`
+	SSHArgv          []string         `json:"ssh_argv,omitempty"`
+	ControlPath      string           `json:"control_path,omitempty"`
+	Kind             string           `json:"kind,omitempty"`
+	Forward          *ForwardSpec     `json:"forward,omitempty"`
+	Proxy            *ProxySpec       `json:"proxy,omitempty"`
+	Transcript       *TranscriptSpec  `json:"transcript,omitempty"`
+	RecordedBy       *RecordingOrigin `json:"recorded_by,omitempty"`
+	Import           *ImportSpec      `json:"import,omitempty"`
+	RemoteHost       string           `json:"remote_host,omitempty"`
+	RemoteCWD        string           `json:"remote_cwd,omitempty"`
+	RemotePrompt     string           `json:"remote_prompt,omitempty"`
+	StartedAt        time.Time        `json:"started_at"`
+	EndedAt          *time.Time       `json:"ended_at,omitempty"`
+	LocalPID         int              `json:"local_pid"`
+	SSHPID           int              `json:"ssh_pid,omitempty"`
+	ExitCode         *int             `json:"exit_code,omitempty"`
+	RunnerMode       string           `json:"runner_mode"`
+	Events           []SessionEvent   `json:"events,omitempty"`
+	DisconnectReason string           `json:"disconnect_reason,omitempty"`
+	StateVersion     int              `json:"state_version"`
+	Inherited        bool             `json:"inherited,omitempty"`
+	RemoteMirror     bool             `json:"remote_mirror,omitempty"`
 }
 
 // ForwardSpec captures the runtime shape of a port-forward tunnel
@@ -121,6 +125,28 @@ type TranscriptSpec struct {
 	MaxBytes  int64      `json:"max_bytes,omitempty"`
 	Truncated bool       `json:"truncated,omitempty"`
 	Input     bool       `json:"input,omitempty"`
+}
+
+type RecordingOrigin struct {
+	MachineID      string `json:"machine_id,omitempty"`
+	IdentitySchema int    `json:"identity_schema,omitempty"`
+	SSHerpaVersion string `json:"ssherpa_version,omitempty"`
+}
+
+type ImportSpec struct {
+	ImportedAt      time.Time `json:"imported_at"`
+	ImportedBy      string    `json:"imported_by,omitempty"`
+	SourceMachineID string    `json:"source_machine_id,omitempty"`
+	SourceSessionID string    `json:"source_session_id,omitempty"`
+	OriginClass     string    `json:"origin_class"`
+	BundleSHA256    string    `json:"bundle_sha256,omitempty"`
+}
+
+type MachineIdentity struct {
+	SchemaVersion    int       `json:"schema_version"`
+	MachineID        string    `json:"machine_id"`
+	CreatedAt        time.Time `json:"created_at"`
+	CreatedByVersion string    `json:"created_by_version,omitempty"`
 }
 
 func (r SessionRecord) Status() string {
@@ -368,6 +394,127 @@ func sortSessionRecords(records []SessionRecord) {
 
 func RecordPath(dir string, id string) string {
 	return filepath.Join(SessionsDir(dir), id+".json")
+}
+
+func IdentityPath(dir string) string {
+	return filepath.Join(filepath.Clean(dir), "identity.json")
+}
+
+func EnsureMachineIdentity(dir string, ssherpaVersion string, now time.Time) (MachineIdentity, error) {
+	existing, err := ReadMachineIdentity(dir)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return MachineIdentity{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	id, err := newUUID()
+	if err != nil {
+		return MachineIdentity{}, err
+	}
+	identity := MachineIdentity{
+		SchemaVersion:    IdentitySchemaVersion,
+		MachineID:        id,
+		CreatedAt:        now.UTC(),
+		CreatedByVersion: strings.TrimSpace(ssherpaVersion),
+	}
+	if identity.CreatedByVersion == "" {
+		identity.CreatedByVersion = "unknown"
+	}
+	if err := WriteMachineIdentity(dir, identity); err != nil {
+		return MachineIdentity{}, err
+	}
+	return identity, nil
+}
+
+func ReadMachineIdentity(dir string) (MachineIdentity, error) {
+	data, err := os.ReadFile(IdentityPath(dir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return MachineIdentity{}, os.ErrNotExist
+		}
+		return MachineIdentity{}, fmt.Errorf("read machine identity: %w", err)
+	}
+	var identity MachineIdentity
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return MachineIdentity{}, fmt.Errorf("parse machine identity: %w", err)
+	}
+	if strings.TrimSpace(identity.MachineID) == "" {
+		return MachineIdentity{}, errors.New("machine identity is missing machine_id")
+	}
+	return identity, nil
+}
+
+func WriteMachineIdentity(dir string, identity MachineIdentity) error {
+	if strings.TrimSpace(identity.MachineID) == "" {
+		return errors.New("machine identity requires machine_id")
+	}
+	if identity.SchemaVersion <= 0 {
+		identity.SchemaVersion = IdentitySchemaVersion
+	}
+	if identity.CreatedAt.IsZero() {
+		identity.CreatedAt = time.Now().UTC()
+	}
+	data, err := json.MarshalIndent(identity, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal machine identity: %w", err)
+	}
+	data = append(data, '\n')
+	_, err = fsutil.AtomicWriteFile(IdentityPath(dir), data, fsutil.WriteOptions{Mode: 0o600})
+	if err != nil {
+		return fmt.Errorf("write machine identity: %w", err)
+	}
+	return nil
+}
+
+func RecordingOriginForIdentity(identity MachineIdentity, ssherpaVersion string) RecordingOrigin {
+	version := strings.TrimSpace(ssherpaVersion)
+	if version == "" {
+		version = identity.CreatedByVersion
+	}
+	if version == "" {
+		version = "unknown"
+	}
+	return RecordingOrigin{
+		MachineID:      identity.MachineID,
+		IdentitySchema: identity.SchemaVersion,
+		SSHerpaVersion: version,
+	}
+}
+
+func OriginClass(local MachineIdentity, sourceMachineID string) string {
+	sourceMachineID = strings.TrimSpace(sourceMachineID)
+	if sourceMachineID == "" {
+		return "imported_unknown"
+	}
+	if strings.TrimSpace(local.MachineID) != "" && sourceMachineID == local.MachineID {
+		return "imported_self"
+	}
+	return "imported_other"
+}
+
+func SHA256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func newUUID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate uuid: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return strings.Join([]string{
+		hex.EncodeToString(b[0:4]),
+		hex.EncodeToString(b[4:6]),
+		hex.EncodeToString(b[6:8]),
+		hex.EncodeToString(b[8:10]),
+		hex.EncodeToString(b[10:16]),
+	}, "-"), nil
 }
 
 func EnvForRecord(record SessionRecord) []string {

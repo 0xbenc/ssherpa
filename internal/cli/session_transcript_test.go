@@ -77,3 +77,98 @@ func TestRunSessionLogGrepAndExportTranscript(t *testing.T) {
 		t.Fatalf("export data = %q", string(data))
 	}
 }
+
+func TestRunSessionBundleExportImport(t *testing.T) {
+	sourceDir := t.TempDir()
+	destDir := t.TempDir()
+	id := "20260604T121000.000000000Z-bundle"
+	started := time.Date(2026, 6, 4, 12, 10, 0, 0, time.UTC)
+	identity, err := state.EnsureMachineIdentity(sourceDir, "v1.2.3", started)
+	if err != nil {
+		t.Fatalf("EnsureMachineIdentity: %v", err)
+	}
+	path := transcript.Path(sourceDir, id)
+	writer, spec, err := transcript.OpenWriter(transcript.WriterOptions{
+		Path:    path,
+		Started: started,
+		Header:  transcript.Header{Title: "prod"},
+	})
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	writer.WriteOutput(started, []byte("portable output\n"))
+	spec, err = writer.Close(started.Add(time.Second))
+	if err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	origin := state.RecordingOriginForIdentity(identity, "v1.2.3")
+	record := state.SessionRecord{
+		ID:          id,
+		TargetAlias: "prod",
+		Route:       []string{"prod"},
+		StartedAt:   started,
+		EndedAt:     spec.EndedAt,
+		RunnerMode:  "supervised",
+		Transcript:  &spec,
+		RecordedBy:  &origin,
+	}
+	if err := state.WriteRecord(sourceDir, record); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	bundlePath := filepath.Join(t.TempDir(), "prod.ssherpa-session")
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"session", "bundle", "export", id, "--output", bundlePath, "--state-dir", sourceDir}, &stdout, &stderr, BuildInfo{Version: "v1.2.3"})
+	if code != 0 {
+		t.Fatalf("bundle export code = %d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"session", "bundle", "import", bundlePath, "--state-dir", destDir}, &stdout, &stderr, BuildInfo{Version: "v1.2.3"})
+	if code != 0 {
+		t.Fatalf("bundle import code = %d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "imported_other") {
+		t.Fatalf("import stdout = %q", stdout.String())
+	}
+	records, err := state.ListRecords(destDir)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(records) != 1 || records[0].Import == nil || records[0].Import.SourceSessionID != id {
+		t.Fatalf("imported records = %#v", records)
+	}
+}
+
+func TestTranscriptActionItemsOmitRedundantCleanReplay(t *testing.T) {
+	items := transcriptActionItems(state.SessionRecord{})
+	tokens := make([]string, 0, len(items))
+	for _, item := range items {
+		tokens = append(tokens, item.Token)
+	}
+	if containsToken(tokens, "replay") {
+		t.Fatalf("tokens = %#v, want no cleaned replay action in the TUI", tokens)
+	}
+	for _, want := range []string{"view", "replay-raw", "export-bundle", "metadata", "back"} {
+		if !containsToken(tokens, want) {
+			t.Fatalf("tokens = %#v, missing %q", tokens, want)
+		}
+	}
+
+	imported := transcriptActionItems(state.SessionRecord{Import: &state.ImportSpec{OriginClass: "imported_other"}})
+	importedTokens := make([]string, 0, len(imported))
+	for _, item := range imported {
+		importedTokens = append(importedTokens, item.Token)
+	}
+	if !containsToken(importedTokens, "remove-import") {
+		t.Fatalf("imported tokens = %#v, want remove-import", importedTokens)
+	}
+}
+
+func containsToken(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == want {
+			return true
+		}
+	}
+	return false
+}

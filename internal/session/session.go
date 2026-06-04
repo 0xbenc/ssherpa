@@ -90,6 +90,7 @@ type Options struct {
 	NoColor        bool
 	NoRecord       bool
 	RecordMaxBytes int64
+	SSHerpaVersion string
 	// Detached runs the supervisor in non-interactive daemon mode:
 	// no PTY raw mode, no copyInput goroutine, no overlay/composer.
 	// forwardSignals stays installed so `ssherpa forward stop` can
@@ -268,6 +269,13 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		return 1
 	}
 	record := buildRecord(command, metadata, now(), env, opts.RecordID)
+	identity, identityErr := state.EnsureMachineIdentity(stateDir, opts.SSHerpaVersion, now().UTC())
+	if identityErr != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity unavailable: %v\n", identityErr)
+	} else {
+		origin := state.RecordingOriginForIdentity(identity, opts.SSHerpaVersion)
+		record.RecordedBy = &origin
+	}
 	if controlPath, ok, err := prepareControlMaster(stateDir, record.ID, metadata); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: prepare SSH control socket: %v\n", err)
 		return 1
@@ -282,38 +290,21 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	}
 	overlayBase := overlayTransferRequestFromRecord("", stateDir, record)
 	var recordMu sync.Mutex
-	var transcriptWriter *transcript.Writer
-	if !opts.NoRecord {
-		writer, spec, err := transcript.OpenWriter(transcript.WriterOptions{
-			Path:    transcript.Path(stateDir, record.ID),
-			Started: record.StartedAt,
-			Header: transcript.Header{
-				Width:   120,
-				Height:  40,
-				Command: sshcmd.QuoteArgv(command.Argv),
-				Title:   defaultTranscriptTitle(record.TargetAlias),
-				Env:     transcriptEnv(env),
-			},
-			MaxBytes: opts.RecordMaxBytes,
-		})
-		if err != nil {
-			fmt.Fprintf(stderr, "ssherpa: transcript recording disabled: %v\n", err)
-		} else {
-			transcriptWriter = writer
-			record.Transcript = &spec
-			defer func() {
-				if transcriptWriter != nil {
-					spec, err := transcriptWriter.Close(now().UTC())
-					if err == nil {
-						recordMu.Lock()
-						record.Transcript = &spec
-						_ = state.WriteRecord(stateDir, record)
-						recordMu.Unlock()
-					}
-				}
-			}()
+	recorder := newSessionRecorder(sessionRecorderOptions{
+		Disabled: opts.NoRecord,
+		StateDir: stateDir,
+		Command:  command,
+		Env:      env,
+		MaxBytes: opts.RecordMaxBytes,
+		Record:   &record,
+		RecordMu: &recordMu,
+		Now:      now,
+	})
+	defer func() {
+		if err := recorder.Close(now().UTC()); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: close transcript: %v\n", err)
 		}
-	}
+	}()
 
 	// Detached mode has no PTY consumer — skip raw mode entirely.
 	// makeRawIfTerminal handles a non-tty stdin gracefully too, but
@@ -443,7 +434,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		if !inputStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, suspendTerminal, terminalInput, startupInterruptible, interruptLocal, inputDone)
+		go copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, recorder, suspendTerminal, terminalInput, startupInterruptible, interruptLocal, inputDone)
 	}
 	if opts.Detached {
 		// In detached mode there is no stdin to forward and no
@@ -468,7 +459,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			procRef:              procRefShared,
 			output:               output,
 			outputTap:            tap,
-			transcript:           transcriptWriter,
+			transcript:           recorder,
 			startupInterruptible: startupInterruptible,
 			watchdog:             opts.Watchdog,
 			stderr:               stderr,
@@ -520,9 +511,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 		_ = state.WriteRecord(stateDir, record)
 		recordMu.Unlock()
-		if transcriptWriter != nil {
-			transcriptWriter.WriteMarker(now().UTC(), fmt.Sprintf("reconnect scheduled after attempt %d failed: %v", attempt, waitErr))
-		}
+		recorder.WriteMarker(now().UTC(), fmt.Sprintf("reconnect scheduled after attempt %d failed: %v", attempt, waitErr))
 		fmt.Fprintf(stderr, "\r\nssherpa: session attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
 		timer := time.NewTimer(backoff)
 		select {
@@ -751,7 +740,7 @@ type overlayFrame struct {
 	lines    int
 }
 
-func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, composer ComposerOptions, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), localInterrupts bool, startupInterruptible *atomic.Bool, interruptLocal func(), done <-chan struct{}) {
+func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, composer ComposerOptions, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), recorder *sessionRecorder, suspendTerminal func(func()), localInterrupts bool, startupInterruptible *atomic.Bool, interruptLocal func(), done <-chan struct{}) {
 	if stdin == nil {
 		return
 	}
@@ -763,7 +752,7 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outp
 			case localInterrupts && buf[0] == 0x03 && startupInterruptible != nil && startupInterruptible.Load() && interruptLocal != nil:
 				interruptLocal()
 			case buf[0] == OverlayHotkey:
-				showSessionOverlay(ptmxRef, stdin, output, tap, stateDir, currentID, overlayBase, overlay, theme, pullRope, suspendTerminal, time.Now())
+				showSessionOverlay(ptmxRef, stdin, output, tap, stateDir, currentID, overlayBase, overlay, theme, pullRope, recorder, suspendTerminal, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
 				if ptmx := ptmxRef.get(); ptmx != nil {
 					showComposer(stdin, output, ptmx, composer, theme)
@@ -783,7 +772,7 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outp
 	}
 }
 
-func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), suspendTerminal func(func()), openedAt time.Time) {
+func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outputTap, stateDir string, currentID string, overlayBase OverlayTransferRequest, overlay OverlayOptions, theme termstyle.Theme, pullRope func(), recorder *sessionRecorder, suspendTerminal func(func()), openedAt time.Time) {
 	output.mu.Lock()
 	_, stopOverlayTap := tap.start(true)
 	unlocked := false
@@ -797,7 +786,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 	}
 	defer unlock()
 
-	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
 	clearAndReturn := func() {
 		clearSessionOverlay(output.w, frame)
 	}
@@ -834,7 +823,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			}
 			confirming = false
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
 			continue
 		}
 
@@ -866,7 +855,19 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			frame = drawEscapeConfirm(output.w, stdin, theme)
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
-			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme)
+			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
+		case 't', 'T':
+			clearSessionOverlay(output.w, frame)
+			if recorder == nil {
+				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa recording", "recording is not available for this session")
+				continue
+			}
+			message, err := recorder.Toggle()
+			if err != nil {
+				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa recording", err.Error())
+				continue
+			}
+			frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa recording", message)
 		case 's', 'S':
 			if overlay.Send == nil {
 				clearSessionOverlay(output.w, frame)
@@ -1135,9 +1136,12 @@ func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
 	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
 }
 
-func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, overlay OverlayOptions, theme termstyle.Theme) overlayFrame {
+func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, overlay OverlayOptions, theme termstyle.Theme, recorder *sessionRecorder) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
 	actions := []string{fmt.Sprintf("%s/q/Esc close", OverlayHotkeyName), "r refresh"}
+	if recorder != nil {
+		actions = append(actions, recorder.HelpAction())
+	}
 	if overlay.Send != nil {
 		actions = append(actions, "s send")
 	}
@@ -1727,7 +1731,7 @@ type attemptContext struct {
 	procRef    *procRef
 	output     *lockedWriter
 	outputTap  *outputTap
-	transcript *transcript.Writer
+	transcript *sessionRecorder
 	// startupInterruptible is true while the current child attempt has not
 	// emitted any PTY output. copyInput uses that window to treat Ctrl+C as a
 	// local abort instead of forwarding it to an ssh client blocked in connect.
@@ -1747,6 +1751,164 @@ type attemptContext struct {
 	// so the retry loop's ropePulled check trips and the daemon
 	// doesn't immediately respawn ssh after the kill.
 	pullRope func()
+}
+
+type sessionRecorderOptions struct {
+	Disabled bool
+	StateDir string
+	Command  sshcmd.Command
+	Env      []string
+	MaxBytes int64
+	Record   *state.SessionRecord
+	RecordMu *sync.Mutex
+	Now      func() time.Time
+}
+
+type sessionRecorder struct {
+	mu       sync.Mutex
+	disabled bool
+	active   bool
+	writer   *transcript.Writer
+	stateDir string
+	command  sshcmd.Command
+	env      []string
+	maxBytes int64
+	record   *state.SessionRecord
+	recordMu *sync.Mutex
+	now      func() time.Time
+}
+
+func newSessionRecorder(opts sessionRecorderOptions) *sessionRecorder {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &sessionRecorder{
+		disabled: opts.Disabled,
+		stateDir: opts.StateDir,
+		command:  opts.Command,
+		env:      append([]string(nil), opts.Env...),
+		maxBytes: opts.MaxBytes,
+		record:   opts.Record,
+		recordMu: opts.RecordMu,
+		now:      now,
+	}
+}
+
+func (r *sessionRecorder) Toggle() (string, error) {
+	if r == nil {
+		return "", errors.New("recording is not available for this session")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.disabled {
+		return "", errors.New("recording is disabled for this session")
+	}
+	if r.writer == nil {
+		return r.startLocked()
+	}
+	if r.active {
+		r.active = false
+		r.writer.WriteMarker(r.now().UTC(), "recording paused from session overlay")
+		return "recording paused", nil
+	}
+	r.active = true
+	r.writer.WriteMarker(r.now().UTC(), "recording resumed from session overlay")
+	return "recording resumed", nil
+}
+
+func (r *sessionRecorder) HelpAction() string {
+	if r == nil || r.disabled {
+		return "T recording off"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.writer == nil:
+		return "T start recording"
+	case r.active:
+		return "T pause recording"
+	default:
+		return "T resume recording"
+	}
+}
+
+func (r *sessionRecorder) WriteOutput(at time.Time, data []byte) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active || r.writer == nil {
+		return
+	}
+	r.writer.WriteOutput(at, data)
+}
+
+func (r *sessionRecorder) WriteMarker(at time.Time, message string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.writer == nil {
+		return
+	}
+	r.writer.WriteMarker(at, message)
+}
+
+func (r *sessionRecorder) Close(ended time.Time) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	writer := r.writer
+	r.active = false
+	r.writer = nil
+	r.mu.Unlock()
+	if writer == nil {
+		return nil
+	}
+	spec, err := writer.Close(ended)
+	if err != nil {
+		return err
+	}
+	r.updateRecord(spec)
+	return nil
+}
+
+func (r *sessionRecorder) startLocked() (string, error) {
+	started := r.now().UTC()
+	writer, spec, err := transcript.OpenWriter(transcript.WriterOptions{
+		Path:    transcript.Path(r.stateDir, r.record.ID),
+		Started: started,
+		Header: transcript.Header{
+			Width:   120,
+			Height:  40,
+			Command: sshcmd.QuoteArgv(r.command.Argv),
+			Title:   defaultTranscriptTitle(r.record.TargetAlias),
+			Env:     transcriptEnv(r.env),
+		},
+		MaxBytes: r.maxBytes,
+	})
+	if err != nil {
+		return "", err
+	}
+	r.writer = writer
+	r.active = true
+	writer.WriteMarker(started, "recording started from session overlay")
+	r.updateRecord(spec)
+	return "recording started", nil
+}
+
+func (r *sessionRecorder) updateRecord(spec state.TranscriptSpec) {
+	if r.record == nil || r.recordMu == nil {
+		return
+	}
+	r.recordMu.Lock()
+	r.record.Transcript = &spec
+	_ = state.WriteRecord(r.stateDir, *r.record)
+	r.recordMu.Unlock()
 }
 
 // attemptOnce spawns the SSH process once under a fresh PTY, swaps the

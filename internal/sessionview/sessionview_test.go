@@ -58,6 +58,122 @@ func TestMapViewCarriesRouteDetails(t *testing.T) {
 	}
 }
 
+func TestSessionListViewShowsPersistentRowsAndDetails(t *testing.T) {
+	ended := time.Unix(1700000900, 0)
+	record := state.SessionRecord{
+		ID:          "20260604T120000.000000000Z-listtest",
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		Hops:        []string{"bastion"},
+		StartedAt:   time.Unix(1700000000, 0),
+		EndedAt:     &ended,
+		Transcript: &state.TranscriptSpec{
+			Path:  "/tmp/prod.cast",
+			Bytes: 2048,
+		},
+		Import: &state.ImportSpec{
+			OriginClass:     "imported_other",
+			SourceSessionID: "source-session",
+			SourceMachineID: "12345678-aaaa-bbbb-cccc-123456789abc",
+		},
+	}
+	model := listModel{
+		noAltScreen: true,
+		stateDir:    "/tmp/ssherpa-state",
+		records:     []state.SessionRecord{record},
+		theme:       termstyle.TerminalTheme().WithNoColor(true),
+		width:       100,
+		height:      26,
+		mode:        "all",
+	}
+	model.applyFilter()
+
+	text := model.View().Content
+	for _, want := range []string{
+		"SESSIONS",
+		"imported other",
+		"prod [jump]",
+		"source-session",
+		"12345678",
+		"/tmp/prod.cast",
+		"arrows move",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("list view missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestMetadataModalShowsPersistentSessionDetails(t *testing.T) {
+	ended := time.Unix(1700000900, 0)
+	exitCode := 7
+	record := state.SessionRecord{
+		ID:          "20260604T120000.000000000Z-metatest",
+		TargetAlias: "prod",
+		Route:       []string{"bastion", "prod"},
+		Hops:        []string{"bastion"},
+		SSHArgv:     []string{"ssh", "prod"},
+		StartedAt:   time.Unix(1700000000, 0),
+		EndedAt:     &ended,
+		ExitCode:    &exitCode,
+		RunnerMode:  "supervised",
+		Transcript: &state.TranscriptSpec{
+			Path:   "/tmp/prod.cast",
+			Format: "asciicast-v2",
+			Bytes:  2048,
+			Frames: 3,
+		},
+		Import: &state.ImportSpec{
+			ImportedAt:      time.Unix(1700000100, 0),
+			OriginClass:     "imported_other",
+			SourceSessionID: "source-session",
+			SourceMachineID: "12345678-aaaa-bbbb-cccc-123456789abc",
+			BundleSHA256:    "abc123",
+		},
+		Events: []state.SessionEvent{
+			{Time: time.Unix(1700000200, 0), Type: "latency_warning", Message: "probe slow", LatencyMillis: 2000, ThresholdMillis: 1000},
+		},
+	}
+	model := metadataModel{
+		noAltScreen: true,
+		record:      record,
+		theme:       termstyle.TerminalTheme().WithNoColor(true),
+		width:       104,
+		height:      24,
+	}
+
+	text := model.View().Content
+	for _, want := range []string{
+		"SESSION METADATA",
+		"prod",
+		"here -> bastion -> prod",
+		"exit code",
+		"/tmp/prod.cast",
+		"imported_other",
+		"source-session",
+		"12345678-aaaa-bbbb-cccc-123456789abc",
+		"q back",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metadata view missing %q:\n%s", want, text)
+		}
+	}
+	model.scroll = model.maxMetadataScroll()
+	scrolled := model.View().Content
+	for _, want := range []string{"events", "latency_warning", "probe slow"} {
+		if !strings.Contains(scrolled, want) {
+			t.Fatalf("scrolled metadata view missing %q:\n%s", want, scrolled)
+		}
+	}
+	if model.View().AltScreen {
+		t.Fatalf("AltScreen = true, want false")
+	}
+	_, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	if cmd == nil {
+		t.Fatalf("q did not request quit")
+	}
+}
+
 func TestMapViewSynthesizesInheritedLineage(t *testing.T) {
 	record := state.SessionRecord{
 		ID:          "c-session",

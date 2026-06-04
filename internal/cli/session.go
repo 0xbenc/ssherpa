@@ -26,6 +26,9 @@ const sessionUsage = `Usage:
   ssherpa session replay SESSION_ID [--speed N] [--no-delay] [--state-dir PATH]
   ssherpa session grep SESSION_ID PATTERN [--ignore-case] [--json] [--state-dir PATH]
   ssherpa session export SESSION_ID [--format text|asciicast] [--output PATH] [--state-dir PATH]
+  ssherpa session bundle export SESSION_ID --output PATH [--json] [--state-dir PATH]
+  ssherpa session bundle import PATH [--json] [--state-dir PATH]
+  ssherpa session identity [--json] [--state-dir PATH]
   ssherpa session browse [--state-dir PATH]
   ssherpa session stop-all [--json] [--state-dir PATH]
   ssherpa session prune [--older-than DURATION] [--dry-run] [--state-dir PATH]
@@ -68,7 +71,7 @@ type sessionStopAllRecord struct {
 	Error  string `json:"error,omitempty"`
 }
 
-func runSession(args []string, stdout io.Writer, stderr io.Writer) int {
+func runSession(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
 	if len(args) == 0 || hasHelpFlag(args) {
 		fmt.Fprint(stdout, sessionUsage)
 		return 0
@@ -89,6 +92,10 @@ func runSession(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runSessionGrep(args[1:], stdout, stderr)
 	case "export":
 		return runSessionExport(args[1:], stdout, stderr)
+	case "bundle":
+		return runSessionBundle(args[1:], stdout, stderr, build)
+	case "identity":
+		return runSessionIdentity(args[1:], stdout, stderr, build)
 	case "browse", "transcripts":
 		return runSessionBrowse(args[1:], stdout, stderr)
 	case "stop-all":
@@ -226,6 +233,133 @@ func runSessionExport(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+func runSessionBundle(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
+	if len(args) == 0 || hasHelpFlag(args) {
+		fmt.Fprint(stdout, "Usage:\n  ssherpa session bundle export SESSION_ID --output PATH [--json] [--state-dir PATH]\n  ssherpa session bundle import PATH [--json] [--state-dir PATH]\n")
+		return 0
+	}
+	switch args[0] {
+	case "export":
+		return runSessionBundleExport(args[1:], stdout, stderr, build)
+	case "import":
+		return runSessionBundleImport(args[1:], stdout, stderr, build)
+	default:
+		fmt.Fprintf(stderr, "ssherpa: unknown session bundle command %q\n", args[0])
+		return 1
+	}
+}
+
+func runSessionBundleExport(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
+	flags, ok := parseTranscriptFlags(args, stderr, "bundle-export")
+	if !ok {
+		return 1
+	}
+	if len(flags.Rest) != 1 {
+		fmt.Fprintln(stderr, "ssherpa: session bundle export requires exactly one session id")
+		return 1
+	}
+	if strings.TrimSpace(flags.OutputPath) == "" {
+		fmt.Fprintln(stderr, "ssherpa: session bundle export requires --output PATH")
+		return 1
+	}
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	identity, err := state.EnsureMachineIdentity(stateDir, buildVersion(build), time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity: %v\n", err)
+		return 1
+	}
+	record, err := state.ReadRecord(stateDir, flags.Rest[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: show session: %v\n", err)
+		return 2
+	}
+	result, err := transcript.ExportBundle(stateDir, record, identity, flags.OutputPath, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: export bundle: %v\n", err)
+		return 1
+	}
+	if flags.JSON {
+		writeJSON(stdout, result)
+		return 0
+	}
+	fmt.Fprintf(stdout, "exported session bundle to %s\n", result.Path)
+	fmt.Fprintf(stdout, "source session: %s\n", result.Manifest.SourceSessionID)
+	fmt.Fprintf(stdout, "source machine: %s\n", defaultString(result.Manifest.SourceMachineID, "unknown"))
+	fmt.Fprintf(stdout, "transcript sha256: %s\n", result.Manifest.TranscriptSHA256)
+	return 0
+}
+
+func runSessionBundleImport(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
+	flags, ok := parseTranscriptFlags(args, stderr, "bundle-import")
+	if !ok {
+		return 1
+	}
+	if len(flags.Rest) != 1 {
+		fmt.Fprintln(stderr, "ssherpa: session bundle import requires exactly one bundle path")
+		return 1
+	}
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	identity, err := state.EnsureMachineIdentity(stateDir, buildVersion(build), time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity: %v\n", err)
+		return 1
+	}
+	result, err := transcript.ImportBundle(stateDir, flags.Rest[0], identity, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: import bundle: %v\n", err)
+		return 1
+	}
+	if flags.JSON {
+		writeJSON(stdout, result)
+		return 0
+	}
+	fmt.Fprintf(stdout, "imported session bundle as %s\n", result.Record.ID)
+	fmt.Fprintf(stdout, "origin: %s\n", result.OriginClass)
+	fmt.Fprintf(stdout, "source session: %s\n", result.Manifest.SourceSessionID)
+	fmt.Fprintf(stdout, "source machine: %s\n", defaultString(result.Manifest.SourceMachineID, "unknown"))
+	fmt.Fprintf(stdout, "transcript: %s\n", result.TranscriptPath)
+	return 0
+}
+
+func runSessionIdentity(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
+	flags, ok := parseSessionFlags(args, stderr, false, false)
+	if !ok {
+		return 1
+	}
+	if len(flags.Rest) != 0 {
+		fmt.Fprintf(stderr, "ssherpa: session identity does not accept positional arguments: %s\n", strings.Join(flags.Rest, " "))
+		return 1
+	}
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	identity, err := state.EnsureMachineIdentity(stateDir, buildVersion(build), time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity: %v\n", err)
+		return 1
+	}
+	if flags.JSON {
+		writeJSON(stdout, identity)
+		return 0
+	}
+	fmt.Fprintf(stdout, "machine_id:\t%s\n", identity.MachineID)
+	fmt.Fprintf(stdout, "schema:\t%d\n", identity.SchemaVersion)
+	fmt.Fprintf(stdout, "created:\t%s\n", identity.CreatedAt.Local().Format(time.RFC3339))
+	fmt.Fprintf(stdout, "created_by:\t%s\n", defaultString(identity.CreatedByVersion, "unknown"))
+	fmt.Fprintf(stdout, "state:\t%s\n", stateDir)
+	return 0
+}
+
 func runSessionBrowse(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags, ok := parseTranscriptFlags(args, stderr, "browse")
 	if !ok {
@@ -240,17 +374,17 @@ func runSessionBrowse(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1
 	}
-	records, err := state.ListRecords(stateDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
-		return 1
-	}
-	items := transcriptSessionItems(stateDir, records)
-	if len(items) == 0 {
-		fmt.Fprintln(stdout, "No transcripts recorded.")
-		return 0
-	}
 	for {
+		records, err := state.ListRecords(stateDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
+			return 1
+		}
+		items := transcriptSessionItems(stateDir, records)
+		if len(items) == 0 {
+			fmt.Fprintln(stdout, "No transcripts recorded.")
+			return 0
+		}
 		item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
 			Input:       os.Stdin,
 			Output:      stderr,
@@ -297,8 +431,8 @@ func transcriptSessionItems(stateDir string, records []state.SessionRecord) []ui
 			Title:       sessionview.Target(record),
 			Description: transcriptBrowserDescription(record, info.Size(), now),
 			Detail:      transcriptBrowserDetail(record, path),
-			Group:       "Transcripts",
-			Badge:       "log",
+			Group:       originGroup(record),
+			Badge:       originBadge(record),
 			Action:      "Open this recorded session transcript",
 		})
 	}
@@ -306,7 +440,7 @@ func transcriptSessionItems(stateDir string, records []state.SessionRecord) []ui
 }
 
 func transcriptBrowserDescription(record state.SessionRecord, size int64, now time.Time) string {
-	parts := []string{sessionview.StatusLabel(record)}
+	parts := []string{originLabel(record), sessionview.StatusLabel(record)}
 	if !record.StartedAt.IsZero() {
 		parts = append(parts, "started "+humanShortDuration(now.Sub(record.StartedAt))+" ago")
 	}
@@ -325,24 +459,23 @@ func transcriptBrowserDetail(record state.SessionRecord, path string) string {
 	if record.ExitCode != nil {
 		parts = append(parts, fmt.Sprintf("exit %d", *record.ExitCode))
 	}
+	if record.Import != nil {
+		parts = append(parts, "source session "+defaultString(record.Import.SourceSessionID, "unknown"))
+		parts = append(parts, "source machine "+shortMachineID(record.Import.SourceMachineID))
+	}
 	parts = append(parts, path)
 	return strings.Join(parts, " · ")
 }
 
 func runTranscriptActionMenu(stateDir string, record state.SessionRecord, stdout io.Writer, stderr io.Writer) (int, bool) {
-	items := []ui.ManagementItem{
-		{Kind: ui.ItemSessions, Token: "view", Title: "View transcript", Description: "scroll, search, follow, and toggle raw output", Group: "Actions", Badge: "view", Action: "Open transcript viewer"},
-		{Kind: ui.ItemSessions, Token: "replay", Title: "Replay transcript", Description: "play terminal output with original timing", Group: "Actions", Badge: "play", Action: "Replay recorded terminal output"},
-		{Kind: ui.ItemSessions, Token: "metadata", Title: "Show metadata", Description: "show route, times, exit code, events, and transcript path", Group: "Actions", Badge: "meta", Action: "Print session metadata"},
-		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to transcript list", Group: "Navigation", Badge: "back", Action: "Return to transcript list"},
-	}
+	items := transcriptActionItems(record)
 	item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
 		Input:       os.Stdin,
 		Output:      stderr,
 		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
 		Title:       "Transcript: " + sessionview.Target(record),
 		Mode:        "choose action",
-		Summary:     sessionview.FormatRecordRoute(record),
+		Summary:     originLabel(record) + " · " + sessionview.FormatRecordRoute(record),
 		Footer:      "enter select  /  arrows move  /  Q back",
 	})
 	if err != nil {
@@ -372,7 +505,23 @@ func runTranscriptActionMenu(stateDir string, record state.SessionRecord, stdout
 			return 1, false
 		}
 		return 0, true
-	case "replay":
+	case "replay-raw":
+		if record.Import != nil {
+			ok, answered, err := ui.Confirm(context.Background(), ui.ConfirmOptions{
+				Input:       os.Stdin,
+				Output:      stderr,
+				NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+				Title:       "Replay imported raw transcript",
+				Message:     "Raw replay can emit terminal escape sequences from another machine's recording. Continue?",
+			})
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: replay confirmation failed: %v\n", err)
+				return 1, false
+			}
+			if !answered || !ok {
+				return 0, true
+			}
+		}
 		_, _, rec, ok := loadTranscript(stateDir, record.ID, stderr)
 		if !ok {
 			return 2, false
@@ -382,12 +531,219 @@ func runTranscriptActionMenu(stateDir string, record state.SessionRecord, stdout
 			return 1, false
 		}
 		return 0, true
+	case "export-bundle":
+		return runTranscriptBundleExportTUI(stateDir, record, stdout, stderr), true
+	case "remove-import":
+		return removeImportedTranscriptTUI(stateDir, record, stdout, stderr), true
 	case "metadata":
-		printSessionRecord(stdout, record)
+		theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{NoColor: false})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1, false
+		}
+		err = sessionview.ShowMetadata(context.Background(), sessionview.MetadataOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			Record:      record,
+			Theme:       theme,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: metadata view failed: %v\n", err)
+			return 1, false
+		}
 		return 0, true
 	default:
 		return 0, true
 	}
+}
+
+func transcriptActionItems(record state.SessionRecord) []ui.ManagementItem {
+	items := []ui.ManagementItem{
+		{Kind: ui.ItemSessions, Token: "view", Title: "View transcript", Description: "scroll, search, follow, and toggle raw output", Group: "Actions", Badge: "view", Action: "Open transcript viewer"},
+		{Kind: ui.ItemSessions, Token: "replay-raw", Title: "Replay raw", Description: "play terminal output with original timing", Group: "Actions", Badge: "raw", Action: "Replay raw terminal stream"},
+		{Kind: ui.ItemSessions, Token: "export-bundle", Title: "Export bundle", Description: "write portable session bundle for another machine", Group: "Share", Badge: "export", Action: "Export transcript bundle"},
+		{Kind: ui.ItemSessions, Token: "metadata", Title: "Show metadata", Description: "view route, times, exit code, events, and transcript path", Group: "Actions", Badge: "meta", Action: "Open session metadata view"},
+		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to transcript list", Group: "Navigation", Badge: "back", Action: "Return to transcript list"},
+	}
+	if record.Import == nil {
+		return items
+	}
+	remove := ui.ManagementItem{Kind: ui.ItemConfirmDelete, Token: "remove-import", Title: "Remove imported transcript", Description: "delete imported session record and transcript file", Group: "Remove", Badge: "delete", Action: "Remove imported transcript after confirmation"}
+	return append(items[:3], append([]ui.ManagementItem{remove}, items[3:]...)...)
+}
+
+func runTranscriptBundleExportTUI(stateDir string, record state.SessionRecord, stdout io.Writer, stderr io.Writer) int {
+	defaultPath := defaultBundleExportPath(record)
+	path, ok, err := ui.PromptText(context.Background(), ui.TextPromptOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Export transcript bundle",
+		Label:       "path",
+		Initial:     defaultPath,
+		Validate: func(value string) error {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("path is required")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: export path prompt failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		return 0
+	}
+	identity, err := state.EnsureMachineIdentity(stateDir, "unknown", time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity: %v\n", err)
+		return 1
+	}
+	result, err := transcript.ExportBundle(stateDir, record, identity, path, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: export bundle: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "exported session bundle to %s\n", result.Path)
+	return 0
+}
+
+func runBundleImportTUI(flags connectFlags, stdout io.Writer, stderr io.Writer, build BuildInfo) (int, bool) {
+	path, ok, err := ui.PromptText(context.Background(), ui.TextPromptOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Import transcript bundle",
+		Label:       "bundle",
+		Validate: func(value string) error {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return fmt.Errorf("bundle path is required")
+			}
+			info, err := os.Stat(value)
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return fmt.Errorf("path is a directory")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: import path prompt failed: %v\n", err)
+		return 1, false
+	}
+	if !ok {
+		return 0, true
+	}
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1, false
+	}
+	identity, err := state.EnsureMachineIdentity(stateDir, buildVersion(build), time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity: %v\n", err)
+		return 1, false
+	}
+	preview, err := transcript.PreviewBundle(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: preview bundle: %v\n", err)
+		return 1, false
+	}
+	origin := state.OriginClass(identity, preview.Manifest.SourceMachineID)
+	message := fmt.Sprintf("Import %s from %s?\n\nTarget: %s\nRoute: %s\nSource session: %s\nSource machine: %s\nOrigin: %s\nBundle SHA256: %s",
+		filepath.Base(path),
+		humanBytesCLI(preview.Bytes),
+		defaultString(preview.Manifest.Target, "-"),
+		sessionview.FormatRoute(preview.Manifest.Route),
+		defaultString(preview.Manifest.SourceSessionID, "unknown"),
+		defaultString(preview.Manifest.SourceMachineID, "unknown"),
+		origin,
+		preview.BundleSHA256,
+	)
+	confirmed, answered, err := ui.Confirm(context.Background(), ui.ConfirmOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		NoColor:     flags.NoColor,
+		ThemeName:   flags.ThemeName,
+		ThemeFile:   flags.ThemeFile,
+		Title:       "Confirm transcript import",
+		Message:     message,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: import confirmation failed: %v\n", err)
+		return 1, false
+	}
+	if !answered || !confirmed {
+		return 0, true
+	}
+	result, err := transcript.ImportBundle(stateDir, path, identity, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: import bundle: %v\n", err)
+		return 1, false
+	}
+	fmt.Fprintf(stdout, "imported session bundle as %s (%s)\n", result.Record.ID, result.OriginClass)
+	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    flags.ThemeName,
+		File:    flags.ThemeFile,
+		NoColor: flags.NoColor,
+	})
+	if err != nil {
+		return 0, true
+	}
+	err = sessionview.ShowTranscript(context.Background(), sessionview.TranscriptOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		StateDir:    stateDir,
+		Record:      result.Record,
+		Theme:       theme,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: transcript viewer failed: %v\n", err)
+		return 1, false
+	}
+	return 0, true
+}
+
+func removeImportedTranscriptTUI(stateDir string, record state.SessionRecord, stdout io.Writer, stderr io.Writer) int {
+	if record.Import == nil {
+		fmt.Fprintln(stderr, "ssherpa: only imported transcripts can be removed here")
+		return 1
+	}
+	confirmed, answered, err := ui.ConfirmDelete(context.Background(), ui.ConfirmOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Remove imported transcript",
+		Message:     fmt.Sprintf("Remove imported transcript %s and its local record?", record.ID),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: remove confirmation failed: %v\n", err)
+		return 1
+	}
+	if !answered || !confirmed {
+		return 0
+	}
+	path := transcript.PathForRecord(stateDir, record)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "ssherpa: remove transcript: %v\n", err)
+		return 1
+	}
+	if err := os.Remove(state.RecordPath(stateDir, record.ID)); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "ssherpa: remove session record: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "removed imported transcript %s\n", record.ID)
+	return 0
 }
 
 func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -623,11 +979,49 @@ func runSessionMapViewer(flags connectFlags, output io.Writer, stderr io.Writer)
 	return 0, true
 }
 
-func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Writer) (int, bool) {
+func runSessionListViewer(flags connectFlags, stderr io.Writer) (int, bool) {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1, false
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
+		return 1, false
+	}
+	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    flags.ThemeName,
+		File:    flags.ThemeFile,
+		NoColor: flags.NoColor,
+		Env:     os.Environ(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1, false
+	}
+	err = sessionview.ShowList(context.Background(), sessionview.ListOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		StateDir:    stateDir,
+		Records:     records,
+		Theme:       theme.WithNoColor(theme.NoColor || flags.NoColor),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: session list failed: %v\n", err)
+		return 1, false
+	}
+	return 0, true
+}
+
+func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Writer, build BuildInfo) (int, bool) {
 	items := []ui.ManagementItem{
 		{Kind: ui.ItemSessions, Token: "transcripts", Title: "Browse transcripts", Description: "select a recorded session and view, search, follow, or replay its transcript", Group: "Sessions", Badge: "logs", Action: "Open transcript browser"},
+		{Kind: ui.ItemSessions, Token: "import", Title: "Import transcript bundle", Description: "validate and import a portable recording from this or another machine", Group: "Sessions", Badge: "import", Action: "Import transcript bundle"},
 		{Kind: ui.ItemSessions, Token: "map", Title: "Route map", Description: "show active supervised session lineage", Group: "Sessions", Badge: "map", Action: "Open session route map"},
-		{Kind: ui.ItemSessions, Token: "list", Title: "List sessions", Description: "print recorded session metadata", Group: "Sessions", Badge: "list", Action: "Print session list"},
+		{Kind: ui.ItemSessions, Token: "list", Title: "List sessions", Description: "browse recorded session metadata", Group: "Sessions", Badge: "list", Action: "Open session list"},
+		{Kind: ui.ItemSessions, Token: "identity", Title: "Machine identity", Description: "show this machine's ssherpa recording identity", Group: "Sessions", Badge: "id", Action: "Show machine identity"},
 		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the home screen", Group: "Navigation", Badge: "back", Action: "Return without opening a session tool"},
 	}
 	item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
@@ -654,18 +1048,54 @@ func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Write
 		if flags.StateDir != "" {
 			args = append(args, "--state-dir", flags.StateDir)
 		}
-		return runSession(args, stdout, stderr), true
+		return runSession(args, stdout, stderr, build), true
+	case "import":
+		return runBundleImportTUI(flags, stdout, stderr, build)
 	case "map":
 		return runSessionMapViewer(flags, stderr, stderr)
 	case "list":
-		args := []string{"list"}
-		if flags.StateDir != "" {
-			args = append(args, "--state-dir", flags.StateDir)
-		}
-		return runSession(args, stdout, stderr), true
+		return runSessionListViewer(flags, stderr)
+	case "identity":
+		return runMachineIdentityTUI(flags, stderr, build), true
 	default:
 		return 0, true
 	}
+}
+
+func runMachineIdentityTUI(flags connectFlags, stderr io.Writer, build BuildInfo) int {
+	stateDir, err := state.ResolveDir(flags.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
+		return 1
+	}
+	identity, err := state.EnsureMachineIdentity(stateDir, buildVersion(build), time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity: %v\n", err)
+		return 1
+	}
+	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
+		Name:    flags.ThemeName,
+		File:    flags.ThemeFile,
+		NoColor: flags.NoColor,
+		Env:     os.Environ(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	err = sessionview.ShowIdentity(context.Background(), sessionview.IdentityOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		StateDir:    stateDir,
+		Identity:    identity,
+		Theme:       theme.WithNoColor(theme.NoColor || flags.NoColor),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: machine identity view failed: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func runSessionShow(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -805,7 +1235,7 @@ func parseTranscriptFlags(args []string, stderr io.Writer, command string) (tran
 		case arg == "--":
 			flags.Rest = append(flags.Rest, args[i+1:]...)
 			return flags, true
-		case arg == "--json" && command == "grep":
+		case arg == "--json" && (command == "grep" || strings.HasPrefix(command, "bundle-")):
 			flags.JSON = true
 		case arg == "--state-dir":
 			value, ok := nextArg(args, &i, stderr, "--state-dir")
@@ -867,13 +1297,13 @@ func parseTranscriptFlags(args []string, stderr io.Writer, command string) (tran
 			flags.Format = value
 		case strings.HasPrefix(arg, "--format=") && command == "export":
 			flags.Format = strings.TrimPrefix(arg, "--format=")
-		case arg == "--output" && command == "export":
+		case arg == "--output" && (command == "export" || command == "bundle-export"):
 			value, ok := nextArg(args, &i, stderr, "--output")
 			if !ok {
 				return flags, false
 			}
 			flags.OutputPath = value
-		case strings.HasPrefix(arg, "--output=") && command == "export":
+		case strings.HasPrefix(arg, "--output=") && (command == "export" || command == "bundle-export"):
 			flags.OutputPath = strings.TrimPrefix(arg, "--output=")
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(stderr, "ssherpa: unknown session %s flag %q\n", command, arg)
@@ -978,6 +1408,18 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 			fmt.Fprintln(stdout, "transcript_truncated:\tyes")
 		}
 	}
+	if record.RecordedBy != nil {
+		fmt.Fprintf(stdout, "recorded_by_machine:\t%s\n", record.RecordedBy.MachineID)
+		fmt.Fprintf(stdout, "recorded_by_schema:\t%d\n", record.RecordedBy.IdentitySchema)
+		fmt.Fprintf(stdout, "recorded_by_version:\t%s\n", defaultString(record.RecordedBy.SSHerpaVersion, "unknown"))
+	}
+	if record.Import != nil {
+		fmt.Fprintf(stdout, "imported_at:\t%s\n", record.Import.ImportedAt.Local().Format(time.RFC3339))
+		fmt.Fprintf(stdout, "import_origin:\t%s\n", record.Import.OriginClass)
+		fmt.Fprintf(stdout, "source_session:\t%s\n", defaultString(record.Import.SourceSessionID, "unknown"))
+		fmt.Fprintf(stdout, "source_machine:\t%s\n", defaultString(record.Import.SourceMachineID, "unknown"))
+		fmt.Fprintf(stdout, "bundle_sha256:\t%s\n", record.Import.BundleSHA256)
+	}
 	if record.DisconnectReason != "" {
 		fmt.Fprintf(stdout, "disconnect_reason:\t%s\n", record.DisconnectReason)
 	}
@@ -1021,4 +1463,88 @@ func humanBytesCLI(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+func buildVersion(build BuildInfo) string {
+	normalized := build.normalized()
+	return normalized.Version
+}
+
+func originGroup(record state.SessionRecord) string {
+	if record.Import == nil {
+		return "Local"
+	}
+	switch record.Import.OriginClass {
+	case "imported_self":
+		return "Imported - This Machine"
+	case "imported_other":
+		return "Imported - Other Machines"
+	default:
+		return "Imported - Unknown Origin"
+	}
+}
+
+func originBadge(record state.SessionRecord) string {
+	if record.Import == nil {
+		return "local"
+	}
+	switch record.Import.OriginClass {
+	case "imported_self":
+		return "self"
+	case "imported_other":
+		return "other"
+	default:
+		return "unknown"
+	}
+}
+
+func originLabel(record state.SessionRecord) string {
+	if record.Import == nil {
+		return "local"
+	}
+	switch record.Import.OriginClass {
+	case "imported_self":
+		return "imported self"
+	case "imported_other":
+		return "imported other"
+	default:
+		return "imported unknown"
+	}
+}
+
+func shortMachineID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "unknown"
+	}
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:8]
+}
+
+func defaultBundleExportPath(record state.SessionRecord) string {
+	target := strings.TrimSpace(sessionview.Target(record))
+	if target == "" || target == "-" {
+		target = "session"
+	}
+	target = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, target)
+	stamp := time.Now().Format("20060102")
+	if !record.StartedAt.IsZero() {
+		stamp = record.StartedAt.Local().Format("20060102")
+	}
+	return target + "-" + stamp + ".ssherpa-session"
 }

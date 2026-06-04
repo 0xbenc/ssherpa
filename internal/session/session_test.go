@@ -15,6 +15,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/transcript"
 	"github.com/creack/pty"
 )
 
@@ -74,6 +75,12 @@ func TestRunSupervisedRecordsSessionLifecycle(t *testing.T) {
 	}
 	if got := strings.Join(record.SSHArgv, "\x00"); got != "sh\x00-c\x00printf 'hello from pty'; exit 7" {
 		t.Fatalf("record ssh argv = %#v", record.SSHArgv)
+	}
+	if record.Transcript != nil {
+		t.Fatalf("record.Transcript = %#v, want nil until recording is started from the overlay", record.Transcript)
+	}
+	if _, err := os.Stat(transcript.Path(stateDir, record.ID)); !os.IsNotExist(err) {
+		t.Fatalf("transcript file stat err = %v, want not exist until recording is started from the overlay", err)
 	}
 }
 
@@ -810,6 +817,97 @@ func TestRunSupervisedOverlayReceiveActionDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedRecordingStartsAndPausesFromOverlay(t *testing.T) {
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	userPTY, userTTY, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open user pty: %v", err)
+	}
+	defer userPTY.Close()
+	defer userTTY.Close()
+	stdout := newNotifyingBuffer("PRE")
+
+	done := make(chan int, 1)
+	go func() {
+		done <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; printf PRE; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf ON; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf OFF; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf RESUMED`}},
+			Metadata{TargetAlias: "prod"},
+			Options{
+				StateDir: stateDir,
+				Stdin:    userTTY,
+				Stdout:   stdout,
+				Stderr:   &stderr,
+				Env:      []string{"PATH=" + os.Getenv("PATH")},
+				Now:      fixedClock(),
+			},
+		)
+	}()
+
+	waitForBufferContains(t, stdout, "PRE", 3*time.Second, func() string { return stderr.String() })
+	if _, err := userPTY.Write([]byte{OverlayHotkey, 'T'}); err != nil {
+		t.Fatalf("write start recording keys: %v", err)
+	}
+	waitForBufferContains(t, stdout, "recording started", 3*time.Second, func() string { return stderr.String() })
+	if _, err := userPTY.Write([]byte{'q', 'a'}); err != nil {
+		t.Fatalf("write first remote byte: %v", err)
+	}
+	waitForBufferContains(t, stdout, "ON", 3*time.Second, func() string { return stderr.String() })
+
+	if _, err := userPTY.Write([]byte{OverlayHotkey, 'T'}); err != nil {
+		t.Fatalf("write pause recording keys: %v", err)
+	}
+	waitForBufferContains(t, stdout, "recording paused", 3*time.Second, func() string { return stderr.String() })
+	if _, err := userPTY.Write([]byte{'q', 'b'}); err != nil {
+		t.Fatalf("write paused remote byte: %v", err)
+	}
+	waitForBufferContains(t, stdout, "OFF", 3*time.Second, func() string { return stderr.String() })
+
+	if _, err := userPTY.Write([]byte{OverlayHotkey, 'T'}); err != nil {
+		t.Fatalf("write resume recording keys: %v", err)
+	}
+	waitForBufferContains(t, stdout, "recording resumed", 3*time.Second, func() string { return stderr.String() })
+	if _, err := userPTY.Write([]byte{'q', 'c'}); err != nil {
+		t.Fatalf("write resumed remote byte: %v", err)
+	}
+
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("RunSupervised did not return; stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.Transcript == nil {
+		t.Fatalf("record.Transcript is nil, want overlay-started transcript")
+	}
+	recording, err := transcript.Read(transcript.PathForRecord(stateDir, record))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	output := transcriptOutput(recording)
+	if strings.Contains(output, "PRE") {
+		t.Fatalf("transcript output = %q, want pre-start output omitted", output)
+	}
+	if strings.Contains(output, "OFF") {
+		t.Fatalf("transcript output = %q, want paused output omitted", output)
+	}
+	if !strings.Contains(output, "ON") || !strings.Contains(output, "RESUMED") {
+		t.Fatalf("transcript output = %q, want active output ON and RESUMED", output)
+	}
+}
+
 func TestOutputTapStopDetachesWithoutClosingChannel(t *testing.T) {
 	tap := &outputTap{}
 	ch, stop := tap.start(true)
@@ -1456,4 +1554,14 @@ func sessionEventTypes(record state.SessionRecord) []string {
 		types = append(types, event.Type)
 	}
 	return types
+}
+
+func transcriptOutput(recording transcript.Recording) string {
+	var out strings.Builder
+	for _, frame := range recording.Frames {
+		if frame.Stream == "o" {
+			out.WriteString(frame.Data)
+		}
+	}
+	return out.String()
 }
