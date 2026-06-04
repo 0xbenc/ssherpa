@@ -339,7 +339,7 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 				return code
 			}
 		case "merge":
-			dir, ok, err := promptText(stderr, "Merge authorized_keys", "directory", ".", validateNonEmpty("Directory"))
+			dir, ok, err := pickAuthkeysDirectory(stderr, "SSHERPA AUTHKEYS MERGE SOURCE")
 			if err != nil {
 				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 				return 1
@@ -352,7 +352,7 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 				return code
 			}
 		case "replace":
-			dir, ok, err := promptText(stderr, "Replace authorized_keys", "directory", ".", validateNonEmpty("Directory"))
+			dir, ok, err := pickAuthkeysDirectory(stderr, "SSHERPA AUTHKEYS REPLACE SOURCE")
 			if err != nil {
 				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 				return 1
@@ -378,6 +378,36 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 			}
 		}
 	}
+}
+
+func pickAuthkeysDirectory(stderr io.Writer, title string) (string, bool, error) {
+	cwd, err := expandLocalPath(".")
+	if err != nil {
+		return "", false, err
+	}
+
+	for {
+		items, err := localDirectoryPickerItems(cwd)
+		if err != nil {
+			return "", false, err
+		}
+		item, ok, err := ui.BrowseTransfer(context.Background(), items, authkeysDirectoryBrowserOptions(stderr, title, cwd))
+		if err != nil || !ok {
+			return "", ok, err
+		}
+		switch item.Kind {
+		case filePickerHere:
+			return item.Token, true, nil
+		case filePickerParent, filePickerDir:
+			cwd = item.Token
+		}
+	}
+}
+
+func authkeysDirectoryBrowserOptions(stderr io.Writer, title string, cwd string) ui.TransferBrowserOptions {
+	opts := transferBrowserOptions(stderr, filePickerOptions{}, title, "local-folder", "LOCAL", cwd, []string{"action", "directory", "confirm"}, 1)
+	opts.Footer = "enter open/use  /  type filter  /  arrows move  /  shift+arrows section  /  Q cancel"
+	return opts
 }
 
 func authkeysInteractiveDirArgs(path string, dir string, flags authkeysFlags) []string {
@@ -772,13 +802,55 @@ func printAuthkeysResult(stdout io.Writer, plan authkeys.Plan, result fsutil.Wri
 	if result.BackupPath != "" {
 		fmt.Fprintf(stdout, "[backup] %s\n", result.BackupPath)
 	}
+	printAuthkeysReport(stdout, plan, result)
 }
 
 func printAuthkeysStats(stdout io.Writer, stats authkeys.ImportStats) {
 	if stats == (authkeys.ImportStats{}) {
 		return
 	}
-	fmt.Fprintf(stdout, "[summary] valid=%d added=%d deleted=%d invalid=%d duplicate=%d already-present=%d ignored=%d\n",
+	fmt.Fprintf(stdout, "[summary] %s\n", authkeysStatsSummary(stats))
+}
+
+func printAuthkeysReport(stdout io.Writer, plan authkeys.Plan, result fsutil.WriteResult) {
+	target := plan.Target
+	if target == "" {
+		target = fmt.Sprintf("%d key(s)", len(plan.Keys))
+	}
+	fmt.Fprintln(stdout, "[report] authorized_keys")
+	fmt.Fprintf(stdout, "  action      %s\n", authkeysReportAction(plan, result))
+	fmt.Fprintf(stdout, "  path        %s\n", plan.Path)
+	fmt.Fprintf(stdout, "  target      %s\n", target)
+	fmt.Fprintf(stdout, "  changed     %s\n", yesNo(result.Changed))
+	fmt.Fprintf(stdout, "  dry-run     %s\n", yesNo(result.DryRun))
+	fmt.Fprintf(stdout, "  keys        %d\n", len(plan.Keys))
+	if plan.Stats != (authkeys.ImportStats{}) {
+		fmt.Fprintf(stdout, "  stats       %s\n", authkeysStatsSummary(plan.Stats))
+	}
+	if len(plan.NotFound) > 0 {
+		fmt.Fprintf(stdout, "  not-found   %s\n", strings.Join(plan.NotFound, ", "))
+	}
+	if len(plan.Diagnostics) > 0 {
+		fmt.Fprintf(stdout, "  warnings    %d\n", len(plan.Diagnostics))
+	}
+	if result.BackupPath != "" {
+		fmt.Fprintf(stdout, "  backup      %s\n", result.BackupPath)
+	}
+}
+
+func authkeysReportAction(plan authkeys.Plan, result fsutil.WriteResult) string {
+	action := plan.Action
+	if !result.Changed {
+		return "unchanged"
+	}
+	if result.DryRun {
+		return "would-" + action
+	}
+	return action
+}
+
+func authkeysStatsSummary(stats authkeys.ImportStats) string {
+	return fmt.Sprintf("valid=%d added=%d deleted=%d invalid=%d duplicate=%d already-present=%d ignored=%d",
 		stats.Valid,
 		stats.Added,
 		stats.Deleted,
@@ -787,6 +859,13 @@ func printAuthkeysStats(stdout io.Writer, stats authkeys.ImportStats) {
 		stats.AlreadyPresent,
 		stats.Ignored,
 	)
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func printAuthkeysDiagnostics(stderr io.Writer, diagnostics []authkeys.Diagnostic) {

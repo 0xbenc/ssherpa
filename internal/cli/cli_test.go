@@ -2242,6 +2242,123 @@ func TestRunEditDeleteProtectsWildcardStanzas(t *testing.T) {
 	assertNotContains(t, readFile(t, config), "Host prod *.example.com")
 }
 
+func TestRunEditDeleteRemovesDependentSavedCatalogEntries(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	config := writeConfig(t, `Host prod
+  HostName prod.example.com
+
+Host bastion
+  HostName bastion.example.com
+
+Host other
+  HostName other.example.com
+`)
+	if err := state.WriteForward(stateDir, state.StoredForward{
+		Name:       "pg",
+		SSHAlias:   "prod",
+		LocalPort:  15432,
+		RemoteHost: "127.0.0.1",
+		RemotePort: 5432,
+	}); err != nil {
+		t.Fatalf("WriteForward pg: %v", err)
+	}
+	if err := state.WriteForward(stateDir, state.StoredForward{
+		Name:       "redis-via-prod",
+		SSHAlias:   "other",
+		LocalPort:  16379,
+		RemoteHost: "127.0.0.1",
+		RemotePort: 6379,
+		Through:    "prod",
+	}); err != nil {
+		t.Fatalf("WriteForward redis-via-prod: %v", err)
+	}
+	if err := state.WriteForward(stateDir, state.StoredForward{
+		Name:       "keep",
+		SSHAlias:   "other",
+		LocalPort:  10022,
+		RemoteHost: "127.0.0.1",
+		RemotePort: 22,
+		Through:    "bastion",
+	}); err != nil {
+		t.Fatalf("WriteForward keep: %v", err)
+	}
+	if err := state.WriteProxy(stateDir, state.StoredProxy{Name: "corp", SSHAlias: "prod", Port: 1080}); err != nil {
+		t.Fatalf("WriteProxy corp: %v", err)
+	}
+	if err := state.WriteProxy(stateDir, state.StoredProxy{Name: "keep-proxy", SSHAlias: "other", Port: 1081}); err != nil {
+		t.Fatalf("WriteProxy keep-proxy: %v", err)
+	}
+
+	code := Run([]string{"edit", "delete", "prod", "--config", config, "--state-dir", stateDir, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	assertContains(t, stderr.String(), "will also delete")
+	assertContains(t, stderr.String(), `"pg"`)
+	assertContains(t, stderr.String(), `"redis-via-prod"`)
+	assertContains(t, stderr.String(), `"corp"`)
+	assertContains(t, stdout.String(), `forward "pg" deleted`)
+	assertContains(t, stdout.String(), `forward "redis-via-prod" deleted`)
+	assertContains(t, stdout.String(), `proxy "corp" deleted`)
+	assertNotContains(t, readFile(t, config), "Host prod")
+	if _, err := state.ReadForward(stateDir, "pg"); err == nil {
+		t.Fatalf("saved forward pg still exists")
+	}
+	if _, err := state.ReadForward(stateDir, "redis-via-prod"); err == nil {
+		t.Fatalf("saved forward redis-via-prod still exists")
+	}
+	if _, err := state.ReadProxy(stateDir, "corp"); err == nil {
+		t.Fatalf("saved proxy corp still exists")
+	}
+	if _, err := state.ReadForward(stateDir, "keep"); err != nil {
+		t.Fatalf("saved forward keep was deleted: %v", err)
+	}
+	if _, err := state.ReadProxy(stateDir, "keep-proxy"); err != nil {
+		t.Fatalf("saved proxy keep-proxy was deleted: %v", err)
+	}
+}
+
+func TestRunEditDeleteDryRunWarnsButKeepsDependentSavedCatalogEntries(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	config := writeConfig(t, `Host prod
+  HostName prod.example.com
+`)
+	if err := state.WriteForward(stateDir, state.StoredForward{
+		Name:       "pg",
+		SSHAlias:   "prod",
+		LocalPort:  15432,
+		RemoteHost: "127.0.0.1",
+		RemotePort: 5432,
+	}); err != nil {
+		t.Fatalf("WriteForward pg: %v", err)
+	}
+	if err := state.WriteProxy(stateDir, state.StoredProxy{Name: "corp", SSHAlias: "prod", Port: 1080}); err != nil {
+		t.Fatalf("WriteProxy corp: %v", err)
+	}
+
+	code := Run([]string{"edit", "delete", "prod", "--config", config, "--state-dir", stateDir, "--dry-run"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	assertContains(t, stderr.String(), "will also delete")
+	assertContains(t, stdout.String(), "[would-removed] prod")
+	assertContains(t, stdout.String(), "[would-delete] saved forward pg")
+	assertContains(t, stdout.String(), "[would-delete] saved proxy corp")
+	assertContains(t, readFile(t, config), "Host prod")
+	if _, err := state.ReadForward(stateDir, "pg"); err != nil {
+		t.Fatalf("saved forward pg was deleted: %v", err)
+	}
+	if _, err := state.ReadProxy(stateDir, "corp"); err != nil {
+		t.Fatalf("saved proxy corp was deleted: %v", err)
+	}
+}
+
 func TestRunEditDeleteAllRequiresExactConfirmation(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2494,6 +2611,7 @@ func TestRunAuthkeysAddCreatesAuthorizedKeysWithMode600(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "[added]")
 	assertContains(t, stdout.String(), "valid=1 added=1")
+	assertContains(t, stdout.String(), "[report] authorized_keys")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read authorized_keys: %v", err)
@@ -2550,6 +2668,7 @@ func TestRunAuthkeysMergeDryRunPreservesOptions(t *testing.T) {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
 	assertContains(t, stdout.String(), "[would-merged]")
+	assertContains(t, stdout.String(), "[report] authorized_keys")
 	assertContains(t, stdout.String(), line)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("authorized_keys exists after dry-run, err=%v", err)
@@ -2580,6 +2699,7 @@ func TestRunAuthkeysReplaceCreatesBackup(t *testing.T) {
 	}
 	assertContains(t, stdout.String(), "[replaced]")
 	assertContains(t, stdout.String(), "[backup]")
+	assertContains(t, stdout.String(), "[report] authorized_keys")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read authorized_keys: %v", err)
@@ -2650,6 +2770,7 @@ func TestRunAuthkeysDeleteByFingerprintPreservesComments(t *testing.T) {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
 	assertContains(t, stdout.String(), "[removed]")
+	assertContains(t, stdout.String(), "[report] authorized_keys")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read authorized_keys: %v", err)

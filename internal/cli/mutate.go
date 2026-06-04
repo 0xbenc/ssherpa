@@ -52,6 +52,7 @@ type deleteFlags struct {
 	mutationFlags
 	AllSources    bool
 	DeletePattern bool
+	StateDir      string
 }
 
 type deleteAllFlags struct {
@@ -60,15 +61,25 @@ type deleteAllFlags struct {
 	Yes           bool
 	Confirm       string
 	DeletePattern bool
+	StateDir      string
+}
+
+type catalogDeletePlan struct {
+	StateDir string
+	Forwards []state.StoredForward
+	Proxies  []state.StoredProxy
 }
 
 type editInteractiveFlags struct {
 	inventoryFlags
-	StateDir  string
-	NoColor   bool
-	ThemeName string
-	ThemeFile string
+	StateDir      string
+	DeletePattern bool
+	NoColor       bool
+	ThemeName     string
+	ThemeFile     string
 }
+
+const editItemDeleteAll = ui.ItemKind("delete_all")
 
 func runAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	if hasHelpFlag(args) {
@@ -289,8 +300,15 @@ func runEditDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	catalogPlan, err := planCatalogDeletesForAliases(flags.StateDir, aliasesFromPlans(plans))
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	warnCatalogDeletes(stderr, fmt.Sprintf("alias %q", alias), catalogPlan)
+
 	if !flags.DryRun && !flags.Yes {
-		ok, err := confirmDeleteChoice(stderr, "Delete SSH alias", fmt.Sprintf("%s from %d file(s)", alias, len(plans)))
+		ok, err := confirmDeleteChoice(stderr, "Delete SSH alias", deleteAliasDescription(alias, len(plans), catalogPlan))
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: delete confirmation failed: %v\n", err)
 			return 1
@@ -301,7 +319,11 @@ func runEditDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	}
 
-	return applyMutationPlans(plans, flags.mutationFlags, stdout, stderr)
+	code := applyMutationPlans(plans, flags.mutationFlags, stdout, stderr)
+	if code != 0 {
+		return code
+	}
+	return applyCatalogDeletePlan(catalogPlan, flags.DryRun, stdout, stderr)
 }
 
 func runEditDeleteAll(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -356,6 +378,13 @@ func runEditDeleteAll(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	catalogPlan, err := planCatalogDeletesForAliases(flags.StateDir, aliasesFromPlans(plans))
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	warnCatalogDeletes(stderr, fmt.Sprintf("%d aliases", len(aliasesFromPlans(plans))), catalogPlan)
+
 	wantConfirm := fmt.Sprintf("delete %d aliases", len(inventory.Aliases))
 	reader := bufio.NewReader(os.Stdin)
 	if !flags.DryRun && !exactConfirm(reader, stderr, flags.Confirm, wantConfirm) {
@@ -363,7 +392,11 @@ func runEditDeleteAll(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	return applyMutationPlans(plans, mutationFlags{Config: flags.Config, DryRun: flags.DryRun, Yes: flags.Yes}, stdout, stderr)
+	code := applyMutationPlans(plans, mutationFlags{Config: flags.Config, DryRun: flags.DryRun, Yes: flags.Yes}, stdout, stderr)
+	if code != 0 {
+		return code
+	}
+	return applyCatalogDeletePlan(catalogPlan, flags.DryRun, stdout, stderr)
 }
 
 func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -412,6 +445,8 @@ func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	switch item.Kind {
+	case editItemDeleteAll:
+		return runEditDeleteAll(editDeleteAllArgs(flags), stdout, stderr)
 	case ui.ItemAlias:
 		return runEditAliasTUI(item.Token, flags, stdout, stderr)
 	case ui.ItemForwardSaved:
@@ -438,7 +473,11 @@ func runEditAliasTUI(alias string, flags editInteractiveFlags, stdout io.Writer,
 		return 0
 	}
 	if action.Token == "delete" {
-		return runEditDelete(append([]string{alias}, configArg(flags.Config)...), stdout, stderr)
+		args := append([]string{alias}, configArg(flags.Config)...)
+		if flags.StateDir != "" {
+			args = append(args, "--state-dir", flags.StateDir)
+		}
+		return runEditDelete(args, stdout, stderr)
 	}
 
 	targets, err := chooseExistingTargets(flags.Config, alias, false)
@@ -800,7 +839,19 @@ func editSavedProxies(stateDirOverride string) []state.StoredProxy {
 }
 
 func editManagementItems(aliases []hostlist.Alias, forwards []state.StoredForward, proxies []state.StoredProxy) []ui.ManagementItem {
-	items := make([]ui.ManagementItem, 0, len(aliases)+len(forwards)+len(proxies))
+	items := make([]ui.ManagementItem, 0, len(aliases)+len(forwards)+len(proxies)+1)
+	if len(aliases) > 0 {
+		items = append(items, ui.ManagementItem{
+			Kind:        editItemDeleteAll,
+			Token:       "delete-all",
+			Title:       "Delete all aliases",
+			Description: fmt.Sprintf("remove %s from SSH config", editCountLabel(len(aliases), "visible alias", "visible aliases")),
+			Detail:      "also removes saved forwards/proxies that depend on those aliases",
+			Group:       "Bulk Actions",
+			Badge:       "delete",
+			Action:      "Delete every visible SSH alias after exact confirmation",
+		})
+	}
 	for _, forward := range forwards {
 		items = append(items, ui.ManagementItem{
 			Kind:        ui.ItemForwardSaved,
@@ -838,6 +889,29 @@ func editManagementItems(aliases []hostlist.Alias, forwards []state.StoredForwar
 		})
 	}
 	return items
+}
+
+func editDeleteAllArgs(flags editInteractiveFlags) []string {
+	var args []string
+	if flags.All {
+		args = append(args, "--all")
+	}
+	if flags.Filter != "" {
+		args = append(args, "--filter", flags.Filter)
+	}
+	if flags.User != "" {
+		args = append(args, "--user", flags.User)
+	}
+	if flags.Config != "" {
+		args = append(args, "--config", flags.Config)
+	}
+	if flags.StateDir != "" {
+		args = append(args, "--state-dir", flags.StateDir)
+	}
+	if flags.DeletePattern {
+		args = append(args, "--delete-patterns")
+	}
+	return args
 }
 
 func editActionItems(items []ui.Item) []ui.ManagementItem {
@@ -1079,6 +1153,8 @@ func parseEditInteractiveFlags(args []string, stderr io.Writer) (editInteractive
 			flags.StateDir = value
 		case strings.HasPrefix(arg, "--state-dir="):
 			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case arg == "--delete-patterns":
+			flags.DeletePattern = true
 		case arg == "--no-color":
 			flags.NoColor = true
 		case arg == "--theme":
@@ -1182,6 +1258,14 @@ func parseDeleteFlags(args []string, stderr io.Writer) (deleteFlags, bool) {
 			flags.AllSources = true
 		case arg == "--delete-patterns":
 			flags.DeletePattern = true
+		case arg == "--state-dir":
+			value, ok := nextArg(args, &i, stderr, "--state-dir")
+			if !ok {
+				return flags, false
+			}
+			flags.StateDir = value
+		case strings.HasPrefix(arg, "--state-dir="):
+			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
 		default:
 			handled, mutationOK := parseMutationFlag(arg, args, &i, stderr, &flags.mutationFlags)
 			if handled {
@@ -1228,6 +1312,14 @@ func parseDeleteAllFlags(args []string, stderr io.Writer) (deleteAllFlags, bool)
 			flags.Config = value
 		case strings.HasPrefix(arg, "--config="):
 			flags.Config = strings.TrimPrefix(arg, "--config=")
+		case arg == "--state-dir":
+			value, ok := nextArg(args, &i, stderr, "--state-dir")
+			if !ok {
+				return flags, false
+			}
+			flags.StateDir = value
+		case strings.HasPrefix(arg, "--state-dir="):
+			flags.StateDir = strings.TrimPrefix(arg, "--state-dir=")
 		case arg == "--dry-run":
 			flags.DryRun = true
 		case arg == "--yes" || arg == "-y":
@@ -1442,6 +1534,144 @@ func applyMutationPlans(plans []sshconfig.MutationPlan, flags mutationFlags, std
 		printMutationResult(stdout, plan, result)
 	}
 	return 0
+}
+
+func planCatalogDeletesForAliases(stateDirOverride string, aliases []string) (catalogDeletePlan, error) {
+	stateDir, err := state.ResolveDir(stateDirOverride)
+	if err != nil {
+		return catalogDeletePlan{}, fmt.Errorf("resolve state directory: %w", err)
+	}
+	aliasSet := stringSet(aliases)
+	plan := catalogDeletePlan{StateDir: stateDir}
+
+	forwards, err := state.ListForwards(stateDir)
+	if err != nil {
+		return catalogDeletePlan{}, fmt.Errorf("list saved forwards: %w", err)
+	}
+	for _, forward := range forwards {
+		if aliasSet[forward.SSHAlias] || aliasSet[forward.Through] {
+			plan.Forwards = append(plan.Forwards, forward)
+		}
+	}
+
+	proxies, err := state.ListProxies(stateDir)
+	if err != nil {
+		return catalogDeletePlan{}, fmt.Errorf("list saved proxies: %w", err)
+	}
+	for _, proxy := range proxies {
+		if aliasSet[proxy.SSHAlias] {
+			plan.Proxies = append(plan.Proxies, proxy)
+		}
+	}
+	return plan, nil
+}
+
+func warnCatalogDeletes(stderr io.Writer, subject string, plan catalogDeletePlan) {
+	if catalogDeleteCount(plan) == 0 {
+		return
+	}
+	fmt.Fprintf(stderr, "ssherpa: warning: deleting %s will also delete %s\n", subject, catalogDeleteSummary(plan))
+}
+
+func deleteAliasDescription(alias string, fileCount int, plan catalogDeletePlan) string {
+	description := fmt.Sprintf("%s from %d file(s)", alias, fileCount)
+	if catalogDeleteCount(plan) > 0 {
+		description += "; also deletes " + catalogDeleteSummary(plan)
+	}
+	return description
+}
+
+func applyCatalogDeletePlan(plan catalogDeletePlan, dryRun bool, stdout io.Writer, stderr io.Writer) int {
+	for _, forward := range plan.Forwards {
+		if dryRun {
+			fmt.Fprintf(stdout, "[would-delete] saved forward %s\n", forward.Name)
+			continue
+		}
+		if err := state.DeleteForward(plan.StateDir, forward.Name); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: delete saved forward %q: %v\n", forward.Name, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "ssherpa: forward %q deleted\n", forward.Name)
+	}
+	for _, proxy := range plan.Proxies {
+		if dryRun {
+			fmt.Fprintf(stdout, "[would-delete] saved proxy %s\n", proxy.Name)
+			continue
+		}
+		if err := state.DeleteProxy(plan.StateDir, proxy.Name); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: delete saved proxy %q: %v\n", proxy.Name, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "ssherpa: proxy %q deleted\n", proxy.Name)
+	}
+	return 0
+}
+
+func catalogDeleteCount(plan catalogDeletePlan) int {
+	return len(plan.Forwards) + len(plan.Proxies)
+}
+
+func catalogDeleteSummary(plan catalogDeletePlan) string {
+	var parts []string
+	if len(plan.Forwards) > 0 {
+		parts = append(parts, fmt.Sprintf("%s: %s", pluralize(len(plan.Forwards), "saved forward", "saved forwards"), quoteNames(forwardCatalogNames(plan.Forwards))))
+	}
+	if len(plan.Proxies) > 0 {
+		parts = append(parts, fmt.Sprintf("%s: %s", pluralize(len(plan.Proxies), "saved proxy", "saved proxies"), quoteNames(proxyCatalogNames(plan.Proxies))))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func forwardCatalogNames(forwards []state.StoredForward) []string {
+	names := make([]string, 0, len(forwards))
+	for _, forward := range forwards {
+		names = append(names, forward.Name)
+	}
+	return names
+}
+
+func proxyCatalogNames(proxies []state.StoredProxy) []string {
+	names := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		names = append(names, proxy.Name)
+	}
+	return names
+}
+
+func quoteNames(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, fmt.Sprintf("%q", name))
+	}
+	return strings.Join(quoted, ", ")
+}
+
+func pluralize(count int, singular string, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
+}
+
+func aliasesFromPlans(plans []sshconfig.MutationPlan) []string {
+	var aliases []string
+	for _, plan := range plans {
+		aliases = append(aliases, plan.Aliases...)
+		if plan.Alias != "" {
+			aliases = append(aliases, plan.Alias)
+		}
+	}
+	return uniqueStrings(aliases)
+}
+
+func stringSet(values []string) map[string]bool {
+	set := map[string]bool{}
+	for _, value := range values {
+		if value != "" {
+			set[value] = true
+		}
+	}
+	return set
 }
 
 func assertUnchangedSincePlan(plan sshconfig.MutationPlan) error {

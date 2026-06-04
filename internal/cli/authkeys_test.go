@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
+	"github.com/0xbenc/ssherpa/internal/fsutil"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -33,6 +35,68 @@ func TestAuthkeysMenuItems(t *testing.T) {
 	}
 	if !strings.Contains(items[3].Action, "fingerprint") {
 		t.Fatalf("delete action = %q", items[3].Action)
+	}
+}
+
+func TestAuthkeysDirectoryBrowserOptionsUseTransferPickerShape(t *testing.T) {
+	opts := authkeysDirectoryBrowserOptions(nil, "SSHERPA AUTHKEYS REPLACE SOURCE", "/home/test/keys")
+	if opts.Title != "SSHERPA AUTHKEYS REPLACE SOURCE" || opts.Mode != "local-folder" {
+		t.Fatalf("title/mode = %q / %q", opts.Title, opts.Mode)
+	}
+	if opts.LocationLabel != "LOCAL" || opts.Location != "/home/test/keys" {
+		t.Fatalf("location = %q / %q", opts.LocationLabel, opts.Location)
+	}
+	if strings.Join(opts.Steps, "\x00") != "action\x00directory\x00confirm" || opts.CurrentStep != 1 {
+		t.Fatalf("steps/current = %#v / %d", opts.Steps, opts.CurrentStep)
+	}
+	if !strings.Contains(opts.Footer, "open/use") {
+		t.Fatalf("footer = %q", opts.Footer)
+	}
+}
+
+func TestPrintAuthkeysReportIncludesMutationDetails(t *testing.T) {
+	var stdout bytes.Buffer
+	plan := authkeys.Plan{
+		Path:   "/home/test/.ssh/authorized_keys",
+		Action: "replaced",
+		Target: "/home/test/keys",
+		Keys: []authkeys.AuthorizedKey{{
+			Type:    "ssh-ed25519",
+			Blob:    "abc123",
+			Comment: "alice@example",
+		}},
+		Stats: authkeys.ImportStats{
+			Valid:   1,
+			Added:   1,
+			Invalid: 1,
+		},
+		Diagnostics: []authkeys.Diagnostic{{Severity: "warning", Message: "bad key"}},
+		NotFound:    []string{"SHA256:missing"},
+	}
+	result := fsutil.WriteResult{
+		Changed:    true,
+		BackupPath: "/home/test/.ssh/authorized_keys.ssherpa-backup.1",
+	}
+
+	printAuthkeysReport(&stdout, plan, result)
+
+	text := stdout.String()
+	for _, want := range []string{
+		"[report] authorized_keys",
+		"action      replaced",
+		"path        /home/test/.ssh/authorized_keys",
+		"target      /home/test/keys",
+		"changed     yes",
+		"dry-run     no",
+		"keys        1",
+		"stats       valid=1 added=1 deleted=0 invalid=1 duplicate=0 already-present=0 ignored=0",
+		"not-found   SHA256:missing",
+		"warnings    1",
+		"backup      /home/test/.ssh/authorized_keys.ssherpa-backup.1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("report missing %q:\n%s", want, text)
+		}
 	}
 }
 

@@ -72,8 +72,8 @@ Mutation Commands:
   ssherpa add --alias NAME --host HOST [--user USER] [--port PORT] [--yes]
   ssherpa add --alias NAME --host HOST --dry-run
   ssherpa edit set ALIAS [--host HOST] [--user USER] [--port PORT] [--yes]
-  ssherpa edit delete ALIAS [--all-sources] [--yes]
-  ssherpa edit delete-all --dry-run
+  ssherpa edit delete ALIAS [--all-sources] [--state-dir PATH] [--yes]
+  ssherpa edit delete-all [--state-dir PATH] --dry-run
   ssherpa edit delete-all --confirm "delete N aliases"
 
 Route Commands:

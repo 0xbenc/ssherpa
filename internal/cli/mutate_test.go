@@ -35,23 +35,46 @@ func TestEditManagementItemsPreserveTargetKindsAndDetails(t *testing.T) {
 	}}
 
 	items := editManagementItems(aliases, forwards, proxies)
-	if len(items) != 3 {
-		t.Fatalf("len(items) = %d, want 3", len(items))
+	if len(items) != 4 {
+		t.Fatalf("len(items) = %d, want 4", len(items))
 	}
-	if items[0].Kind != ui.ItemForwardSaved || items[0].Token != "pg" || items[0].Badge != "fwd" {
-		t.Fatalf("forward item = %+v", items[0])
+	if items[0].Kind != editItemDeleteAll || items[0].Token != "delete-all" || items[0].Group != "Bulk Actions" {
+		t.Fatalf("bulk delete item = %+v", items[0])
 	}
-	if !strings.Contains(items[0].Description, "prod:") || !strings.Contains(items[0].Detail, "alias prod") {
-		t.Fatalf("forward description/detail = %q / %q", items[0].Description, items[0].Detail)
+	if !strings.Contains(items[0].Description, "1 visible alias") || !strings.Contains(items[0].Detail, "saved forwards/proxies") {
+		t.Fatalf("bulk delete description/detail = %q / %q", items[0].Description, items[0].Detail)
 	}
-	if items[1].Kind != ui.ItemProxySaved || items[1].Token != "corp" || items[1].Group != "Saved Proxies" {
-		t.Fatalf("proxy item = %+v", items[1])
+	if items[1].Kind != ui.ItemForwardSaved || items[1].Token != "pg" || items[1].Badge != "fwd" {
+		t.Fatalf("forward item = %+v", items[1])
 	}
-	if items[2].Kind != ui.ItemAlias || items[2].Token != "prod" || items[2].Group != "SSH Aliases" {
-		t.Fatalf("alias item = %+v", items[2])
+	if !strings.Contains(items[1].Description, "prod:") || !strings.Contains(items[1].Detail, "alias prod") {
+		t.Fatalf("forward description/detail = %q / %q", items[1].Description, items[1].Detail)
 	}
-	if !strings.Contains(items[2].Description, "deploy@prod.example.com:2222") || items[2].Detail != "/home/test/.ssh/config:12" {
-		t.Fatalf("alias description/detail = %q / %q", items[2].Description, items[2].Detail)
+	if items[2].Kind != ui.ItemProxySaved || items[2].Token != "corp" || items[2].Group != "Saved Proxies" {
+		t.Fatalf("proxy item = %+v", items[2])
+	}
+	if items[3].Kind != ui.ItemAlias || items[3].Token != "prod" || items[3].Group != "SSH Aliases" {
+		t.Fatalf("alias item = %+v", items[3])
+	}
+	if !strings.Contains(items[3].Description, "deploy@prod.example.com:2222") || items[3].Detail != "/home/test/.ssh/config:12" {
+		t.Fatalf("alias description/detail = %q / %q", items[3].Description, items[3].Detail)
+	}
+}
+
+func TestEditDeleteAllArgsPreserveVisibleAliasScope(t *testing.T) {
+	args := editDeleteAllArgs(editInteractiveFlags{
+		inventoryFlags: inventoryFlags{
+			All:    true,
+			Filter: "scratch",
+			User:   "deploy",
+			Config: "/tmp/ssh-config",
+		},
+		StateDir:      "/tmp/ssherpa-state",
+		DeletePattern: true,
+	})
+	want := "--all\x00--filter\x00scratch\x00--user\x00deploy\x00--config\x00/tmp/ssh-config\x00--state-dir\x00/tmp/ssherpa-state\x00--delete-patterns"
+	if strings.Join(args, "\x00") != want {
+		t.Fatalf("editDeleteAllArgs = %#v", args)
 	}
 }
 
