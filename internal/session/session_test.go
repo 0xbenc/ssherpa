@@ -129,6 +129,7 @@ func TestRunSupervisedAddsControlMasterForSSHCommands(t *testing.T) {
 func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	var stdout bytes.Buffer
 	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "session-env.txt")
 	stdin, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("open dev null: %v", err)
@@ -136,7 +137,7 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 	defer stdin.Close()
 
 	code := RunSupervised(
-		sshcmd.Command{Argv: []string{"sh", "-c", "printf '%s/%s/%s' \"$SSHERPA_SESSION_ID\" \"$SSHERPA_DEPTH\" \"$SSHERPA_ROUTE\""}},
+		sshcmd.Command{Argv: []string{"sh", "-c", "printf '%s/%s/%s' \"$SSHERPA_SESSION_ID\" \"$SSHERPA_DEPTH\" \"$SSHERPA_ROUTE\" > \"$OUT\""}},
 		Metadata{TargetAlias: "prod"},
 		Options{
 			StateDir: stateDir,
@@ -147,6 +148,7 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 				"SSHERPA_SESSION_ID=parent",
 				"SSHERPA_DEPTH=2",
 				"SSHERPA_ROUTE=laptop",
+				"OUT=" + outPath,
 			},
 			Now: fixedClock(),
 		},
@@ -163,8 +165,12 @@ func TestRunSupervisedPropagatesSessionEnvironment(t *testing.T) {
 		t.Fatalf("records = %#v, want one", records)
 	}
 	want := records[0].ID + "/3/laptop,prod"
-	if !strings.Contains(stdout.String(), want) {
-		t.Fatalf("stdout = %q, want substring %q", stdout.String(), want)
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read env output: %v; stdout=%q", err, stdout.String())
+	}
+	if string(got) != want {
+		t.Fatalf("env output = %q, want %q; stdout=%q", string(got), want, stdout.String())
 	}
 }
 
