@@ -10,7 +10,7 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 | 4 | UX | Connection history line in picker detail | "Last connected 5m ago · 142 sessions" rendered from `state` records gives instant context without leaving the TUI. |
 | 5 | UX | Built-in theme presets (dark/light/solarized/high-contrast) | Ship 3–4 curated palettes in `termstyle/theme.go` selectable with one keypress in the theme editor, instead of only freeform color editing. |
 | 6 | UX | Session breadcrumb in overlay title | Render the lineage path `prod → bastion → db` from `sessionview` lineage data in the overlay header, not just a flat active-session list. |
-| 7 | UX | Escape-rope hold-to-confirm with visual countdown | Require a brief hold (or second chord) with an on-screen countdown before the SIGHUP cascade fires, preventing accidental teardown of nested sessions. |
+| 7 | UX | Escape rope hold-to-confirm with visual countdown | Require a brief hold (or second chord) with an on-screen countdown before the SIGHUP cascade fires, preventing accidental teardown of nested sessions. |
 | 8 | UX | Duplicate/shadow-alias warning on add | When `add_form.go` writes an alias whose pattern is shadowed by an earlier `Host *` block, warn that it may never match (first-match-wins). |
 | 9 | UX | `IdentityFile` existence check in add/edit forms | Validate the key path exists (and warn on wrong perms) before writing the config block, surfacing the error inline in `add_form.go`. |
 | 10 | UX | Search aliases by hostname/IP | `ssherpa search 10.0.0.5` finds every alias resolving to that host — invaluable in large configs with hundreds of entries. |
@@ -48,7 +48,7 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 | 42 | Security | govulncheck in CI | Add `govulncheck ./...` to `ci.yml` to catch known vulnerabilities in deps and the toolchain on every PR. |
 | 43 | Security | gosec / static security linting | Run `gosec` in CI to catch insecure temp-file, perms, and exec patterns before merge. |
 | 44 | Security | Remote sshd version probe + warning | During `check`, surface the remote OpenSSH version and warn on known-EOL releases. |
-| 45 | Security | Escape-rope audit entry | Append an immutable audit line (host, lineage, time) to state when the rope is pulled, for after-incident review. |
+| 45 | Security | Escape rope audit entry | Append an immutable audit line (host, lineage, time) to state when the rope is pulled, for after-incident review. |
 | 46 | Security | Secure temp-file creation review | Audit every temp path (`fsutil`, `inband`, SFTP batch) to ensure `O_EXCL`/`0600` creation and no predictable names — add tests. |
 | 47 | Security | Scrub session IDs from user-facing errors | Avoid leaking internal session identifiers into stderr/logs where they could aid correlation attacks. |
 | 48 | Security | Optional fingerprint confirmation on first connect | When connecting to an alias whose host key isn't yet known, surface the fingerprint clearly in the TUI before proceeding. |
@@ -75,10 +75,10 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 | 69 | Testing | Terminal-capability matrix tests | Mock `TERM`, `NO_COLOR`, and width to verify graceful degradation across dumb/256/truecolor terminals. |
 | 70 | Testing | Coverage gate in CI | Fail CI if total coverage drops below a threshold, with per-package floors; target lifting `cli` (~43%) and `ui` (~45%). |
 | 71 | Testing | Race detector in CI | Run `go test -race ./...` (esp. `session`, `daemon`, `state`) to catch the concurrency bugs PTY/daemon code is prone to. |
-| 72 | Testing | Escape-rope edge cases | Test rope behavior under nested zsh/fish, `tmux`/`screen`, and `nohup` layers where signal delivery differs. |
+| 72 | Testing | Escape rope edge cases | Test rope behavior under nested zsh/fish, `tmux`/`screen`, and `nohup` layers where signal delivery differs. |
 | 73 | Testing | Performance regression guard | Benchmark large-config parse time and alert if it regresses >2× between commits. |
 | 74 | Architecture | Split monolithic `cli.go` (1410 LOC) | Separate command dispatch from interactive flows; move each command group into its own file/handler to improve testability of `cli` (currently ~43%). |
-| 75 | Architecture | Decompose `session.go` (1958 LOC) | PTY plumbing, overlay, input-composer, watchdog, and escape-rope are five concerns in one file; extract into focused units. |
+| 75 | Architecture | Decompose `session.go` (1958 LOC) | PTY plumbing, overlay, input composer, watchdog, and escape rope are five concerns in one file; extract into focused units. |
 | 76 | Architecture | Extract a flag-parsing package | The repeated `inventoryFlags`/`transferFlags` patterns + `nextArg`/`hasHelpFlag` helpers belong in one reusable parser to kill duplication. |
 | 77 | Architecture | Thread `context.Context` everywhere | Replace ad-hoc timeouts with `context.Context` through `check`, `transfer`, and `connect` for unified cancellation/timeout. |
 | 78 | Architecture | Dependency injection for globals | Pass logger, config resolver, and state manager as interfaces instead of package globals (e.g. `daemonStartProcess`) for cleaner tests. |
@@ -100,7 +100,7 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 | 94 | Distribution | `ssherpa upgrade` self-update (opt-in) | Check the GitHub release feed and self-update for users who didn't install via a package manager — with signature verification. |
 | 95 | Observability | `--json` output for all read commands | Ensure `list`, `session`, `check`, and catalog commands emit stable JSON for scripting and dashboards (extend existing `list --json`). |
 | 96 | Observability | Latency SLA tracking per alias | Persist p50/p95/p99 RTT over time from the watchdog and expose a `session stats` view to spot degrading links. |
-| 97 | Features | First-class wormhole transport | Implement the planned magic-wormhole off-band transport for secure transfers when neither SFTP nor in-band fits (per `file-transfer.md`). |
+| 97 | Features | First-class wormhole transport | Implement a magic-wormhole off-band transport for secure transfers when neither SFTP nor in-band fits. |
 | 98 | Features | Multi-file / multi-port batch operations | `send file1 file2 …` and forward builders that open several local ports in one command, reducing repetitive invocations. |
 | 99 | Features | Saved multi-hop route aliases | Let users name and re-run a full jump chain (`prod-db = laptop→bastion→db`) instead of rebuilding hops each time. |
 

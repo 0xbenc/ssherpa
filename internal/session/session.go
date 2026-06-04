@@ -322,7 +322,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	// next layer down, collapsing every nested session from the top.
 	// With the reconnect loop, pullRope reads procRefShared to reach
 	// whichever attempt is live — and ropePulledCh wakes the loop out
-	// of a mid-backoff sleep. See docs/escape-rope.md.
+	// of a mid-backoff sleep.
 	ropeCtx, ropeCancel := context.WithCancel(context.Background())
 	defer ropeCancel()
 	interruptCtx, interruptCancel := context.WithCancel(context.Background())
@@ -1293,7 +1293,7 @@ const (
 	// we escalate from SIGHUP to SIGKILL quickly to guarantee a prompt local
 	// return even if the ssh client ignores the hangup.
 	escapeRopeKillGrace = 750 * time.Millisecond
-	// localInterruptKillGrace mirrors the escape-rope escalation window for
+	// localInterruptKillGrace mirrors the escape rope escalation window for
 	// Ctrl+C during a startup attempt. SIGINT is tried first so a normal ssh
 	// client can clean up; SIGKILL follows quickly so a blocked connect cannot
 	// leave ssherpa wedged in raw mode.
@@ -1702,7 +1702,7 @@ type attemptContext struct {
 	// record write keeps an immediate overlay from racing ahead of the
 	// current session's state file.
 	onPtmxReady func()
-	// pullRope, if non-nil, is the supervisor's escape-rope handle.
+	// pullRope, if non-nil, is the supervisor's escape rope handle.
 	// forwardSignals invokes it on external SIGTERM/SIGHUP/SIGQUIT
 	// so the retry loop's ropePulled check trips and the daemon
 	// doesn't immediately respawn ssh after the kill.

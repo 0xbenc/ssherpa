@@ -1,362 +1,102 @@
 # ssherpa
 
-A terminal UI for the SSH config you already have — and a supervisor that keeps
-you from getting lost in it. `ssherpa` reads `~/.ssh/config`, lets you fuzzy-pick
-a host and connect, then runs that connection under supervision so you can always
-see where you are in a stack of hops and bail out of the whole thing at once.
+[![CI](https://github.com/0xbenc/ssherpa/actions/workflows/ci.yml/badge.svg)](https://github.com/0xbenc/ssherpa/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/0xbenc/ssherpa?sort=semver)](https://github.com/0xbenc/ssherpa/releases/latest)
+[![Go](https://img.shields.io/badge/go-1.26.3-00ADD8.svg)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<!-- A recorded demo (docs/demo.gif, made with charmbracelet/vhs) could replace this still. -->
+*The SSH config you already have, with a map and an escape rope.*
 
 ![ssherpa picker running in a supervised session](docs/ssherpa.jpg)
 
-OpenSSH stays the source of truth. ssherpa never invents its own config format or
-connection layer — it reads and edits your real config and shells out to your
-real `ssh`, and every write is previewable and reversible. What it adds is the
-layer OpenSSH doesn't: visibility into, and control over, nested sessions.
+`ssherpa` is a TUI for OpenSSH. It reads your
+real `~/.ssh/config`, and lets you choose a host or preset.
+Then it runs your real `ssh`, and adds a map when sessions get nested.
 
-## Features
+It exists because SSH workflows get messy: bastions, manual hops, local
+forwards, SOCKS proxies, file copies, and half-remembered aliases.
 
-- **Supervised sessions** — every connection runs under a PTY supervisor that
-  adds a live [session-map overlay](#supervised-sessions), a one-keystroke
-  [escape rope](docs/escape-rope.md) out of every nested hop, a queued-input
-  composer, an optional latency watchdog, and recorded session lineage.
-- **Fuzzy host picker** over your parsed `~/.ssh/config`, including `Include`
-  files, with source line numbers and duplicate-host warnings.
-- **Safe config edits** — `add`, `edit set`, `edit delete`. Every mutation shows
-  a dry-run diff, backs up the existing file, and writes atomically with
-  permissions preserved.
-- **`authorized_keys` management** — list, add, merge, replace, and delete keys
-  by fingerprint, preserving key options and cert types.
-- **Jump, proxy, and forward** — build a `ProxyJump` route through one or
-  more hops, start a local SOCKS proxy through any alias, or open a local
-  TCP port-forward (`-L`) tunnel for things like a remote Postgres.
-- **Connection checks** — test aliases and saved forward presets with
-  `BatchMode` SSH probes, SSH RTT timing, and best-effort ICMP latency.
-- **`--print` mode** — print the exact `ssh` command instead of running it, so
-  you can see, copy, or script what ssherpa would do.
-- **Themeable** — inherits your terminal palette by default; tune every UI role
-  in a live editor (`ssherpa theme`). Honors `NO_COLOR`.
+`ssherpa` **keeps OpenSSH as the source of truth**, but makes daily SSH wizardy livable.
 
-## Supervised sessions
+## Standouts
 
-This is the part ssherpa was built to fix. You `ssh` to a bastion, then to a host
-behind it, then to another, and three hops deep you've lost track of where you
-are — and getting out means `exit`, `exit`, `exit`, hoping you counted right.
+- **Session map:** press `Ctrl-]` in a supervised session to see the active
+  route and nested lineage.
+- **File sending:** send or receive individual files over OpenSSH SFTP, with
+  overwrite protection and picker-driven paths.
+- **Escape rope:** `Ctrl-]`, `X`, `X` disconnects every supervised layer below
+  you and returns to the outer shell.
+- **Session recording:** view a log your commands and outputs.
+- **Presets:** save reusable local port-forward and SOCKS proxy entries, launch
+  them later, and stop tracked background sessions by name.
+- **Full Theming:** adjust the colors to your liking and save presets.
 
-By default every connection runs under a PTY supervisor. `ssh` behaves exactly as
-it normally would, but ssherpa stays in the loop and gives you a control layer on
-top of it, reachable without disturbing the remote shell.
+## Install
 
-### Session-map overlay — `Ctrl-]`
-
-Press `Ctrl-]` at any time to overlay a live map of your active sessions and the
-route that got you to each one. Press `Ctrl-]`, `q`, or `Esc` to dismiss it and
-you're back exactly where you were.
-
-### Escape rope — disconnect every layer at once
-
-`Ctrl-]` then `X` (and `X` again to confirm) pulls the **escape rope**: it tears
-down every nested session in the stack and drops you back at your outermost shell
-in a single move — no counting `exit`s. When a layer is wedged, mash `Ctrl-]`
-three times for a no-confirm panic exit. It works no matter how many
-`ssherpa → ssh → ssherpa` layers deep you are;
-[`docs/escape-rope.md`](docs/escape-rope.md) explains how the teardown cascades.
-
-### Queued-input composer — `Ctrl-G`
-
-Compose a line locally and send it on your terms: Enter sends it with a newline,
-`Ctrl-G` sends it raw, `Ctrl-U` clears, `Esc` cancels. Useful for staging a
-command before committing it to a fragile or high-latency link.
-
-| Key | Action |
-| --- | --- |
-| `Ctrl-]` | Open the session-map overlay (again / `q` / `Esc` to return) |
-| `Ctrl-]` then `X`, `X` | Escape rope — disconnect every layer, back to the outermost shell |
-| `Ctrl-]` ×3 (fast) | Panic escape rope, no confirm |
-| `Ctrl-G` | Queued-input composer |
-
-### Latency watchdog (opt-in)
-
-Have ssherpa probe the link with a sidecar `ssh` and warn you when it turns
-unhealthy — or, only if you ask for it, disconnect after a sustained outage:
+### Homebrew cask
 
 ```sh
-ssherpa --select prod --latency-warn 2s
-ssherpa --select prod --latency-warn 2s --latency-disconnect 30s
+brew install --cask 0xbenc/tap/ssherpa
 ```
 
-### Session records and maps
-
-Every supervised session is recorded as `0600` JSON (under
-`~/.local/state/ssherpa` on Linux, `~/Library/Application Support/ssherpa` on
-macOS), including its parent and route, so you can reconstruct the lineage after
-the fact. For nested ssherpa sessions across machines, supervised ssh commands
-send `SSHERPA_*` metadata automatically and the map can display inherited
-ancestors when the receiving sshd allows `AcceptEnv SSHERPA_*`:
-
-```sh
-ssherpa session map            # active sessions as a tree, with their routes
-ssherpa session map --all      # include exited sessions
-ssherpa session list           # flat list
-ssherpa session show <id>      # one record in detail
-ssherpa session stop-all       # stop every live tracked session
-ssherpa session prune --older-than 168h --dry-run
-```
-
-Prefer the old behavior? `--direct` runs `ssh` straight through with no overlay,
-watchdog, or state.
-
-### Incoming SSH visibility
-
-The home picker can show current interactive SSH logins into this machine. Plain
-SSH logins are shown as `ssh`; logins that arrived from a supervised SSHerpa
-client are flagged as `ssherpa` when the remote account has a small shell hook
-installed and the receiving `sshd` accepts `SSHERPA_*` environment metadata.
-
-```sh
-ssherpa incoming list
-ssherpa incoming list --json
-ssherpa incoming hook --shell zsh
-ssherpa incoming hook --shell fish
-```
-
-Install the printed hook in the remote account's login shell startup file. For
-SSHerpa labels, the SSH server must also allow:
-
-```sshconfig
-AcceptEnv SSHERPA_*
-```
-
-This is an operator-facing warning surface, not an authentication system:
-`SSHERPA_*` environment values are advisory and can be spoofed by clients that
-the server allows to send them. `incoming` tracks interactive TTY logins; pure
-SFTP sessions, non-TTY remote commands, and port-forward-only SSH connections
-may not appear.
-
-## Installation
-
-### Homebrew
+Or:
 
 ```sh
 brew tap 0xbenc/tap
 brew install --cask ssherpa
 ```
 
-Or install directly:
+### Release artifacts
+
+Download the latest macOS or Linux artifact from
+[GitHub Releases](https://github.com/0xbenc/ssherpa/releases/latest).
+
+Archives are published for:
+
+- `darwin_amd64`
+- `darwin_arm64`
+- `linux_amd64`
+- `linux_arm64`
 
 ```sh
-brew install --cask 0xbenc/tap/ssherpa
+tar -xzf ssherpa_VERSION_OS_ARCH.tar.gz
+sudo install -m 0755 ssherpa /usr/local/bin/ssherpa
 ```
 
-The Homebrew cask is published from the `0xbenc/tap` tap and is updated by
-the release workflow when a new version tag is pushed.
-
-### Prebuilt binaries
-
-Grab a build for your platform from the
-[latest release](https://github.com/0xbenc/ssherpa/releases/latest) —
-`tar.gz` archives for Linux and macOS (amd64 and arm64), plus `.deb` and
-`.rpm` packages for Linux. For the archives:
+Linux packages are also published as `.deb` and `.rpm`:
 
 ```sh
-tar -xzf ssherpa_*_linux_amd64.tar.gz
-sudo install ssherpa /usr/local/bin/
-```
-
-On Debian/Ubuntu or Fedora/RHEL, install the package instead:
-
-```sh
-sudo dpkg -i ssherpa_*_linux_amd64.deb     # or: sudo rpm -i ssherpa_*_linux_amd64.rpm
-```
-
-### With Go
-
-Requires Go 1.26 or newer.
-
-```sh
-go install github.com/0xbenc/ssherpa/cmd/ssherpa@latest
+sudo dpkg -i ssherpa_VERSION_linux_amd64.deb
+sudo rpm -i ssherpa_VERSION_linux_amd64.rpm
 ```
 
 ### From source
 
+Requires Go 1.26.3 or newer.
+
 ```sh
-git clone https://github.com/0xbenc/ssherpa
+git clone https://github.com/0xbenc/ssherpa.git
 cd ssherpa
-go build -o ssherpa ./cmd/ssherpa
+go build -trimpath -o ssherpa ./cmd/ssherpa
+sudo install -m 0755 ssherpa /usr/local/bin/ssherpa
 ```
 
-## Usage
+This works on macOS and Linux. The release build supports `amd64` and `arm64`
+for both platforms.
 
-Run `ssherpa` with no arguments to open the picker, filter to a host, and press
-Enter to connect:
+## Docs
 
-```sh
-ssherpa
-```
+- [Non-interactive CLI reference](docs/non-interactive.md)
 
-Skip the picker with `--select`, and use `--print` to see the command without
-running it:
+## Contributors
 
-```sh
-ssherpa --select prod                       # connect to alias "prod"
-ssherpa --print --select prod               # print: ssh prod
-ssherpa --print --select prod -- -L 8080:localhost:8080   # pass-through ssh args after --
-```
-
-### List and inspect hosts
-
-```sh
-ssherpa list                                # list of aliases
-ssherpa list --json --filter prod --user alice
-ssherpa show prod --json                    # one alias, parsed effective values
-```
-
-### Edit your config safely
-
-Every mutation defaults to asking for confirmation; add `--dry-run` to preview
-the diff, or `--yes` to skip the prompt.
-
-```sh
-ssherpa add --alias prod --host prod.example.com --user alice --dry-run
-ssherpa add --alias prod --host prod.example.com --user alice --yes
-ssherpa edit                                  # TUI for aliases and saved forward/proxy presets
-ssherpa edit set prod --port 2222 --identity ~/.ssh/prod --yes
-ssherpa edit delete prod --dry-run
-ssherpa edit delete-all --filter scratch --dry-run
-```
-
-### Jump hosts, SOCKS proxy, and port-forward tunnels
-
-```sh
-ssherpa jump --dest prod --hop bastion --hop edge --print   # ssh -J bastion,edge prod
-ssherpa proxy --select prod --bind 127.0.0.1 --port 1080 --print
-ssherpa proxy saved save corp --select prod --port 1080
-ssherpa proxy --select corp --background
-ssherpa proxy list
-ssherpa proxy stop corp
-ssherpa forward --select pgbox --local 5432 --remote 127.0.0.1:5432 --print
-ssherpa forward --select pgbox --local 5433 --remote db.internal:5432 --through bastion
-```
-
-`proxy` opens a local SOCKS listener (`ssh -D`) and `forward` opens a
-local TCP port-forward (`ssh -L`). Both can run in the foreground or
-as tracked background sessions, show up in `ssherpa session map`, and
-can be stopped later by session ID or saved preset name.
-
-Save reusable forward presets in ssherpa's state catalog:
-
-```sh
-ssherpa forward saved save pg --select pgbox --local 5432 --remote 127.0.0.1:5432
-ssherpa forward saved list
-ssherpa forward saved show pg --json
-ssherpa forward saved edit pg --description "local postgres"
-ssherpa forward saved rename pg prod-pg
-ssherpa forward saved delete prod-pg --yes
-ssherpa forward --select pg --background
-```
-
-### Check SSH reachability
-
-`check` runs a non-interactive SSH probe and reports elapsed SSH time in
-milliseconds. It also attempts an ICMP ping when possible; ICMP failures are
-reported separately because many networks block ping while SSH still works.
-
-```sh
-ssherpa check prod
-ssherpa check --filter prod --json
-ssherpa check --saved-forward pg --no-icmp
-ssherpa check --saved-forwards --timeout 3s
-```
-
-Shell completions are shipped in `completions/`, and the manpage is shipped as
-`man/ssherpa.1`.
-
-### Inspect incoming SSH
-
-`incoming` lists current interactive SSH logins into this machine. If a remote
-login shell has installed the hook from `ssherpa incoming hook`, rows can be
-enriched with SSHerpa route metadata.
-
-```sh
-ssherpa incoming list
-ssherpa incoming list --json
-ssherpa incoming hook --shell bash
-```
-
-### Manage authorized_keys
-
-Operates on `~/.ssh/authorized_keys` by default. Point it elsewhere with `--path`
-or `SSHERPA_AUTHORIZED_KEYS_PATH` (handy for testing).
-
-```sh
-ssherpa authkeys list --json
-ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
-ssherpa authkeys merge --from-dir ./keys --dry-run
-ssherpa authkeys delete --fingerprint SHA256:... --yes
-```
-
-## Configuration
-
-Flags override environment variables, which override the defaults.
-
-| Flag | Env | Default |
-| --- | --- | --- |
-| `--config PATH` | — | `~/.ssh/config` |
-| `--ssh-binary PATH` | `SSHERPA_SSH_BINARY` | `ssh` (or `kitten ssh` under Kitty) |
-| `--state-dir PATH` | `SSHERPA_STATE_DIR` | platform state dir |
-| `--runtime-dir PATH` (incoming) | `SSHERPA_INCOMING_DIR` | runtime marker dir |
-| `--path PATH` (authkeys) | `SSHERPA_AUTHORIZED_KEYS_PATH` | `~/.ssh/authorized_keys` |
-| `--theme-file PATH` | `SSHERPA_THEME_FILE` | `~/.config/ssherpa/theme.conf` |
-| `--no-color` | `SSHERPA_NO_COLOR`, `NO_COLOR` | color on |
-| `--no-kitty` | `SSHERPA_NO_KITTY` | Kitty detection on |
-
-See `ssherpa help` for the full flag list.
-
-## Themes
-
-The UI inherits your terminal's palette by default, so it matches whatever color
-scheme your emulator uses. Run `ssherpa theme` (or pick **Theme and colors** in
-the picker) for a live editor where each row previews its own color, a palette
-panel shows the exact token to type for every color, and `t` toggles a
-high-contrast mode so the text stays readable on any background.
-
-The color config lives in `~/.config/ssherpa/theme.conf`:
-
-```text
-primary = cyan
-accent  = yellow
-success = green
-danger  = red
-pill    = bold reverse
-```
-
-Values are color names (`cyan`, `bright-blue`), style tokens (`bold`, `reverse`),
-or raw SGR codes (`38;2;96;221;255`).
-
-## What it does and doesn't do
-
-- It **does** read and edit your real OpenSSH config and `authorized_keys`, and
-  run your real `ssh`. Edits are parser-backed, previewable (`--dry-run`),
-  confirmed by default, backed up, and written atomically.
-- It **does not** store connections, credentials, or hosts in a separate
-  database, replace `ssh`, or modify anything without showing you first.
-- Destructive operations on multi-alias or wildcard `Host` stanzas are guarded,
-  and bulk deletes require an explicit confirmation phrase.
-
-## Development
-
-Local checks expected before committing are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md); the Go toolchain setup is in
-[`docs/development.md`](docs/development.md).
-
-```sh
-go test ./...
-go vet ./...
-gofmt -l ./cmd ./internal
-```
+<p>
+  <a href="https://github.com/0xbenc"><img src="https://github.com/0xbenc.png?size=96" width="48" height="48" alt="@0xbenc"></a>
+  <a href="https://github.com/basedvik"><img src="https://github.com/basedvik.png?size=96" width="48" height="48" alt="@basedvik"></a>
+</p>
 
 ## License
 
-[MIT](LICENSE) © Ben Chapman
+[MIT](LICENSE) (c) Ben Chapman
 
-<sub>My desktop wallpaper is visible behind the terminal | by [Robh](https://broadviewgraphics.blogspot.com/2012/11/tron-uprising-update.html).</sub>
+<sub>Screenshot background art by [Robh](https://broadviewgraphics.blogspot.com/2012/11/tron-uprising-update.html).</sub>

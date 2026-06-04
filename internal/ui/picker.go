@@ -118,7 +118,7 @@ type BuildItemsOptions struct {
 	ActiveSessionCount int
 	// SavedForwards renders as a "Saved Forwards" group above the
 	// standard action rows so daily-use one-tap launches get
-	// prominence — decision #3 in docs/forward-phase-2.md.
+	// prominence in the picker.
 	SavedForwards []SavedForwardItem
 	SavedProxies  []SavedForwardItem
 	// ActiveTunnels renders as an "Active Tunnels" group above

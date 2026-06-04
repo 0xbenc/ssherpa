@@ -1,7 +1,6 @@
 # Contributing
 
-`ssherpa` is currently in Phase 5 of the Go port. Keep changes small,
-tested, and aligned with the compatibility contract in `PORT_PLAN.md`.
+Keep changes small, tested, and aligned with the existing command behavior.
 
 ## Compatibility Reference
 

@@ -25,8 +25,7 @@ const ForwardsDir = "forwards"
 // ProxyJump); StoredForward carries the local/remote forward spec.
 // Two layers because baking LocalForward into ~/.ssh/config collides
 // with `ssherpa forward` adding its own -L flag — second bind fails
-// with "Address already in use" (we hit this for real in Phase 1
-// testing; see docs/forward-phase-2.md).
+// with "Address already in use".
 type StoredForward struct {
 	Name           string     `json:"name"`
 	SSHAlias       string     `json:"ssh_alias"`
