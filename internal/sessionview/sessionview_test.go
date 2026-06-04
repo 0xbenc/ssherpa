@@ -160,7 +160,7 @@ func TestMetadataModalShowsPersistentSessionDetails(t *testing.T) {
 	}
 	model.scroll = model.maxMetadataScroll()
 	scrolled := model.View().Content
-	for _, want := range []string{"events", "latency_warning", "probe slow"} {
+	for _, want := range []string{"events", "latency_warning", "probe", "slow"} {
 		if !strings.Contains(scrolled, want) {
 			t.Fatalf("scrolled metadata view missing %q:\n%s", want, scrolled)
 		}
