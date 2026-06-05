@@ -2800,6 +2800,46 @@ func TestRunAuthkeysAddRejectsInvalidKey(t *testing.T) {
 	}
 }
 
+func TestRunAuthkeysAddRejectsControlCharComment(t *testing.T) {
+	var stderr bytes.Buffer
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	injected := testEd25519Key + "\nssh-ed25519 AAAAinjected injected@example"
+
+	code := Run([]string{"authkeys", "add", "--key", injected, "--path", path, "--yes"}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "comment cannot contain control characters")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected add, err=%v", err)
+	}
+}
+
+func TestRunAuthkeysReplaceRejectsControlCharComments(t *testing.T) {
+	var stderr bytes.Buffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.Mkdir(keysDir, 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "bad.pub"), []byte(testEd25519Key+"\rinjected\n"), 0o644); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	code := Run([]string{"authkeys", "replace", "--from-dir", keysDir, "--path", path, "--yes"}, nil, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1", code)
+	}
+	assertContains(t, stderr.String(), "comment cannot contain control characters")
+	assertContains(t, stderr.String(), "no valid SSH public keys")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected replace, err=%v", err)
+	}
+}
+
 func TestRunAuthkeysAddRejectsMissingExplicitSSHKeygen(t *testing.T) {
 	var stderr bytes.Buffer
 	path := filepath.Join(t.TempDir(), "authorized_keys")

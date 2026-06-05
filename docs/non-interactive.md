@@ -592,6 +592,8 @@ environment values.
 
 Authorized-keys mutations preserve key options and cert types where possible,
 validate keys with `ssh-keygen`, write atomically, and create backups.
+Key comments containing control characters are rejected so rendered
+`authorized_keys` entries cannot span multiple lines.
 Running `ssherpa authkeys` with no subcommand opens the interactive
 authorized-keys manager. Its **View current keys** action opens a searchable TUI
 list of the current entries and a scrollable detail view for the selected key,

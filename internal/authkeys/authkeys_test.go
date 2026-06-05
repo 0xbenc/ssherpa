@@ -64,6 +64,45 @@ func TestParsePublicKeyLineRejectsInvalidBlob(t *testing.T) {
 	}
 }
 
+func TestParsePublicKeyLineRejectsControlCharsInComment(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"newline", ed25519Key + "\nssh-ed25519 AAAAinjected injected@example"},
+		{"carriage return", ed25519Key + "\rinjected"},
+		{"nul", ed25519Key + "\x00injected"},
+		{"escape", ed25519Key + "\x1binjected"},
+		{"delete", ed25519Key + "\x7finjected"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePublicKeyLine(tt.line)
+			if err == nil {
+				t.Fatal("ParsePublicKeyLine returned nil error, want rejected control character")
+			}
+			if !strings.Contains(err.Error(), "comment cannot contain control characters") {
+				t.Fatalf("error = %v, want control-character diagnostic", err)
+			}
+		})
+	}
+}
+
+func TestParsePublicKeyLineAllowsTabInComment(t *testing.T) {
+	line := ed25519Key + "\twork laptop"
+
+	key, err := ParsePublicKeyLine(line)
+	if err != nil {
+		t.Fatalf("ParsePublicKeyLine returned error: %v", err)
+	}
+	if key.Comment != "alice@example\twork laptop" {
+		t.Fatalf("Comment = %q, want tab preserved", key.Comment)
+	}
+	if got := key.Render(); got != line {
+		t.Fatalf("Render = %q, want %q", got, line)
+	}
+}
+
 func TestFingerprintMatchesOpenSSHFormat(t *testing.T) {
 	key := mustParseKey(t, ed25519Key)
 
@@ -155,6 +194,49 @@ func TestCollectFromDirReportsInvalidAndDuplicate(t *testing.T) {
 	}
 	if len(result.Diagnostics) != 2 {
 		t.Fatalf("len(Diagnostics) = %d, want invalid and duplicate-options warning", len(result.Diagnostics))
+	}
+}
+
+func TestCollectFromDirReportsControlCharCommentInvalid(t *testing.T) {
+	dir := t.TempDir()
+	contents := strings.Join([]string{
+		ed25519Key + "\rinjected",
+		ecdsaKey,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "a.pub"), []byte(contents), 0o644); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+
+	result, err := CollectFromDir(dir, Validator{SkipSSHKeygen: true})
+	if err != nil {
+		t.Fatalf("CollectFromDir returned error: %v", err)
+	}
+	if result.Stats.Valid != 1 || result.Stats.Invalid != 1 || result.Stats.Added != 0 {
+		t.Fatalf("Stats = %#v", result.Stats)
+	}
+	if len(result.Keys) != 1 || result.Keys[0].Render() != ecdsaKey {
+		t.Fatalf("Keys = %#v, want only valid ecdsa key", result.Keys)
+	}
+	if len(result.Diagnostics) != 1 || !strings.Contains(result.Diagnostics[0].Message, "comment cannot contain control characters") {
+		t.Fatalf("Diagnostics = %#v, want control-character warning", result.Diagnostics)
+	}
+}
+
+func TestPlanAddRejectsProgrammaticControlCharComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	key := mustParseKey(t, ed25519Key)
+	key.Comment = "alice@example\nssh-ed25519 AAAAinjected injected@example"
+
+	_, err := PlanAdd(path, key, PlanOptions{Validator: Validator{SkipSSHKeygen: true}})
+	if err == nil {
+		t.Fatal("PlanAdd returned nil error, want rejected control character")
+	}
+	if !strings.Contains(err.Error(), "comment cannot contain control characters") {
+		t.Fatalf("error = %v, want control-character diagnostic", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected plan, err=%v", err)
 	}
 }
 

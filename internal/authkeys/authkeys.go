@@ -212,6 +212,21 @@ func ValidateStructural(key AuthorizedKey) error {
 	if _, err := decodeBlob(key.Blob); err != nil {
 		return fmt.Errorf("SSH public key blob is not valid base64: %w", err)
 	}
+	if err := validateComment(key.Comment); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateComment(comment string) error {
+	for _, r := range comment {
+		if r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			return errors.New("SSH public key comment cannot contain control characters")
+		}
+	}
 	return nil
 }
 
