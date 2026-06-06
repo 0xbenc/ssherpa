@@ -1347,6 +1347,10 @@ const (
 	// cannot read the overlay. A single, settled press still just closes it.
 	escapeRopePanicWindow = 400 * time.Millisecond
 	escapeRopePanicTaps   = 3
+	// ptyOutputDrainGrace lets the PTY reader consume the child's final
+	// buffered output after Wait observes process exit. Linux runners can
+	// otherwise lose very short final writes if the master is closed first.
+	ptyOutputDrainGrace = 100 * time.Millisecond
 )
 
 // signalSessionGroup signals the child's whole process group when possible,
@@ -1977,9 +1981,14 @@ func attemptOnce(ac attemptContext) error {
 	waitErr := proc.Wait()
 	stopWatchdog()
 	stopSignals()
-	// Close ptmx explicitly before waiting for the output-copy goroutine
-	// to drain. The reader only returns when its source hits EOF, and
-	// a still-open ptmx never does.
+	select {
+	case <-outputDone:
+		return waitErr
+	case <-time.After(ptyOutputDrainGrace):
+	}
+	// Close ptmx explicitly before waiting for the output-copy goroutine if it
+	// did not finish during the drain grace. The reader only returns when its
+	// source hits EOF, and a still-open ptmx can otherwise block forever.
 	_ = ptmx.Close()
 	<-outputDone
 	return waitErr
