@@ -103,8 +103,12 @@ _ssherpa()
                     COMPREPLY=( $(compgen -W "--json --all --filter --user --config --key --key-file --from-dir --target --hop --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
                     return
                     ;;
+                revoke|unseed)
+                    COMPREPLY=( $(compgen -W "--json --all --filter --user --config --key --key-file --target --hop --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
+                    return
+                    ;;
                 *)
-                    COMPREPLY=( $(compgen -W "list add merge replace delete seed --json --path --key --key-file --from-dir --target --hop --fingerprint --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "list add merge replace delete seed revoke unseed --json --path --key --key-file --from-dir --target --hop --fingerprint --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
                     return
                     ;;
             esac

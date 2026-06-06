@@ -48,7 +48,7 @@ complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l sftp-binary -r -
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l force -d 'Overwrite existing destination'
 complete -c ssherpa -n '__fish_seen_subcommand_from receive' -l print -d 'Print command'
 
-complete -c ssherpa -n '__fish_seen_subcommand_from authkeys' -a 'list add merge replace delete seed'
+complete -c ssherpa -n '__fish_seen_subcommand_from authkeys' -a 'list add merge replace delete seed revoke unseed'
 complete -c ssherpa -n '__fish_seen_subcommand_from authkeys' -l json -d 'Emit JSON'
 complete -c ssherpa -n '__fish_seen_subcommand_from authkeys' -l path -r -d 'authorized_keys path'
 complete -c ssherpa -n '__fish_seen_subcommand_from authkeys' -l key -r -d 'Public key line'
