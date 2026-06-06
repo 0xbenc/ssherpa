@@ -661,7 +661,8 @@ Seeds validated public keys to remote SSH aliases by appending missing keys to
 the SSH login user's `~/.ssh/authorized_keys`. It never uses sudo and never
 writes another account's home directory. Use repeated `--target` for multiple
 hosts and repeated `--hop TARGET=HOP[,HOP...]` when a target needs ProxyJump
-routing.
+routing. After a successful non-dry-run write, ssherpa reconnects to the host
+and verifies the expected key identities are present in the remote file.
 
 ### delete
 

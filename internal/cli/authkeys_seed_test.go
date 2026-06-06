@@ -77,7 +77,7 @@ Host prod
 Host bastion
   HostName 100.64.0.1
 `)
-	fakeSSH, argvLog, stdinLog := writeAuthkeysSeedFakeSSH(t, 0, "SSHERPA_AUTHKEYS_SEED status=added added=1 already_present=0\n", "")
+	fakeSSH, argvLog, stdinLog := writeAuthkeysSeedFakeSSH(t, 0, "SSHERPA_AUTHKEYS_SEED status=added added=1 already_present=0\n", "SSHERPA_AUTHKEYS_VERIFY status=verified verified=1 missing=0\n", "")
 	fakeKeygen, _ := writeFakeSSH(t, 0)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -102,11 +102,11 @@ Host bastion
 	if strings.Contains(stdin, "sudo") {
 		t.Fatalf("remote script unexpectedly contains sudo:\n%s", stdin)
 	}
-	assertContains(t, stdout.String(), "[added] prod added=1 already-present=0 route=bastion")
+	assertContains(t, stdout.String(), "[added] prod added=1 already-present=0 route=bastion verify=verified(1/1)")
 	assertContains(t, stdout.String(), "[summary] ok=1 changed=1 unchanged=0 failed=0")
 }
 
-func writeAuthkeysSeedFakeSSH(t *testing.T, exitCode int, stdoutText string, stderrText string) (string, string, string) {
+func writeAuthkeysSeedFakeSSH(t *testing.T, exitCode int, seedStdout string, verifyStdout string, stderrText string) (string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	argvLog := filepath.Join(dir, "argv.log")
@@ -114,8 +114,12 @@ func writeAuthkeysSeedFakeSSH(t *testing.T, exitCode int, stdoutText string, std
 	path := filepath.Join(dir, "fake-ssh")
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" > " + shellQuote(argvLog) + "\n" +
-		"cat > " + shellQuote(stdinLog) + "\n" +
-		"printf '%s' " + shellQuote(stdoutText) + "\n" +
+		"input=$(cat)\n" +
+		"printf '%s' \"$input\" > " + shellQuote(stdinLog) + "\n" +
+		"case \"$input\" in\n" +
+		"  *ssherpa-authkeys-verify*) printf '%s' " + shellQuote(verifyStdout) + " ;;\n" +
+		"  *) printf '%s' " + shellQuote(seedStdout) + " ;;\n" +
+		"esac\n" +
 		"printf '%s' " + shellQuote(stderrText) + " >&2\n" +
 		"exit " + strconv.Itoa(exitCode) + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {

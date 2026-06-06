@@ -55,13 +55,17 @@ type authkeysSeedTarget struct {
 }
 
 type authkeysSeedResult struct {
-	Target         string   `json:"target"`
-	Route          []string `json:"route,omitempty"`
-	Status         string   `json:"status"`
-	Added          int      `json:"added"`
-	AlreadyPresent int      `json:"already_present"`
-	ExitCode       int      `json:"exit_code,omitempty"`
-	Message        string   `json:"message,omitempty"`
+	Target              string   `json:"target"`
+	Route               []string `json:"route,omitempty"`
+	Status              string   `json:"status"`
+	Added               int      `json:"added"`
+	AlreadyPresent      int      `json:"already_present"`
+	VerificationStatus  string   `json:"verification_status,omitempty"`
+	Verified            int      `json:"verified,omitempty"`
+	Missing             int      `json:"missing,omitempty"`
+	ExitCode            int      `json:"exit_code,omitempty"`
+	Message             string   `json:"message,omitempty"`
+	VerificationMessage string   `json:"verification_message,omitempty"`
 }
 
 func runAuthkeysSeed(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -159,6 +163,20 @@ func executeAuthkeysSeed(flags authkeysSeedFlags, keys []authkeys.AuthorizedKey,
 		} else {
 			cmd := buildAuthkeysSeedSSHCommand(base, target, flags.Timeout)
 			result = runAuthkeysSeedSSH(cmd, target, keys, flags.DryRun)
+			if !flags.DryRun && result.Status != "failed" {
+				verifyCmd := buildAuthkeysSeedSSHCommand(base, target, flags.Timeout)
+				verified := runAuthkeysSeedVerifySSH(verifyCmd, target, keys)
+				result.VerificationStatus = verified.VerificationStatus
+				result.Verified = verified.Verified
+				result.Missing = verified.Missing
+				result.VerificationMessage = verified.VerificationMessage
+				if verified.ExitCode != 0 {
+					result.ExitCode = verified.ExitCode
+				}
+			} else if flags.DryRun && result.Status != "failed" {
+				result.VerificationStatus = "skipped"
+				result.VerificationMessage = "dry-run did not mutate the remote file"
+			}
 		}
 		out.Results = append(out.Results, result)
 		if !flags.JSON {
@@ -218,6 +236,38 @@ func runAuthkeysSeedSSH(cmd sshcmd.Command, target authkeysSeedTarget, keys []au
 	return parsed
 }
 
+func runAuthkeysSeedVerifySSH(cmd sshcmd.Command, target authkeysSeedTarget, keys []authkeys.AuthorizedKey) authkeysSeedResult {
+	result := authkeysSeedResult{Target: target.Alias, Route: append([]string(nil), target.Hops...), VerificationStatus: "failed"}
+	if len(cmd.Argv) == 0 {
+		result.ExitCode = 1
+		result.VerificationMessage = "empty SSH command"
+		return result
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	proc := exec.Command(cmd.Argv[0], cmd.Argv[1:]...)
+	proc.Stdin = strings.NewReader(authkeysSeedVerifyRemoteScript(keys))
+	proc.Stdout = &stdout
+	proc.Stderr = &stderr
+	err := proc.Run()
+	if err != nil {
+		result.ExitCode = commandExitCode(err)
+		result.VerificationMessage = firstNonEmptyLine(stderr.String(), stdout.String(), err.Error())
+		return result
+	}
+
+	parsed, ok := parseAuthkeysSeedVerifyResult(stdout.String())
+	if !ok {
+		result.ExitCode = 1
+		result.VerificationMessage = firstNonEmptyLine(stdout.String(), "remote verification command did not return a result")
+		return result
+	}
+	parsed.Target = target.Alias
+	parsed.Route = append([]string(nil), target.Hops...)
+	return parsed
+}
+
 func commandExitCode(err error) int {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -256,6 +306,44 @@ func parseAuthkeysSeedRemoteResult(output string) (authkeysSeedResult, bool) {
 			} else {
 				result.Status = "unchanged"
 			}
+		}
+		return result, true
+	}
+	return authkeysSeedResult{}, false
+}
+
+func parseAuthkeysSeedVerifyResult(output string) (authkeysSeedResult, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "SSHERPA_AUTHKEYS_VERIFY ") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "SSHERPA_AUTHKEYS_VERIFY "))
+		result := authkeysSeedResult{}
+		for _, field := range fields {
+			key, value, ok := strings.Cut(field, "=")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "status":
+				result.VerificationStatus = value
+			case "verified":
+				result.Verified, _ = strconv.Atoi(value)
+			case "missing":
+				result.Missing, _ = strconv.Atoi(value)
+			}
+		}
+		if result.VerificationStatus == "" {
+			if result.Missing > 0 {
+				result.VerificationStatus = "missing"
+			} else {
+				result.VerificationStatus = "verified"
+			}
+		}
+		if result.VerificationStatus != "verified" {
+			result.ExitCode = 1
+			result.VerificationMessage = "one or more seeded keys were not found after reconnecting"
 		}
 		return result, true
 	}
@@ -343,6 +431,67 @@ if [ "$added" -gt 0 ]; then
   fi
 fi
 printf 'SSHERPA_AUTHKEYS_SEED status=%s added=%s already_present=%s\n' "$status" "$added" "$already_present"
+`)
+	return b.String()
+}
+
+func authkeysSeedVerifyRemoteScript(keys []authkeys.AuthorizedKey) string {
+	delimiter := authkeysSeedDelimiter(keys)
+	var b strings.Builder
+	b.WriteString(`key_identity() {
+  awk '{
+    for (i = 1; i < NF; i++) {
+      if ($i == "ssh-ed25519" || $i == "ssh-rsa" || $i == "rsa-sha2-256" || $i == "rsa-sha2-512" || $i ~ /^ecdsa-sha2-/ || $i ~ /^sk-ssh-ed25519/ || $i ~ /^sk-ecdsa-sha2-/) {
+        print $i " " $(i + 1)
+        exit
+      }
+    }
+  }'
+}
+ak_file="${HOME:?}/.ssh/authorized_keys"
+tmp="${TMPDIR:-/tmp}/ssherpa-authkeys-verify.$$"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+cat > "$tmp" <<'`)
+	b.WriteString(delimiter)
+	b.WriteString("'\n")
+	for _, key := range keys {
+		b.WriteString(key.Render())
+		b.WriteByte('\n')
+	}
+	b.WriteString(delimiter)
+	b.WriteString(`
+if [ ! -f "$ak_file" ]; then
+  printf '%s\n' 'authorized_keys does not exist after seed' >&2
+  exit 30
+fi
+if [ ! -r "$ak_file" ]; then
+  printf '%s\n' 'authorized_keys is not readable by the login user' >&2
+  exit 31
+fi
+existing=$(while IFS= read -r existing_line || [ -n "$existing_line" ]; do
+  key_identity <<EOF
+$existing_line
+EOF
+done < "$ak_file")
+verified=0
+missing=0
+while IFS= read -r key_line || [ -n "$key_line" ]; do
+  [ -n "$key_line" ] || continue
+  identity=$(key_identity <<EOF
+$key_line
+EOF
+)
+  if printf '%s\n' "$existing" | grep -F -x -- "$identity" >/dev/null 2>&1; then
+    verified=$((verified + 1))
+  else
+    missing=$((missing + 1))
+  fi
+done < "$tmp"
+status=verified
+if [ "$missing" -gt 0 ]; then
+  status=missing
+fi
+printf 'SSHERPA_AUTHKEYS_VERIFY status=%s verified=%s missing=%s\n' "$status" "$verified" "$missing"
 `)
 	return b.String()
 }
@@ -622,7 +771,11 @@ func printAuthkeysSeedResult(stdout io.Writer, result authkeysSeedResult, dryRun
 	if dryRun && status == "added" {
 		status = "would-add"
 	}
-	fmt.Fprintf(stdout, "[%s] %s added=%d already-present=%d route=%s\n", status, result.Target, result.Added, result.AlreadyPresent, route)
+	verify := ""
+	if result.VerificationStatus != "" {
+		verify = fmt.Sprintf(" verify=%s", authkeysSeedVerifyLabel(result))
+	}
+	fmt.Fprintf(stdout, "[%s] %s added=%d already-present=%d route=%s%s\n", status, result.Target, result.Added, result.AlreadyPresent, route, verify)
 }
 
 func printAuthkeysSeedSummary(stdout io.Writer, summary authkeysSeedSummary) {
@@ -636,14 +789,44 @@ func summarizeAuthkeysSeedResults(results []authkeysSeedResult) authkeysSeedSumm
 		case "failed":
 			summary.Failed++
 		case "unchanged":
-			summary.OK++
-			summary.Unchanged++
+			if authkeysSeedVerificationFailed(result) {
+				summary.Failed++
+			} else {
+				summary.OK++
+				summary.Unchanged++
+			}
 		default:
-			summary.OK++
-			summary.Changed++
+			if authkeysSeedVerificationFailed(result) {
+				summary.Failed++
+			} else {
+				summary.OK++
+				summary.Changed++
+			}
 		}
 	}
 	return summary
+}
+
+func authkeysSeedVerificationFailed(result authkeysSeedResult) bool {
+	return result.VerificationStatus == "failed" || result.VerificationStatus == "missing"
+}
+
+func authkeysSeedVerifyLabel(result authkeysSeedResult) string {
+	switch result.VerificationStatus {
+	case "verified":
+		return fmt.Sprintf("verified(%d/%d)", result.Verified, result.Verified+result.Missing)
+	case "missing":
+		return fmt.Sprintf("missing(%d)", result.Missing)
+	case "failed":
+		if result.VerificationMessage != "" {
+			return "failed"
+		}
+		return "failed"
+	case "skipped":
+		return "skipped"
+	default:
+		return result.VerificationStatus
+	}
 }
 
 func firstNonEmptyLine(values ...string) string {
@@ -830,7 +1013,15 @@ func runAuthkeysSeedInteractiveTargets(flags authkeysSeedFlags, stdout io.Writer
 		return 0
 	}
 	flags.Yes = true
-	return runAuthkeysSeedWithFlags(flags, stdout, stderr)
+	out := executeAuthkeysSeed(flags, keys, targets, stdout)
+	if err := showAuthkeysSeedReportScreen(out, stderr); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: seed report failed: %v\n", err)
+		return 1
+	}
+	if out.Summary.Failed > 0 {
+		return 2
+	}
+	return 0
 }
 
 func configureAuthkeysSeedRoutes(flags authkeysSeedFlags, inventory hostlist.Inventory, stderr io.Writer) (authkeysSeedFlags, bool, int) {
@@ -1006,4 +1197,113 @@ func authkeysSeedReviewMessage(keys []authkeys.AuthorizedKey, targets []authkeys
 		message += " Routed: " + strings.Join(routed, "; ") + "."
 	}
 	return message
+}
+
+func showAuthkeysSeedReportScreen(out authkeysSeedOutput, stderr io.Writer) error {
+	return ui.ShowTextView(context.Background(), ui.TextViewOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Authorized key seed report",
+		Steps:       []string{"source", "keys", "hosts", "routes", "confirm", "report"},
+		CurrentStep: 5,
+		Summary:     authkeysSeedReportSummary(out),
+		Lines:       authkeysSeedReportLines(out),
+		Footer:      "up/down scroll  /  pgup/pgdn page  /  q close report",
+	})
+}
+
+func authkeysSeedReportSummary(out authkeysSeedOutput) string {
+	return fmt.Sprintf("ok=%d  changed=%d  unchanged=%d  failed=%d", out.Summary.OK, out.Summary.Changed, out.Summary.Unchanged, out.Summary.Failed)
+}
+
+func authkeysSeedReportLines(out authkeysSeedOutput) []string {
+	overall := "complete"
+	if out.Summary.Failed > 0 {
+		overall = "needs attention"
+	}
+	lines := []string{
+		"Authorized key seed report",
+		"",
+		"Overall: " + overall,
+		fmt.Sprintf("Dry run: %s", yesNo(out.DryRun)),
+		fmt.Sprintf("Summary: ok=%d changed=%d unchanged=%d failed=%d", out.Summary.OK, out.Summary.Changed, out.Summary.Unchanged, out.Summary.Failed),
+		fmt.Sprintf("Verification: %s", authkeysSeedReportVerificationSummary(out)),
+		"",
+		"Keys:",
+	}
+	for _, key := range out.Keys {
+		comment := key.Comment
+		if comment == "" {
+			comment = "-"
+		}
+		lines = append(lines, fmt.Sprintf("  %s  %s  %s", key.Fingerprint, key.Type, comment))
+	}
+	lines = append(lines, "", "Hosts:")
+	for _, result := range out.Results {
+		route := "direct"
+		if len(result.Route) > 0 {
+			route = "via " + strings.Join(result.Route, ",")
+		}
+		hostStatus := result.Status
+		if authkeysSeedVerificationFailed(result) {
+			hostStatus += " / verification " + result.VerificationStatus
+		}
+		lines = append(lines,
+			fmt.Sprintf("  %s", result.Target),
+			fmt.Sprintf("    route: %s", route),
+			fmt.Sprintf("    status: %s", hostStatus),
+			fmt.Sprintf("    write: added=%d  already-present=%d", result.Added, result.AlreadyPresent),
+		)
+		if result.Message != "" {
+			lines = append(lines, "    message: "+result.Message)
+		}
+		if result.VerificationStatus != "" {
+			lines = append(lines, fmt.Sprintf("    verify: %s  verified=%d  missing=%d", result.VerificationStatus, result.Verified, result.Missing))
+		}
+		if result.VerificationMessage != "" {
+			lines = append(lines, "    verify-message: "+result.VerificationMessage)
+		}
+	}
+	lines = append(lines, "", "Verification reconnects to each successful target and reads the SSH login user's ~/.ssh/authorized_keys.")
+	if out.Summary.Failed > 0 {
+		lines = append(lines, "Review failed hosts above before relying on the seeded key.")
+	}
+	return lines
+}
+
+func authkeysSeedReportVerificationSummary(out authkeysSeedOutput) string {
+	verified := 0
+	missing := 0
+	failed := 0
+	skipped := 0
+	for _, result := range out.Results {
+		switch result.VerificationStatus {
+		case "verified":
+			verified++
+		case "missing":
+			missing++
+		case "failed":
+			failed++
+		case "skipped":
+			skipped++
+		}
+	}
+	parts := []string{}
+	if verified > 0 {
+		parts = append(parts, fmt.Sprintf("verified=%d", verified))
+	}
+	if missing > 0 {
+		parts = append(parts, fmt.Sprintf("missing=%d", missing))
+	}
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("failed=%d", failed))
+	}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("skipped=%d", skipped))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, "  ")
 }
