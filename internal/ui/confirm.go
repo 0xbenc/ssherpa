@@ -84,7 +84,7 @@ func newConfirmModel(opts ConfirmOptions, theme termstyle.Theme) confirmModel {
 	return confirmModel{
 		title:       title,
 		message:     strings.TrimSpace(opts.Message),
-		selectedYes: true,
+		selectedYes: !opts.Danger,
 		noAltScreen: opts.NoAltScreen,
 		danger:      opts.Danger,
 		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),

@@ -9,11 +9,11 @@ import (
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
-func TestConfirmDeleteDefaultsToYes(t *testing.T) {
+func TestConfirmDefaultsToYes(t *testing.T) {
 	m := newConfirmModel(ConfirmOptions{
 		NoAltScreen: true,
-		Title:       "Delete SSH alias",
-		Message:     "prod from 1 file",
+		Title:       "Add SSH alias",
+		Message:     "prod to 1 file",
 	}, termstyle.Theme{})
 
 	view := m.View()
@@ -34,20 +34,42 @@ func TestConfirmDeleteDefaultsToYes(t *testing.T) {
 	}
 }
 
-func TestConfirmDeleteCanChooseNo(t *testing.T) {
-	m := newConfirmModel(ConfirmOptions{NoAltScreen: true}, termstyle.Theme{})
-	m = updateConfirm(m, keyPress(tea.KeyRight, ""))
-	if m.selectedYes {
-		t.Fatalf("right key should select no")
-	}
+func TestConfirmDeleteDefaultsToNo(t *testing.T) {
+	m := newConfirmModel(ConfirmOptions{
+		NoAltScreen: true,
+		Title:       "Delete SSH alias",
+		Message:     "prod from 1 file",
+		Danger:      true,
+	}, termstyle.Theme{})
+
 	view := m.View().Content
 	if !strings.Contains(view, "[ No ]") {
-		t.Fatalf("no button not selected:\n%s", view)
+		t.Fatalf("default no button not selected:\n%s", view)
+	}
+	if !strings.Contains(view, "  Yes  ") {
+		t.Fatalf("yes button missing:\n%s", view)
 	}
 
 	m = updateConfirm(m, keyPress(tea.KeyEnter, ""))
 	if !m.answered || m.selectedYes || m.canceled {
 		t.Fatalf("model = %+v, want answered no", m)
+	}
+}
+
+func TestConfirmDeleteCanChooseYes(t *testing.T) {
+	m := newConfirmModel(ConfirmOptions{NoAltScreen: true, Danger: true}, termstyle.Theme{})
+	m = updateConfirm(m, keyPress(tea.KeyLeft, ""))
+	if !m.selectedYes {
+		t.Fatalf("left key should select yes")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "[ Yes ]") {
+		t.Fatalf("yes button not selected:\n%s", view)
+	}
+
+	m = updateConfirm(m, keyPress(tea.KeyEnter, ""))
+	if !m.answered || !m.selectedYes || m.canceled {
+		t.Fatalf("model = %+v, want answered yes", m)
 	}
 }
 
