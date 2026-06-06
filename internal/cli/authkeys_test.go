@@ -12,8 +12,8 @@ import (
 
 func TestAuthkeysMenuItems(t *testing.T) {
 	items := authkeysMenuItems()
-	if len(items) != 6 {
-		t.Fatalf("len(items) = %d, want 6", len(items))
+	if len(items) != 7 {
+		t.Fatalf("len(items) = %d, want 7", len(items))
 	}
 	want := []struct {
 		token string
@@ -24,6 +24,7 @@ func TestAuthkeysMenuItems(t *testing.T) {
 		{"view", "Inspect", "view", ui.ItemAuthkeys},
 		{"add", "Add Keys", "add", ui.ItemAuthkeys},
 		{"merge", "Add Keys", "merge", ui.ItemAuthkeys},
+		{"seed", "Remote", "seed", ui.ItemAuthkeys},
 		{"replace", "Overwrite", "repl", ui.ItemConfirmDelete},
 		{"delete", "Remove", "delete", ui.ItemConfirmDelete},
 		{"back", "Navigation", "back", ui.ItemKind("back")},
@@ -37,8 +38,11 @@ func TestAuthkeysMenuItems(t *testing.T) {
 	if !strings.Contains(items[0].Action, "read-only") {
 		t.Fatalf("view action = %q", items[0].Action)
 	}
-	if !strings.Contains(items[4].Action, "fingerprint") {
-		t.Fatalf("delete action = %q", items[4].Action)
+	if !strings.Contains(items[3].Action, "selected SSH hosts") {
+		t.Fatalf("seed action = %q", items[3].Action)
+	}
+	if !strings.Contains(items[5].Action, "fingerprint") {
+		t.Fatalf("delete action = %q", items[5].Action)
 	}
 }
 

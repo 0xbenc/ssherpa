@@ -69,6 +69,8 @@ func runAuthkeys(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runAuthkeysReplace(args[1:], stdout, stderr)
 	case "delete", "remove":
 		return runAuthkeysDelete(args[1:], stdout, stderr)
+	case "seed":
+		return runAuthkeysSeed(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "ssherpa: unknown authkeys command %q\n", subcommand)
 		return 1
@@ -355,6 +357,10 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 			if code := runAuthkeysMerge(authkeysInteractiveDirArgs(path, dir, flags), stdout, stderr); code != 0 {
 				return code
 			}
+		case "seed":
+			if code := runAuthkeysSeedInteractive(authkeysSeedFlags{SSHKeygenPath: flags.SSHKeygenPath, Timeout: defaultAuthkeysSeedTimeout, Hops: map[string][]string{}}, stdout, stderr); code != 0 {
+				return code
+			}
 		case "replace":
 			dir, ok, err := pickAuthkeysDirectory(stderr, "SSHERPA AUTHKEYS REPLACE SOURCE")
 			if err != nil {
@@ -554,6 +560,7 @@ func authkeysMenuItems() []ui.ManagementItem {
 		{Kind: ui.ItemAuthkeys, Token: "view", Title: "View current keys", Description: "browse existing authorized_keys entries", Group: "Inspect", Badge: "view", Action: "Open a read-only TUI list of current keys"},
 		{Kind: ui.ItemAuthkeys, Token: "add", Title: "Add single key (paste)", Description: "append one public key", Group: "Add Keys", Badge: "add", Action: "Paste one public key and append it"},
 		{Kind: ui.ItemAuthkeys, Token: "merge", Title: "Add keys from directory (merge)", Description: "read authorized_keys/ or *.pub", Group: "Add Keys", Badge: "merge", Action: "Merge keys from a directory without removing existing keys"},
+		{Kind: ui.ItemAuthkeys, Token: "seed", Title: "Seed keys to remote hosts", Description: "install public keys on SSH aliases", Group: "Remote", Badge: "seed", Action: "Install selected public keys on selected SSH hosts"},
 		{Kind: ui.ItemConfirmDelete, Token: "replace", Title: "Replace keys from directory (overwrite)", Description: "backup, then replace file contents", Group: "Overwrite", Badge: "repl", Action: "Replace authorized_keys after confirmation"},
 		{Kind: ui.ItemConfirmDelete, Token: "delete", Title: "Delete keys", Description: "select one key to remove", Group: "Remove", Badge: "delete", Action: "Choose one key fingerprint to delete"},
 		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the previous menu", Group: "Navigation", Badge: "back", Action: "Return without changing authorized_keys"},

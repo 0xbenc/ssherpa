@@ -608,6 +608,16 @@ Shared authkeys mutation flags:
 | `--yes`, `-y` | Skip confirmation. |
 | `--ssh-keygen PATH` | Use this `ssh-keygen` binary for validation. |
 
+Seed-only flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--target ALIAS` | Remote SSH alias to seed. Repeat for multiple hosts. |
+| `--hop TARGET=HOP[,HOP...]` | ProxyJump route for one selected target. Repeat for multiple routed targets. |
+| `--ssh-binary PATH` | Use this SSH binary. |
+| `--timeout DURATION` | SSH connection timeout; default `10s`. |
+| `--config PATH`, `--all`, `--filter`, `--user` | Inventory selection flags used to resolve aliases. |
+
 ### list
 
 ```sh
@@ -639,6 +649,20 @@ ssherpa authkeys replace --from-dir DIR [shared flags]
 
 Replaces the file with valid keys found in `DIR`.
 
+### seed
+
+```sh
+ssherpa authkeys seed --key "ssh-ed25519 ..." --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [seed flags]
+ssherpa authkeys seed --key-file PATH.pub --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [seed flags]
+ssherpa authkeys seed --from-dir DIR --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [seed flags]
+```
+
+Seeds validated public keys to remote SSH aliases by appending missing keys to
+the SSH login user's `~/.ssh/authorized_keys`. It never uses sudo and never
+writes another account's home directory. Use repeated `--target` for multiple
+hosts and repeated `--hop TARGET=HOP[,HOP...]` when a target needs ProxyJump
+routing.
+
 ### delete
 
 ```sh
@@ -654,6 +678,7 @@ ssherpa authkeys list --json
 ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 ssherpa authkeys merge --from-dir ./keys --yes
 ssherpa authkeys replace --from-dir ./keys --dry-run
+ssherpa authkeys seed --key-file ~/.ssh/id_ed25519.pub --target prod --target lab --hop lab=bastion --yes
 ssherpa authkeys delete --fingerprint SHA256:abc... --yes
 ```
 

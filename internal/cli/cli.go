@@ -35,7 +35,7 @@ Available Commands:
   receive    Receive a remote file from an SSH alias with SFTP
   check      Test SSH aliases and saved forwards
   incoming   Inspect and mark incoming SSH sessions
-  authkeys   Manage authorized_keys on this device
+  authkeys   Manage local authorized_keys or seed keys to SSH aliases
   theme      Build and save the terminal UI color schema
   session    Inspect supervised session records
   list       List SSH aliases from OpenSSH config
@@ -124,6 +124,7 @@ Authorized Keys Commands:
   ssherpa authkeys add --key "ssh-ed25519 ..." [--yes]
   ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub [--yes]
   ssherpa authkeys merge --from-dir ./keys [--dry-run]
+  ssherpa authkeys seed --key-file ~/.ssh/id_ed25519.pub --target ALIAS [--hop ALIAS=HOP[,HOP...]] [--yes]
   ssherpa authkeys replace --from-dir ./keys [--yes]
   ssherpa authkeys delete --fingerprint SHA256:... [--yes]
 

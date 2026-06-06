@@ -98,7 +98,16 @@ _ssherpa()
             return
             ;;
         authkeys)
-            COMPREPLY=( $(compgen -W "list add merge replace delete --json --path --key --key-file --from-dir --fingerprint --dry-run --yes" -- "$cur") )
+            case "${words[2]}" in
+                seed)
+                    COMPREPLY=( $(compgen -W "--json --all --filter --user --config --key --key-file --from-dir --target --hop --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
+                    return
+                    ;;
+                *)
+                    COMPREPLY=( $(compgen -W "list add merge replace delete seed --json --path --key --key-file --from-dir --target --hop --fingerprint --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
+                    return
+                    ;;
+            esac
             return
             ;;
         session)

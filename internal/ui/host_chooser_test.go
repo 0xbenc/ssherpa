@@ -94,6 +94,39 @@ func TestHostChooserViewRendersFramedAliasPicker(t *testing.T) {
 	}
 }
 
+func TestHostChooserMultiSelectTogglesAndRequiresSelection(t *testing.T) {
+	model := newTestHostChooser(t, hostChooserBaseOptions{
+		Title:  "Seed: pick remote hosts",
+		Mode:   "choose remote seed targets",
+		Footer: "space toggle  /  enter continue",
+	})
+	model.multiSelect = true
+	model.checked = map[string]bool{}
+	model.width = 108
+	model.height = 24
+
+	model = updateHostChooser(model, keyPress(tea.KeyEnter, ""))
+	if model.completed {
+		t.Fatalf("multi-select completed without a selected host")
+	}
+
+	model = updateHostChooser(model, keyPress(tea.KeySpace, " "))
+	if got := strings.Join(model.checkedTokens(), ","); got != "prod" {
+		t.Fatalf("checked tokens = %q, want prod", got)
+	}
+	view := model.View().Content
+	for _, want := range []string{"[x]", "1 selected", "Selected", "yes"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+
+	model = updateHostChooser(model, keyPress(tea.KeyEnter, ""))
+	if !model.completed {
+		t.Fatalf("multi-select did not complete after selecting a host")
+	}
+}
+
 func TestHostChooserFilteringSelectionAndCancel(t *testing.T) {
 	model := newTestHostChooser(t, hostChooserBaseOptions{})
 

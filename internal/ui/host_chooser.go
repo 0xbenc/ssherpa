@@ -27,6 +27,22 @@ type HostChooserOptions struct {
 	Footer      string
 }
 
+type HostMultiChooserOptions struct {
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	NoColor     bool
+	Theme       termstyle.Theme
+	ThemeName   string
+	ThemeFile   string
+	Title       string
+	Mode        string
+	Steps       []string
+	CurrentStep int
+	Footer      string
+	Summary     string
+}
+
 type JumpHopChooserOptions struct {
 	Input        io.Reader
 	Output       io.Writer
@@ -74,6 +90,48 @@ func ChooseHost(ctx context.Context, aliases []hostlist.Alias, opts HostChooserO
 		return "", false, nil
 	}
 	return final.items[final.selected].Token, true, nil
+}
+
+func ChooseHosts(ctx context.Context, aliases []hostlist.Alias, opts HostMultiChooserOptions) ([]string, bool, error) {
+	if len(aliases) == 0 {
+		return nil, false, nil
+	}
+	footer := opts.Footer
+	if footer == "" {
+		footer = "space toggle  /  enter continue  /  type filter  /  arrows move  /  shift+arrows section  /  Q back"
+	}
+	model, err := newHostChooserModel(hostChooserItemsFromAliases(aliases), hostChooserBaseOptions{
+		Input:       opts.Input,
+		Output:      opts.Output,
+		NoAltScreen: opts.NoAltScreen,
+		NoColor:     opts.NoColor,
+		Theme:       opts.Theme,
+		ThemeName:   opts.ThemeName,
+		ThemeFile:   opts.ThemeFile,
+		Title:       opts.Title,
+		Mode:        opts.Mode,
+		Steps:       opts.Steps,
+		CurrentStep: opts.CurrentStep,
+		Footer:      footer,
+		Summary:     opts.Summary,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	model.multiSelect = true
+	model.checked = map[string]bool{}
+	final, err := runHostChooserModel(ctx, model, opts.Input, opts.Output)
+	if err != nil {
+		return nil, false, err
+	}
+	if final.canceled || !final.completed {
+		return nil, false, nil
+	}
+	selected := final.checkedTokens()
+	if len(selected) == 0 {
+		return nil, false, nil
+	}
+	return selected, true, nil
 }
 
 func ChooseJumpHop(ctx context.Context, aliases []hostlist.Alias, opts JumpHopChooserOptions) (JumpHopChoice, bool, error) {
@@ -160,6 +218,9 @@ type hostChooserModel struct {
 	query        string
 	selected     int
 	canceled     bool
+	completed    bool
+	multiSelect  bool
+	checked      map[string]bool
 	noAltScreen  bool
 	theme        termstyle.Theme
 	title        string
@@ -253,8 +314,17 @@ func (m hostChooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
+			if m.multiSelect {
+				if len(m.checkedTokens()) == 0 {
+					return m, nil
+				}
+				m.completed = true
+				return m, tea.Quit
+			}
 			m.selected = m.filtered[m.cursor]
 			return m, tea.Quit
+		case (key == " " || key == "space") && m.multiSelect:
+			m.toggleCurrent()
 		case key == "backspace":
 			if m.query != "" {
 				m.query = m.query[:len(m.query)-1]
@@ -389,7 +459,7 @@ func (m hostChooserModel) renderListLines(width int, theme pickerTheme) []string
 			lines = append(lines, theme.groupHeader(item.Group, width))
 			lastGroup = item.Group
 		}
-		lines = append(lines, hostChooserRow(item, i == m.cursor, width, theme))
+		lines = append(lines, m.renderRow(item, i == m.cursor, width, theme))
 		rendered++
 		renderedUntil = i + 1
 	}
@@ -414,6 +484,13 @@ func (m hostChooserModel) renderPreviewLines(width int, theme pickerTheme) []str
 	}
 	if item.Detail != "" {
 		lines = append(lines, previewKVLines(theme, width, "Details", item.Detail, 2)...)
+	}
+	if m.multiSelect {
+		selected := "no"
+		if m.checked[item.Token] {
+			selected = "yes"
+		}
+		lines = append(lines, previewKVLines(theme, width, "Selected", selected, 1)...)
 	}
 	lines = append(lines, previewKVLines(theme, width, "Action", hostChooserAction(item), 2)...)
 	return lines
@@ -501,6 +578,38 @@ func hostChooserRow(item hostChooserItem, selected bool, width int, theme picker
 	return termstyle.PadRight(line, width)
 }
 
+func (m hostChooserModel) renderRow(item hostChooserItem, selected bool, width int, theme pickerTheme) string {
+	if !m.multiSelect {
+		return hostChooserRow(item, selected, width, theme)
+	}
+	cursor := "  "
+	if selected {
+		cursor = ">>"
+	}
+	mark := "[ ]"
+	if m.checked[item.Token] {
+		mark = "[x]"
+	}
+	badge := strings.ToUpper(strings.TrimSpace(item.Badge))
+	if badge == "" {
+		badge = strings.ToUpper(item.Kind)
+	}
+	badge = termstyle.Truncate(badge, 6)
+	titleWidth := clamp(width/3, 12, 26)
+	if width < 68 {
+		titleWidth = clamp(width/4, 9, 16)
+	}
+	descWidth := max(0, width-2-2-4-1-8-2-titleWidth-2)
+	line := theme.cursor(cursor, selected) + " " +
+		theme.subtle(mark) + " " +
+		termstyle.PadRight(theme.badge(hostChooserItemKind(item), "["+badge+"]"), 8) + " " +
+		termstyle.PadRight(theme.rowTitle(termstyle.Truncate(item.Title, titleWidth), selected), titleWidth)
+	if descWidth > 0 {
+		line += "  " + theme.rowDesc(termstyle.Truncate(item.Description, descWidth), selected)
+	}
+	return termstyle.PadRight(line, width)
+}
+
 func hostChooserCompactLine(item hostChooserItem, width int, theme pickerTheme) string {
 	text := hostChooserAction(item)
 	if item.Description != "" {
@@ -541,6 +650,34 @@ func (m *hostChooserModel) applyFilter() {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
 	m.ensureCursorVisible()
+}
+
+func (m *hostChooserModel) toggleCurrent() {
+	item, ok := m.currentItem()
+	if !ok || item.Token == "" {
+		return
+	}
+	if m.checked == nil {
+		m.checked = map[string]bool{}
+	}
+	if m.checked[item.Token] {
+		delete(m.checked, item.Token)
+		return
+	}
+	m.checked[item.Token] = true
+}
+
+func (m hostChooserModel) checkedTokens() []string {
+	if len(m.checked) == 0 {
+		return nil
+	}
+	var out []string
+	for _, item := range m.items {
+		if m.checked[item.Token] {
+			out = append(out, item.Token)
+		}
+	}
+	return out
 }
 
 func (m *hostChooserModel) moveCursor(delta int) {
@@ -655,7 +792,13 @@ func (m hostChooserModel) countSummary() string {
 		}
 	}
 	if hosts == len(m.items) {
+		if m.multiSelect {
+			return fmt.Sprintf("%d selected  %d host%s", len(m.checkedTokens()), hosts, pluralSuffix(hosts))
+		}
 		return fmt.Sprintf("%d host%s", hosts, pluralSuffix(hosts))
+	}
+	if m.multiSelect {
+		return fmt.Sprintf("%d selected  %d choice%s  %d host%s", len(m.checkedTokens()), len(m.items), pluralSuffix(len(m.items)), hosts, pluralSuffix(hosts))
 	}
 	return fmt.Sprintf("%d choice%s  %d host%s", len(m.items), pluralSuffix(len(m.items)), hosts, pluralSuffix(hosts))
 }

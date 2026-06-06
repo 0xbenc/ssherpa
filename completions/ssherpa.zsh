@@ -125,6 +125,43 @@ _ssherpa() {
             '--force[overwrite existing destination]' \
             '--print[print command]'
           ;;
+        authkeys)
+          if [[ $words[3] == seed ]]; then
+            _arguments \
+              '3:subcommand:(seed)' \
+              '--json[emit JSON]' \
+              '--all[include pattern aliases]' \
+              '--filter[filter aliases]:substring' \
+              '--user[filter aliases by user]:user' \
+              '--config[read SSH config]:path:_files' \
+              '--key[public key line]:key' \
+              '--key-file[public key file]:path:_files' \
+              '--from-dir[key directory]:path:_files' \
+              '--target[remote SSH alias]:alias' \
+              '--hop[target route TARGET=HOP[,HOP...]]:route' \
+              '--dry-run[preview without writing]' \
+              '--yes[skip confirmation]' \
+              '--ssh-keygen[ssh-keygen binary]:path:_files' \
+              '--ssh-binary[SSH binary]:path:_files' \
+              '--timeout[SSH timeout]:duration'
+          else
+            _arguments \
+              '2:subcommand:(list add merge replace delete seed)' \
+              '--json[emit JSON]' \
+              '--path[authorized_keys path]:path:_files' \
+              '--key[public key line]:key' \
+              '--key-file[public key file]:path:_files' \
+              '--from-dir[key directory]:path:_files' \
+              '--target[remote SSH alias]:alias' \
+              '--hop[target route TARGET=HOP[,HOP...]]:route' \
+              '--fingerprint[key fingerprint]:fingerprint' \
+              '--dry-run[preview without writing]' \
+              '--yes[skip confirmation]' \
+              '--ssh-keygen[ssh-keygen binary]:path:_files' \
+              '--ssh-binary[SSH binary]:path:_files' \
+              '--timeout[SSH timeout]:duration'
+          fi
+          ;;
         session)
           _arguments \
             '2:subcommand:(list map show stop-all prune)' \

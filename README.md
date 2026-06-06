@@ -24,6 +24,8 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   route and nested lineage.
 - **File sending:** send or receive individual files over OpenSSH SFTP, with
   overwrite protection and picker-driven paths.
+- **Remote key seeding:** install validated public keys on many saved SSH
+  aliases, including hosts reached through ProxyJump routes, without sudo.
 - **Escape rope:** `Ctrl-]`, `X`, `X` disconnects every supervised layer below
   you and returns to the outer shell.
 - **Session recording:** start, pause, and resume replayable output transcripts
