@@ -259,13 +259,13 @@ func (m addAliasModel) updateIdentity(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.idBuf = ""
 			m.idCursor = 0
 			m.idsOnly = false
-			m.step = addStepIdentitiesOnly
+			m.step = addStepReview
 		case addIdentityCustom:
 			m.step = addStepIdentityCustom
 		default:
 			m.idBuf = choice
 			m.idCursor = len([]rune(choice))
-			m.step = addStepIdentitiesOnly
+			m = m.advanceFromIdentity()
 		}
 	}
 	return m, nil
@@ -274,7 +274,22 @@ func (m addAliasModel) updateIdentity(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 func (m addAliasModel) updateIdentityCustom(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	action, buf, cursor, errStr := updateTextInputState(msg, m.idBuf, m.idCursor, m.idError, validateNoNewline("IdentityFile"))
 	m.idBuf, m.idCursor, m.idError = buf, cursor, errStr
+	if action == textInputAdvance {
+		m = m.advanceFromIdentity()
+		return m, nil
+	}
 	return m.applyTextAction(action, addStepIdentity, addStepIdentitiesOnly)
+}
+
+func (m addAliasModel) advanceFromIdentity() addAliasModel {
+	if strings.TrimSpace(m.idBuf) == "" {
+		m.idsOnly = false
+		m.step = addStepReview
+		return m
+	}
+	m.idsOnly = true
+	m.step = addStepIdentitiesOnly
+	return m
 }
 
 func (m addAliasModel) applyTextAction(action textInputAction, back addAliasStep, next addAliasStep) (tea.Model, tea.Cmd) {
@@ -307,8 +322,10 @@ func (m addAliasModel) updateIdentitiesOnly(msg tea.KeyPressMsg) (tea.Model, tea
 			return m, nil
 		}
 		m.step = addStepReview
-	case "left", "right", "up", "down":
-		m.idsOnly = !m.idsOnly
+	case "left", "up", "ctrl+p", "n", "N":
+		m.idsOnly = false
+	case "right", "down", "ctrl+n", "y", "Y":
+		m.idsOnly = true
 	}
 	return m, nil
 }
@@ -319,7 +336,11 @@ func (m addAliasModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.canceled = true
 		return m, tea.Quit
 	case "shift+tab":
-		m.step = addStepIdentitiesOnly
+		if strings.TrimSpace(m.idBuf) == "" {
+			m.step = addStepIdentity
+		} else {
+			m.step = addStepIdentitiesOnly
+		}
 	case "enter":
 		m.result = AddAliasResult{
 			Alias:          strings.TrimSpace(m.aliasBuf),
@@ -450,20 +471,61 @@ func (m addAliasModel) viewIdentityCustom(b *strings.Builder, theme pickerTheme,
 
 func (m addAliasModel) viewIdentitiesOnly(b *strings.Builder, theme pickerTheme, width int) {
 	b.WriteString("  ")
-	b.WriteString(theme.summary("Limit authentication to this identity file?"))
-	b.WriteString("\n\n  ")
-	box := "[ ]"
-	if m.idsOnly {
-		box = "[x]"
-	}
-	b.WriteString(theme.rowTitle(box+" IdentitiesOnly yes", true))
+	b.WriteString(theme.summary("How strictly should SSH use the selected identity file?"))
 	b.WriteByte('\n')
-	if strings.TrimSpace(m.idBuf) == "" {
+	if identity := strings.TrimSpace(m.idBuf); identity != "" {
 		b.WriteString("  ")
-		b.WriteString(theme.muted("No identity file is set, so this can usually stay off."))
+		b.WriteString(theme.label(termstyle.PadRight("KEY", 7)))
+		b.WriteString("  ")
+		b.WriteString(theme.rowDesc(termstyle.Truncate(identity, max(8, width-17)), false))
 		b.WriteByte('\n')
 	}
-	_ = width
+	b.WriteByte('\n')
+	for _, choice := range identitiesOnlyChoices() {
+		b.WriteString("  ")
+		b.WriteString(identitiesOnlyChoiceLine(choice, choice.IdentitiesOnly == m.idsOnly, width, theme))
+		b.WriteByte('\n')
+	}
+}
+
+type identitiesOnlyChoice struct {
+	IdentitiesOnly bool
+	Title          string
+	Description    string
+}
+
+func identitiesOnlyChoices() []identitiesOnlyChoice {
+	return []identitiesOnlyChoice{
+		{
+			IdentitiesOnly: false,
+			Title:          "Normal SSH authentication",
+			Description:    "Use this key, then allow other available keys",
+		},
+		{
+			IdentitiesOnly: true,
+			Title:          "Only this identity file",
+			Description:    "Write IdentitiesOnly yes for this alias",
+		},
+	}
+}
+
+func identitiesOnlyChoiceLine(choice identitiesOnlyChoice, selected bool, width int, theme pickerTheme) string {
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+	available := max(24, width-8)
+	titleWidth := clamp(available/2, 22, 34)
+	descWidth := max(0, available-len(cursor)-titleWidth-2)
+
+	line := cursor + termstyle.PadRight(termstyle.Truncate(choice.Title, titleWidth), titleWidth)
+	if descWidth >= 8 {
+		line += "  " + theme.rowDesc(termstyle.Truncate(choice.Description, descWidth), false)
+	}
+	if selected {
+		line = theme.rowTitle(line, true)
+	}
+	return line
 }
 
 func (m addAliasModel) viewReview(b *strings.Builder, theme pickerTheme, width int) {
@@ -496,7 +558,7 @@ func addFooter(step addAliasStep) string {
 	case addStepIdentityCustom:
 		return "enter advance  /  shift+tab back to identity choices  /  type to edit  /  esc cancel"
 	case addStepIdentitiesOnly:
-		return "space toggle  /  enter review  /  shift+tab back  /  esc cancel"
+		return "enter review  /  arrows choose  /  space toggle  /  shift+tab back  /  esc cancel"
 	case addStepReview:
 		return "enter save  /  shift+tab back  /  esc cancel"
 	default:
