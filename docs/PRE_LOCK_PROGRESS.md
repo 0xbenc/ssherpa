@@ -33,10 +33,10 @@ every commit on this branch.
 | Batch B — WP6 state | **done** (1d919df) — prune-by-filename + .cast/.log + orphan sweep, tolerant listings + Detailed variants, ErrFutureStateVersion gates, crashed-local reaping, finalization-preserving WriteRecord, cleanup writes back to read file |
 | Batch B — WP2 termstyle | **done** (35ea824) — ECMA-48 CSI finals + embedded C0, non-CSI grammar, SS3 whole-rune, ANSI-aware Truncate |
 | Batch C handoffs from B (do in Batch C) | torn-tail consumer adoption (cli/session.go:1771, followTranscript, sessionview:1029), cli raw-replay delay clamp, bundle Warning printing, prune Artifacts + cleanup LocalSessions + Skipped printing, Detailed-listing warnings, TranscriptSpec stop_reason field + recorder wiring |
-| Batch C — WP7 supervisor (recover, backoff signals, fd leak, ControlMaster exit) | pending |
-| Batch C — WP8 transfer safety (in-band echo, overwrite gates, timeouts) | pending |
-| Batch C — WP2 render sinks (OSC7, imported metadata, raw-replay confirm) | pending |
-| Batch C — WP10 contract stabilization (JSON envelopes, exit codes, SendEnv) | pending |
+| Batch C — WP7 supervisor | **done** (dec8ddc) — panic-safe terminal restore, lifetime signal handling incl. backoff, fd leak + regression test, ControlMaster `-O exit` + XDG socket dir, OSC7/telemetry sanitize + clamps, AcceptEnv degradation event, transcript stop_reason |
+| Batch C — WP8 transfer | **done** (23541ea + 7a233e5) — echo-proof sentinels with deterministic driver tests, parseable failures, temp+rename receive with mode preservation, overwrite gates, ConnectTimeout, SendEnv enumeration, ErrNoCompletion |
+| Batch C — WP2 render sinks | **done** (5b9a761 + 224b8e7) — termstyle.Sanitize (ESC + C0/C1) at every sink, torn-tail adoption (CRITICAL-01 closed end-to-end), raw-replay default-No guard + clamp, wrapConfirmText newlines, Batch B surfacing |
+| Batch C — WP10 contract | **done** (f413575 + 224b8e7) — per-command help, exit-code unification (3 gone, grep(1) convention), schema_version envelopes on list/show/check/session JSON with public projections, check stderr capture, theme forward-compat, full docs/man refresh, completions regen + drift test (ce48eea) |
 
 ## Notes for future sessions
 
@@ -71,3 +71,24 @@ every commit on this branch.
 - Include-at-end-of-stanza scope-change warning unevenness (sshconfig).
 - splitFields backslash-in-quotes parity with OpenSSH argv_split (tokenizer
   dialect finding, §12.2).
+
+## Final state (2026-06-12)
+
+All five tracked items plus both review-fix rounds are complete; the full
+suite passes `go test ./... -race -count=1`. Every audit must-do work
+package (WP1–WP11) landed.
+
+Explicit descopes / known residuals (decided, not forgotten):
+- Reconnect reuses the per-record ControlPath; a retry after silent link
+  death could attach to a half-dead user-config master. Only reachable
+  with user-config ControlMaster on tunnels (ssherpa's own master applies
+  to interactive sessions only); revisit post-lock.
+- SIGINT during the reconnect backoff window still exits without
+  finalizing (intercepting it would swallow Ctrl-C meant for the remote);
+  SIGTERM/SIGHUP/SIGQUIT are handled.
+- `--__supervisor` IPC carries no version token; documented as internal
+  same-version-only protocol instead.
+- PID-reuse identity checks are not portably solvable stdlib-only; TTL
+  reaping bounds the risk (documented in state.go).
+- fish completion syntax was not machine-checked locally (fish not
+  installed); run `fish --no-execute completions/ssherpa.fish` once.
