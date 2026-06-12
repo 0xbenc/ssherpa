@@ -2,6 +2,25 @@
 
 A curated, codebase-specific backlog. Each item is concrete (names real files/packages where relevant), justified, and scoped to be genuinely valuable rather than busywork. Categories: **UX**, **Reliability**, **Security**, **Performance**, **Testing**, **Architecture**, **Docs**, **Distribution**, **Observability**, **Features**.
 
+> **Status (2026-06-12, pre-1.x-freeze hardening on branch `pre-lock`; see
+> `docs/STABILITY_AUDIT.md` for the audit and `docs/PRE_LOCK_PROGRESS.md` for
+> the work log):**
+>
+> - **Done by the pre-lock hardening:** #17 (list empty-state hint), #18, #22
+>   (partial: exit-code collisions fixed, grep(1) convention adopted; full
+>   error taxonomy still open), #28 (read-side version gates), #29 (plus
+>   crashed-local reaping), #30, #31, #32, #35, #36 (partial: backup modes
+>   hardened to the effective mode), #37 (plus the options field), #40
+>   (artifact attestations), #41 (SBOM), #42, #43 (partial: govulncheck
+>   weekly; gosec not adopted), #46 (control-socket dir hardening), #49
+>   (dependabot), #60 (mutation fuzz target), #66 (round-trip property
+>   tests), #70 (partial: race detector in CI; coverage gate still open),
+>   #71, #88 (partial: completions drift test; generation remains manual).
+> - **Explicitly declined for 1.x** (re-litigate only at a 2.0 boundary):
+>   #82 (plugin interface), #90 (Windows/ConPTY), and new transports.
+> - Everything else is the post-lock maintenance backlog. Bugfixes and
+>   user-requested improvements stay welcome; large new surface is frozen.
+
 | # | Category | Improvement | Why it matters / Concrete approach |
 |---|----------|-------------|-------------------------------------|
 | 1 | UX | `ssherpa doctor` health command | Single command that audits `~/.ssh/config` perms, missing `IdentityFile` paths, unreachable `HostName`s, dangling `Include`s, and a too-permissive `authorized_keys`. Reuse `sshconfig.Load` diagnostics + `check.ProbeSSH`. |
@@ -106,4 +125,4 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 
 ---
 
-_Generated as a planning artifact. Not committed. Items are independent and individually shippable; prioritize by impact (security + reliability first, then UX, then breadth)._
+_Generated as a planning artifact; now the official post-lock backlog. Items are independent and individually shippable; prioritize by impact (security + reliability first, then UX, then breadth)._
