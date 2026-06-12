@@ -223,6 +223,16 @@ func runProxyWith(args []string, detached bool, recordID string, stdout io.Write
 			}
 		}
 	}
+	// Security gate: by now flags.Select is the destination handed to the
+	// argv builder — either typed on the CLI or loaded from a saved-proxy
+	// catalog entry (whose JSON could have been tampered with). A
+	// dash-prefixed name would be parsed by OpenSSH as an option.
+	if flags.Select != "" {
+		if err := sshcmd.ValidateDestination(flags.Select); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
+	}
 	if flags.Background && flags.Print {
 		fmt.Fprintln(stderr, "ssherpa: --background and --print are mutually exclusive")
 		return 1
@@ -346,6 +356,22 @@ func runForwardWith(args []string, detached bool, recordID string, stdout io.Wri
 				flags.savedFromCatalog = saved.Name
 				touchForwardLastLaunched(stateDir, saved)
 			}
+		}
+	}
+	// Security gate: flags.Select and flags.Through are the destinations
+	// handed to the argv builder — typed on the CLI or loaded from a
+	// saved-forward catalog entry (whose JSON could have been tampered
+	// with). A dash-prefixed name would be parsed by OpenSSH as an option.
+	if flags.Select != "" {
+		if err := sshcmd.ValidateDestination(flags.Select); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
+	}
+	if flags.Through != "" {
+		if err := sshcmd.ValidateDestination(flags.Through); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
 		}
 	}
 	if !flags.LocalSet {
@@ -1193,6 +1219,15 @@ func resolveJumpRoute(flags jumpFlags, inventory hostlist.Inventory, stderr io.W
 			fmt.Fprintln(stderr, "ssherpa: jump requires --dest and at least one --hop when route flags are used")
 			return "", nil, false, 1
 		}
+		// Security gate before the inventory lookup: a dash-prefixed
+		// --dest or --hop must fail with the injection rationale, not
+		// a generic "alias not found".
+		for _, name := range append([]string{flags.Destination}, flags.Hops...) {
+			if err := sshcmd.ValidateDestination(name); err != nil {
+				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+				return "", nil, false, 1
+			}
+		}
 		if err := sshcmd.ValidateJumpRoute(flags.Destination, flags.Hops); err != nil {
 			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 			return "", nil, false, 1
@@ -1538,6 +1573,15 @@ func resolveSSHCommand(flags connectFlags) sshcmd.Command {
 }
 
 func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) int {
+	// Defense in depth for every launch path (connect/jump/proxy/forward):
+	// destinations normally arrive here from the filtered inventory or an
+	// upstream ValidateDestination gate, but a dash-prefixed target must
+	// never be printed or spawned even if a future caller forgets one.
+	if err := sshcmd.ValidateDestination(metadata.TargetAlias); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
 	cmd = sshcmd.WithConnectTimeout(cmd, sshcmd.DefaultConnectTimeoutSeconds)
 	if options.Supervise {
 		cmd = sshcmd.WithSessionEnvForwarding(cmd)

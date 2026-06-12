@@ -63,6 +63,126 @@ func TestBuildDirect(t *testing.T) {
 	}
 }
 
+// TestPassthroughBuildersOmitEndOfOptions pins the passthrough contract for
+// the builders whose argv carries user SSH args after the destination
+// (`ssherpa --select prod -- -L 8080:localhost:8080`): the argv must be
+// [...options..., alias, sshArgs...] with NO "--" anywhere. OpenSSH stops
+// option permutation at "--" (verified: `ssh -G -- prod -L 8080:...` reports
+// zero localforward entries), so inserting one would silently turn
+// passthrough flags into a remote command. Dash-prefixed aliases are instead
+// rejected by ValidateDestination and filtered from the inventory.
+func TestPassthroughBuildersOmitEndOfOptions(t *testing.T) {
+	passthrough := []string{"-L", "8080:localhost:8080"}
+
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{"direct", BuildDirect(Command{Argv: []string{"ssh"}}, "prod", passthrough).Argv},
+		{"jump", BuildJump(Command{Argv: []string{"ssh"}}, "prod", []string{"bastion"}, passthrough).Argv},
+		{"proxy", BuildProxy(Command{Argv: []string{"ssh"}}, "prod", "127.0.0.1", 1080, passthrough).Argv},
+		{"forward", BuildForward(Command{Argv: []string{"ssh"}}, "prod", "127.0.0.1", 5432, "127.0.0.1", 5432, "", passthrough).Argv},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idxAlias := -1
+			idxPassthrough := -1
+			for i, arg := range tc.argv {
+				switch {
+				case arg == "--":
+					t.Fatalf("argv contains \"--\", which breaks SSH passthrough args: %#v", tc.argv)
+				case arg == "prod" && idxAlias == -1:
+					idxAlias = i
+				case arg == "8080:localhost:8080":
+					idxPassthrough = i
+				}
+			}
+			if idxAlias == -1 {
+				t.Fatalf("argv does not contain the alias: %#v", tc.argv)
+			}
+			if idxPassthrough == -1 || tc.argv[idxPassthrough-1] != "-L" || idxPassthrough < idxAlias {
+				t.Fatalf("passthrough -L spec not after the alias: idxAlias=%d idxPassthrough=%d argv=%#v", idxAlias, idxPassthrough, tc.argv)
+			}
+		})
+	}
+}
+
+// TestGuardedBuildersPlaceEndOfOptionsBeforeAlias is the WP1 regression for
+// the builders with no user passthrough after the destination: probe and sftp
+// argv keep a positional "--" immediately before the alias so a dash-prefixed
+// name from a hostile or shared ssh config can never be parsed as an option.
+func TestGuardedBuildersPlaceEndOfOptionsBeforeAlias(t *testing.T) {
+	const dash = "-oProxyCommand=touch /tmp/pwned"
+
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{"probe", BuildProbe(Command{Argv: []string{"ssh"}}, dash, nil).Argv},
+		{"sftp", BuildSFTP("sftp", SFTPTransfer{Alias: dash}).Argv},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idxSep := -1
+			idxAlias := -1
+			for i, arg := range tc.argv {
+				switch {
+				case arg == "--" && idxSep == -1:
+					idxSep = i
+				case arg == dash && idxAlias == -1:
+					idxAlias = i
+				}
+			}
+			if idxSep == -1 {
+				t.Fatalf("argv has no -- guard: %#v", tc.argv)
+			}
+			if idxAlias == -1 {
+				t.Fatalf("argv does not contain the dash alias: %#v", tc.argv)
+			}
+			if idxAlias != idxSep+1 {
+				t.Fatalf("dash alias not immediately after --: idxSep=%d idxAlias=%d argv=%#v", idxSep, idxAlias, tc.argv)
+			}
+		})
+	}
+}
+
+// TestValidateDestination covers the route-layer gate that replaces the "--"
+// guard for the passthrough builders: dash-prefixed and control-character
+// destinations are rejected before any argv is assembled.
+func TestValidateDestination(t *testing.T) {
+	valid := []string{"prod", "prod.example.com", "user@10.0.0.1", "a-b_c.d"}
+	for _, name := range valid {
+		if err := ValidateDestination(name); err != nil {
+			t.Fatalf("ValidateDestination(%q) = %v, want nil", name, err)
+		}
+	}
+
+	invalid := []struct {
+		name string
+		want string
+	}{
+		{"", "cannot be empty"},
+		{"   ", "cannot be empty"},
+		{"-", "would be parsed as an ssh option"},
+		{"-oProxyCommand=touch /tmp/pwned", "would be parsed as an ssh option"},
+		{"-L8080:localhost:8080", "would be parsed as an ssh option"},
+		{"prod\x1b[2J", "control characters"},
+		{"prod\nevil", "control characters"},
+		{"prod\x7f", "control characters"},
+	}
+	for _, tc := range invalid {
+		err := ValidateDestination(tc.name)
+		if err == nil {
+			t.Fatalf("ValidateDestination(%q) = nil, want error containing %q", tc.name, tc.want)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("ValidateDestination(%q) = %q, want substring %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 func TestBuildJump(t *testing.T) {
 	cmd := BuildJump(Command{Argv: []string{"ssh"}}, "prod", []string{"bastion", "edge"}, []string{"-A"})
 
@@ -192,7 +312,7 @@ func TestBuildProxy(t *testing.T) {
 func TestBuildProbe(t *testing.T) {
 	cmd := BuildProbe(Command{Argv: []string{"ssh"}}, "prod", []string{"bastion", "edge"})
 
-	want := "ssh\x00-o\x00BatchMode=yes\x00-o\x00ConnectTimeout=5\x00-J\x00bastion,edge\x00prod\x00true"
+	want := "ssh\x00-o\x00BatchMode=yes\x00-o\x00ConnectTimeout=5\x00-J\x00bastion,edge\x00--\x00prod\x00true"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -201,7 +321,7 @@ func TestBuildProbe(t *testing.T) {
 func TestBuildSFTP(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config"})
 
-	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00prod"
+	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00--\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -210,7 +330,7 @@ func TestBuildSFTP(t *testing.T) {
 func TestBuildSFTPWithJumpHops(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", Hops: []string{"bastion", "edge"}})
 
-	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00-J\x00bastion,edge\x00prod"
+	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00-J\x00bastion,edge\x00--\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -219,7 +339,7 @@ func TestBuildSFTPWithJumpHops(t *testing.T) {
 func TestBuildSFTPWithControlPath(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", ControlPath: "/tmp/ssherpa.sock"})
 
-	want := "sftp\x00-b\x00-\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-F\x00/tmp/ssh_config\x00prod"
+	want := "sftp\x00-b\x00-\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-F\x00/tmp/ssh_config\x00--\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}

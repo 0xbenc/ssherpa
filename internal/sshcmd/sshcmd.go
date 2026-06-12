@@ -108,6 +108,14 @@ func hasSessionEnvForwarding(argv []string) bool {
 	return false
 }
 
+// BuildDirect places the alias as a bare positional followed by the
+// user's passthrough args (`ssherpa --select prod -- -L 8080:...`).
+// No "--" guard is inserted before the alias — OpenSSH stops option
+// permutation at "--", which would silently turn passthrough flags
+// after the alias into a remote command instead of options. The same
+// applies to BuildJump, BuildProxy, and BuildForward. Dash-prefixed
+// aliases are instead rejected upstream by ValidateDestination and
+// filtered out of the inventory.
 func BuildDirect(base Command, alias string, extraArgs []string) Command {
 	argv := append([]string(nil), base.Argv...)
 	argv = append(argv, alias)
@@ -212,7 +220,10 @@ func BuildProbe(base Command, alias string, hops []string) Command {
 	if len(hops) > 0 {
 		argv = append(argv, "-J", strings.Join(hops, ","))
 	}
-	argv = append(argv, alias, "true")
+	// Probe argv carries no user passthrough after the destination, so a
+	// positional "--" guard is free safety: a dash-prefixed alias can
+	// never be parsed as an ssh option.
+	argv = append(argv, "--", alias, "true")
 	return Command{Argv: argv}
 }
 
@@ -230,7 +241,9 @@ func BuildSFTP(binary string, transfer SFTPTransfer) Command {
 	if len(transfer.Hops) > 0 {
 		argv = append(argv, "-J", strings.Join(transfer.Hops, ","))
 	}
-	argv = append(argv, transfer.Alias)
+	// The destination is the last sftp argument, so the "--" guard costs
+	// nothing and keeps a dash-prefixed alias from becoming an option.
+	argv = append(argv, "--", transfer.Alias)
 	return Command{Argv: argv}
 }
 
@@ -288,6 +301,31 @@ func ValidateSFTPTransfer(transfer SFTPTransfer) error {
 	case SFTPTransferSend, SFTPTransferReceive:
 	default:
 		return fmt.Errorf("unknown transfer direction %q", transfer.Direction)
+	}
+	return nil
+}
+
+// ValidateDestination rejects destination names that cannot safely be
+// placed in an ssh argv. A Host alias beginning with "-" (e.g.
+// "-oProxyCommand=evil" from a hostile or shared ssh config) would be
+// parsed as an ssh option rather than a hostname — an argument
+// injection that can run arbitrary code. The interactive builders
+// cannot neutralize such names with a positional "--" because user
+// passthrough args follow the destination and OpenSSH stops option
+// permutation at "--", which would silently turn flags like -L into a
+// remote command. Control characters are rejected so a crafted name
+// cannot smuggle escape sequences into logs or the supervised terminal.
+func ValidateDestination(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("destination name cannot be empty")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("refusing destination %q: a name beginning with \"-\" would be parsed as an ssh option", name)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("refusing destination %q: control characters are not allowed", name)
+		}
 	}
 	return nil
 }

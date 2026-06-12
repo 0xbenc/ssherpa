@@ -151,6 +151,16 @@ func parseCheckFlags(args []string, stderr io.Writer) (checkFlags, bool) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--":
+			// Standard getopt convention: everything after "--" is a
+			// positional alias, even if it begins with a dash. Dash-
+			// prefixed aliases are filtered out of the inventory (they
+			// would be parsed by OpenSSH as options), so such a name
+			// reports the usual "alias not found" result rather than
+			// tripping the unknown-flag error; the probe builder also
+			// keeps its own "--" guard before the destination.
+			flags.Positional = append(flags.Positional, args[i+1:]...)
+			i = len(args)
 		case arg == "--json":
 			flags.JSON = true
 		case arg == "--all":
@@ -398,7 +408,7 @@ func buildCheckProbe(base sshcmd.Command, alias string, hops []string, timeout t
 	if len(hops) > 0 {
 		argv = append(argv, "-J", strings.Join(hops, ","))
 	}
-	argv = append(argv, alias, "true")
+	argv = append(argv, "--", alias, "true")
 	return sshcmd.Command{Argv: argv}
 }
 

@@ -274,7 +274,7 @@ Host prod
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] sftp -b - -F "+config+" prod")
+	assertContains(t, stdout.String(), "[print] sftp -b - -F "+config+" -- prod")
 	assertContains(t, stdout.String(), "put "+local+" /tmp/payload.txt")
 }
 
@@ -320,7 +320,7 @@ Host prod
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	assertContains(t, stdout.String(), "fake sftp stdout")
-	if got := strings.TrimSpace(readFile(t, argvLog)); got != "-b - -F "+config+" prod" {
+	if got := strings.TrimSpace(readFile(t, argvLog)); got != "-b - -F "+config+" -- prod" {
 		t.Fatalf("fake sftp argv = %q", got)
 	}
 	if got := readFile(t, batchLog); got != "put "+local+" /tmp/payload.txt\n" {
@@ -1206,6 +1206,82 @@ Host bastion
 			}
 			assertContains(t, stderr.String(), tt.want)
 		})
+	}
+}
+
+// TestRunRoutesRejectDashDestinations is the WP1 argument-injection
+// regression at the route layer: a dash-prefixed destination — typed as
+// --select, --dest, --hop, or --through — must exit 1 with the
+// validation error before any ssh argv is printed or spawned, even when
+// a hostile config defines a matching Host block.
+func TestRunRoutesRejectDashDestinations(t *testing.T) {
+	config := writeConfig(t, `
+Host -oProxyCommand=evil
+  HostName attacker.example.com
+
+Host prod
+  HostName prod.example.com
+
+Host bastion
+  HostName bastion.example.com
+`)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"proxy select", []string{"proxy", "--select", "-oProxyCommand=evil", "--port", "1080", "--print", "--config", config}},
+		{"forward select", []string{"forward", "--select", "-oProxyCommand=evil", "--local", "15432", "--remote", "127.0.0.1:5432", "--print", "--config", config}},
+		{"forward through", []string{"forward", "--select", "prod", "--through", "-oProxyCommand=evil", "--local", "15432", "--remote", "127.0.0.1:5432", "--print", "--config", config}},
+		{"jump dest", []string{"jump", "--dest", "-oProxyCommand=evil", "--hop", "bastion", "--print", "--config", config}},
+		{"jump hop", []string{"jump", "--dest", "prod", "--hop", "-oProxyCommand=evil", "--print", "--config", config}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeSSH, logPath := writeFakeSSH(t, 0)
+			var stdout, stderr bytes.Buffer
+			code := Run(append(tt.args, "--ssh-binary", fakeSSH), &stdout, &stderr, BuildInfo{})
+			if code != 1 {
+				t.Fatalf("Run returned %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			assertContains(t, stderr.String(), "would be parsed as an ssh option")
+			if strings.Contains(stdout.String(), "[print]") {
+				t.Fatalf("argv was printed for a dash destination: %q", stdout.String())
+			}
+			if _, err := os.Stat(logPath); err == nil {
+				t.Fatalf("fake ssh was spawned for a dash destination: %s", readFile(t, logPath))
+			}
+		})
+	}
+}
+
+// TestRunConnectDashSelectIsNotFound covers the connect half of the WP1
+// fix: connect resolves --select against the inventory, and the
+// inventory filter drops dash-prefixed aliases, so a hostile
+// `Host -oProxyCommand=...` block can never be selected — the result is
+// the standard not-found error (exit 2) with no argv print or ssh spawn.
+func TestRunConnectDashSelectIsNotFound(t *testing.T) {
+	config := writeConfig(t, `
+Host -oProxyCommand=evil
+  HostName attacker.example.com
+
+Host prod
+  HostName prod.example.com
+`)
+	fakeSSH, logPath := writeFakeSSH(t, 0)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--print", "--select", "-oProxyCommand=evil", "--config", config, "--ssh-binary", fakeSSH}, &stdout, &stderr, BuildInfo{})
+	if code != 2 {
+		t.Fatalf("Run returned %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	assertContains(t, stderr.String(), "alias \"-oProxyCommand=evil\" not found")
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatalf("fake ssh was spawned for a dash alias: %s", readFile(t, logPath))
 	}
 }
 
