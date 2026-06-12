@@ -19,7 +19,27 @@ import (
 // `--local 127.0.0.1:5432`.
 const DefaultForwardBind = "127.0.0.1"
 
-const SessionEnvPattern = "SSHERPA_*"
+// SessionEnvVars enumerates exactly the nested-session lineage variables
+// forwarded to remotes, matching internal/state's session env builder.
+// The explicit list replaces the former "SendEnv=SSHERPA_*" wildcard so
+// future SSHERPA_* configuration variables (state dirs, theme paths,
+// binary overrides, ...) are never silently coupled to the wire
+// protocol. OpenSSH accepts the whole list as one space-separated
+// SendEnv option value (verified with `ssh -G`, OpenSSH 10.2; pinned by
+// TestSessionSendEnvOptionAcceptedBySSH).
+var SessionEnvVars = []string{
+	"SSHERPA_SESSION_ID",
+	"SSHERPA_PARENT_SESSION_ID",
+	"SSHERPA_DEPTH",
+	"SSHERPA_ROUTE",
+	"SSHERPA_ORIGIN_HOST",
+}
+
+// SessionSendEnvOption is the ssh -o option value that forwards exactly
+// the SessionEnvVars lineage variables.
+func SessionSendEnvOption() string {
+	return "SendEnv=" + strings.Join(SessionEnvVars, " ")
+}
 
 // DefaultConnectTimeoutSeconds bounds ssherpa-launched SSH connection
 // attempts so an offline host cannot leave the supervised UI waiting on the
@@ -97,11 +117,12 @@ func sshOptionInsertIndex(argv []string) int {
 }
 
 func hasSessionEnvForwarding(argv []string) bool {
+	option := SessionSendEnvOption()
 	for i, arg := range argv {
-		if arg == "SendEnv="+SessionEnvPattern {
+		if arg == option {
 			return true
 		}
-		if arg == "-o" && i+1 < len(argv) && argv[i+1] == "SendEnv="+SessionEnvPattern {
+		if arg == "-o" && i+1 < len(argv) && argv[i+1] == option {
 			return true
 		}
 	}
@@ -130,7 +151,7 @@ func WithSessionEnvForwarding(command Command) Command {
 	insertAt := sshOptionInsertIndex(command.Argv)
 	argv := make([]string, 0, len(command.Argv)+2)
 	argv = append(argv, command.Argv[:insertAt]...)
-	argv = append(argv, "-o", "SendEnv="+SessionEnvPattern)
+	argv = append(argv, "-o", SessionSendEnvOption())
 	argv = append(argv, command.Argv[insertAt:]...)
 	return Command{Argv: argv}
 }
@@ -231,7 +252,10 @@ func BuildSFTP(binary string, transfer SFTPTransfer) Command {
 	if strings.TrimSpace(binary) == "" {
 		binary = "sftp"
 	}
-	argv := []string{binary, "-b", "-"}
+	// The same ConnectTimeout the supervised ssh path gets: without it,
+	// pickers, existence probes, and transfers against an unreachable
+	// host hang for the operating system's much longer TCP timeout.
+	argv := []string{binary, "-b", "-", "-o", fmt.Sprintf("ConnectTimeout=%d", DefaultConnectTimeoutSeconds)}
 	if strings.TrimSpace(transfer.ControlPath) != "" {
 		argv = append(argv, "-o", "ControlMaster=auto", "-o", "ControlPath="+strings.TrimSpace(transfer.ControlPath))
 	}
@@ -296,6 +320,21 @@ func ValidateSFTPTransfer(transfer SFTPTransfer) error {
 	}
 	if strings.TrimSpace(transfer.RemotePath) == "" {
 		return errors.New("transfer remote path is required")
+	}
+	// OpenSSH's sftp batch parser unescapes "\n" to a plain 'n' (and
+	// cannot represent a raw newline at all), so CR/LF and other control
+	// characters silently mangle filenames. Reject them outright; the
+	// in-band session transfer single-quotes paths and carries them
+	// safely.
+	for _, side := range []struct{ label, value string }{
+		{"local", transfer.LocalPath},
+		{"remote", transfer.RemotePath},
+	} {
+		for _, r := range side.value {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("%s path %q contains control characters, which sftp batch files cannot carry safely; use the in-band session transfer (overlay send) instead", side.label, side.value)
+			}
+		}
 	}
 	switch transfer.Direction {
 	case SFTPTransferSend, SFTPTransferReceive:

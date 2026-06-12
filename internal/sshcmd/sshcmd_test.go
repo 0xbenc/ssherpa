@@ -3,6 +3,7 @@ package sshcmd
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -192,10 +193,44 @@ func TestBuildJump(t *testing.T) {
 	}
 }
 
+// TestSessionSendEnvOptionEnumeratesLineageVars is the WP10 contract
+// pin: lineage forwarding names exactly the five wire-protocol variables
+// instead of the SSHERPA_* wildcard, so future SSHERPA_* config vars are
+// never transmitted to remotes.
+func TestSessionSendEnvOptionEnumeratesLineageVars(t *testing.T) {
+	want := "SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST"
+	if got := SessionSendEnvOption(); got != want {
+		t.Fatalf("SessionSendEnvOption() = %q, want %q", got, want)
+	}
+	if strings.Contains(SessionSendEnvOption(), "*") {
+		t.Fatalf("SessionSendEnvOption() = %q must not contain a wildcard", SessionSendEnvOption())
+	}
+}
+
+// TestSessionSendEnvOptionAcceptedBySSH pins, against the real OpenSSH
+// client when present, that a single space-separated SendEnv option
+// value is parsed into one sendenv entry per variable.
+func TestSessionSendEnvOptionAcceptedBySSH(t *testing.T) {
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Skip("ssh not available in PATH")
+	}
+	out, err := exec.Command(sshPath, "-G", "-o", SessionSendEnvOption(), "localhost").CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh -G returned error: %v\n%s", err, out)
+	}
+	text := strings.ToLower(string(out))
+	for _, name := range SessionEnvVars {
+		if !strings.Contains(text, "sendenv "+strings.ToLower(name)) {
+			t.Fatalf("ssh -G output missing sendenv %s:\n%s", name, out)
+		}
+	}
+}
+
 func TestWithSessionEnvForwarding(t *testing.T) {
 	cmd := WithSessionEnvForwarding(Command{Argv: []string{"ssh", "-J", "bastion", "prod"}})
 
-	want := "ssh\x00-o\x00SendEnv=SSHERPA_*\x00-J\x00bastion\x00prod"
+	want := "ssh\x00-o\x00" + SessionSendEnvOption() + "\x00-J\x00bastion\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -204,16 +239,16 @@ func TestWithSessionEnvForwarding(t *testing.T) {
 func TestWithSessionEnvForwardingKeepsKittyPrefix(t *testing.T) {
 	cmd := WithSessionEnvForwarding(Command{Argv: []string{"kitten", "ssh", "prod"}})
 
-	want := "kitten\x00ssh\x00-o\x00SendEnv=SSHERPA_*\x00prod"
+	want := "kitten\x00ssh\x00-o\x00" + SessionSendEnvOption() + "\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
 }
 
 func TestWithSessionEnvForwardingIsIdempotent(t *testing.T) {
-	cmd := WithSessionEnvForwarding(Command{Argv: []string{"ssh", "-o", "SendEnv=SSHERPA_*", "prod"}})
+	cmd := WithSessionEnvForwarding(Command{Argv: []string{"ssh", "-o", SessionSendEnvOption(), "prod"}})
 
-	want := "ssh\x00-o\x00SendEnv=SSHERPA_*\x00prod"
+	want := "ssh\x00-o\x00" + SessionSendEnvOption() + "\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -321,7 +356,7 @@ func TestBuildProbe(t *testing.T) {
 func TestBuildSFTP(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config"})
 
-	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00--\x00prod"
+	want := "sftp\x00-b\x00-\x00-o\x00ConnectTimeout=10\x00-F\x00/tmp/ssh_config\x00--\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -330,7 +365,7 @@ func TestBuildSFTP(t *testing.T) {
 func TestBuildSFTPWithJumpHops(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", Hops: []string{"bastion", "edge"}})
 
-	want := "sftp\x00-b\x00-\x00-F\x00/tmp/ssh_config\x00-J\x00bastion,edge\x00--\x00prod"
+	want := "sftp\x00-b\x00-\x00-o\x00ConnectTimeout=10\x00-F\x00/tmp/ssh_config\x00-J\x00bastion,edge\x00--\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -339,7 +374,7 @@ func TestBuildSFTPWithJumpHops(t *testing.T) {
 func TestBuildSFTPWithControlPath(t *testing.T) {
 	cmd := BuildSFTP("sftp", SFTPTransfer{Alias: "prod", Config: "/tmp/ssh_config", ControlPath: "/tmp/ssherpa.sock"})
 
-	want := "sftp\x00-b\x00-\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-F\x00/tmp/ssh_config\x00--\x00prod"
+	want := "sftp\x00-b\x00-\x00-o\x00ConnectTimeout=10\x00-o\x00ControlMaster=auto\x00-o\x00ControlPath=/tmp/ssherpa.sock\x00-F\x00/tmp/ssh_config\x00--\x00prod"
 	if got := strings.Join(cmd.Argv, "\x00"); got != want {
 		t.Fatalf("Argv = %#v, want %q", cmd.Argv, want)
 	}
@@ -374,6 +409,40 @@ func TestValidateSFTPTransfer(t *testing.T) {
 	invalid.RemotePath = ""
 	if err := ValidateSFTPTransfer(invalid); err == nil || !strings.Contains(err.Error(), "remote path") {
 		t.Fatalf("ValidateSFTPTransfer error = %v, want remote path", err)
+	}
+}
+
+// TestValidateSFTPTransferRejectsControlCharacterPaths pins the CR/LF
+// gate: OpenSSH's batch parser unescapes "\n" to a plain 'n', so control
+// characters in either path must be rejected with a pointer at the
+// in-band transport instead of being silently mangled.
+func TestValidateSFTPTransferRejectsControlCharacterPaths(t *testing.T) {
+	base := SFTPTransfer{Direction: SFTPTransferSend, Alias: "prod", LocalPath: "/tmp/file", RemotePath: "file"}
+
+	tests := []struct {
+		name   string
+		mutate func(*SFTPTransfer)
+		want   string
+	}{
+		{"newline in remote", func(tr *SFTPTransfer) { tr.RemotePath = "dir/evil\nname" }, "remote path"},
+		{"carriage return in remote", func(tr *SFTPTransfer) { tr.RemotePath = "dir/evil\rname" }, "remote path"},
+		{"newline in local", func(tr *SFTPTransfer) { tr.LocalPath = "/tmp/evil\nname" }, "local path"},
+		{"escape in local", func(tr *SFTPTransfer) { tr.LocalPath = "/tmp/evil\x1bname" }, "local path"},
+		{"tab in remote", func(tr *SFTPTransfer) { tr.RemotePath = "dir/evil\tname" }, "remote path"},
+		{"delete in remote", func(tr *SFTPTransfer) { tr.RemotePath = "dir/evil\x7fname" }, "remote path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transfer := base
+			tt.mutate(&transfer)
+			err := ValidateSFTPTransfer(transfer)
+			if err == nil {
+				t.Fatalf("ValidateSFTPTransfer(%#v) = nil, want control-character error", transfer)
+			}
+			assertErrorContains(t, err, tt.want)
+			assertErrorContains(t, err, "control characters")
+			assertErrorContains(t, err, "in-band")
+		})
 	}
 }
 
