@@ -34,7 +34,12 @@ func WriteProxy(stateDir string, spec StoredProxy) error {
 	spec.StateVersion = StateVersion
 	now := time.Now().UTC()
 	spec.UpdatedAt = now
+	// Preserve CreatedAt across updates; never clobber a future-format
+	// file written by a newer ssherpa.
 	existing, err := ReadProxy(stateDir, spec.Name)
+	if errors.Is(err, ErrFutureStateVersion) {
+		return fmt.Errorf("refusing to overwrite proxy spec %s: %w", spec.Name, err)
+	}
 	if err == nil {
 		spec.CreatedAt = existing.CreatedAt
 	} else if !spec.CreatedAt.IsZero() {
@@ -66,33 +71,55 @@ func ReadProxy(stateDir string, name string) (StoredProxy, error) {
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return StoredProxy{}, fmt.Errorf("parse proxy spec %s: %w", name, err)
 	}
+	if spec.StateVersion > MaxSupportedStateVersion {
+		return StoredProxy{}, fmt.Errorf("proxy spec %s has state_version %d (this ssherpa supports up to %d): %w",
+			name, spec.StateVersion, MaxSupportedStateVersion, ErrFutureStateVersion)
+	}
 	return spec, nil
 }
 
+// ListProxies enumerates every readable saved proxy, sorted by Name.
+// Unreadable, unparseable, or future-format files are skipped rather
+// than failing the whole listing; use ListProxiesDetailed to see what
+// was skipped.
 func ListProxies(stateDir string) ([]StoredProxy, error) {
+	specs, _, err := ListProxiesDetailed(stateDir)
+	return specs, err
+}
+
+// ListProxiesDetailed is ListProxies plus the files the listing
+// skipped (corrupt JSON, bad name, unreadable, or state_version newer
+// than this binary supports). Callers should surface skipped entries
+// as warnings — they are never an error for the listing itself.
+func ListProxiesDetailed(stateDir string) ([]StoredProxy, []SkippedFile, error) {
 	dir := filepath.Join(filepath.Clean(stateDir), ProxiesDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return []StoredProxy{}, nil
+			return []StoredProxy{}, nil, nil
 		}
-		return nil, fmt.Errorf("read proxies directory: %w", err)
+		return nil, nil, fmt.Errorf("read proxies directory: %w", err)
 	}
 	out := make([]StoredProxy, 0, len(entries))
+	skipped := []SkippedFile{}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
 		spec, err := ReadProxy(stateDir, strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
-			return nil, err
+			skipped = append(skipped, SkippedFile{
+				Path:   filepath.Join(dir, entry.Name()),
+				Reason: err.Error(),
+			})
+			continue
 		}
 		out = append(out, spec)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Name < out[j].Name
 	})
-	return out, nil
+	return out, skipped, nil
 }
 
 func DeleteProxy(stateDir string, name string) error {

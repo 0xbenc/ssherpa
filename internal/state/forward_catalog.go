@@ -55,8 +55,11 @@ func WriteForward(stateDir string, spec StoredForward) error {
 	spec.UpdatedAt = now
 	// Preserve CreatedAt if a previous version exists; otherwise stamp
 	// now. This lets `forward save` update an existing entry without
-	// losing its provenance.
+	// losing its provenance. A future-format file is never clobbered.
 	existing, err := ReadForward(stateDir, spec.Name)
+	if errors.Is(err, ErrFutureStateVersion) {
+		return fmt.Errorf("refusing to overwrite forward spec %s: %w", spec.Name, err)
+	}
 	if err == nil {
 		spec.CreatedAt = existing.CreatedAt
 	} else if !spec.CreatedAt.IsZero() {
@@ -91,22 +94,38 @@ func ReadForward(stateDir string, name string) (StoredForward, error) {
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return StoredForward{}, fmt.Errorf("parse forward spec %s: %w", name, err)
 	}
+	if spec.StateVersion > MaxSupportedStateVersion {
+		return StoredForward{}, fmt.Errorf("forward spec %s has state_version %d (this ssherpa supports up to %d): %w",
+			name, spec.StateVersion, MaxSupportedStateVersion, ErrFutureStateVersion)
+	}
 	return spec, nil
 }
 
-// ListForwards enumerates every saved forward, sorted by Name. A
-// missing forwards/ directory is not an error — it just means no
-// forwards have been saved yet.
+// ListForwards enumerates every readable saved forward, sorted by
+// Name. A missing forwards/ directory is not an error — it just means
+// no forwards have been saved yet. Unreadable, unparseable, or
+// future-format files are skipped rather than failing the whole
+// listing; use ListForwardsDetailed to see what was skipped.
 func ListForwards(stateDir string) ([]StoredForward, error) {
+	specs, _, err := ListForwardsDetailed(stateDir)
+	return specs, err
+}
+
+// ListForwardsDetailed is ListForwards plus the files the listing
+// skipped (corrupt JSON, bad name, unreadable, or state_version newer
+// than this binary supports). Callers should surface skipped entries
+// as warnings — they are never an error for the listing itself.
+func ListForwardsDetailed(stateDir string) ([]StoredForward, []SkippedFile, error) {
 	dir := filepath.Join(filepath.Clean(stateDir), ForwardsDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return []StoredForward{}, nil
+			return []StoredForward{}, nil, nil
 		}
-		return nil, fmt.Errorf("read forwards directory: %w", err)
+		return nil, nil, fmt.Errorf("read forwards directory: %w", err)
 	}
 	out := make([]StoredForward, 0, len(entries))
+	skipped := []SkippedFile{}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -114,14 +133,18 @@ func ListForwards(stateDir string) ([]StoredForward, error) {
 		name := strings.TrimSuffix(entry.Name(), ".json")
 		spec, err := ReadForward(stateDir, name)
 		if err != nil {
-			return nil, err
+			skipped = append(skipped, SkippedFile{
+				Path:   filepath.Join(dir, entry.Name()),
+				Reason: err.Error(),
+			})
+			continue
 		}
 		out = append(out, spec)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Name < out[j].Name
 	})
-	return out, nil
+	return out, skipped, nil
 }
 
 // DeleteForward removes the saved spec by name. Returns nil if the
