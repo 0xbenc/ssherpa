@@ -280,12 +280,42 @@ func printArtifactInfo(stdout io.Writer, token string) {
 	if !ok {
 		return
 	}
-	abs, err := filepath.Abs(artifact.RelPath)
-	if err != nil {
-		abs = artifact.RelPath
+	if path, found := locateRepoArtifact(artifact.RelPath); found {
+		fmt.Fprintf(stdout, "%s\n", path)
+		fmt.Fprintln(stdout, artifact.Hint)
+		return
 	}
-	fmt.Fprintf(stdout, "%s\n", abs)
+	// Installed binary: the repo-relative file exists in a source
+	// checkout or an extracted release archive, but not next to a
+	// brew/deb/rpm-installed binary. Point at the locations the
+	// packages install to instead of printing a path that does not
+	// exist.
+	fmt.Fprintf(stdout, "%s is not present next to this binary; package installs place it at:\n", artifact.RelPath)
+	for _, location := range artifact.InstallPaths {
+		fmt.Fprintf(stdout, "  %s\n", location)
+	}
 	fmt.Fprintln(stdout, artifact.Hint)
+}
+
+// locateRepoArtifact resolves a repo-relative artifact path against the
+// working directory and the running binary's directory — the layouts of
+// a source checkout and an extracted release archive. It returns a path
+// only when the file actually exists; printing a cwd-joined path that
+// does not exist sent installed-binary users chasing phantom files.
+func locateRepoArtifact(rel string) (string, bool) {
+	var candidates []string
+	if abs, err := filepath.Abs(rel); err == nil {
+		candidates = append(candidates, abs)
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), rel))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 type docsArtifact struct {
@@ -295,6 +325,9 @@ type docsArtifact struct {
 	Badge   string
 	Group   string
 	Hint    string
+	// InstallPaths are the locations the release packages install this
+	// artifact to, shown when the repo-relative file is not present.
+	InstallPaths []string
 }
 
 func docsArtifacts() []docsArtifact {
@@ -306,6 +339,10 @@ func docsArtifacts() []docsArtifact {
 			Badge:   "bash",
 			Group:   "Completions",
 			Hint:    "source this file or install it as bash completion for ssherpa",
+			InstallPaths: []string{
+				"/usr/share/bash-completion/completions/ssherpa (deb/rpm)",
+				"$(brew --prefix)/etc/bash_completion.d/ssherpa (Homebrew)",
+			},
 		},
 		{
 			Token:   "zsh",
@@ -314,6 +351,10 @@ func docsArtifacts() []docsArtifact {
 			Badge:   "zsh",
 			Group:   "Completions",
 			Hint:    "install this file as _ssherpa in a directory on fpath",
+			InstallPaths: []string{
+				"/usr/share/zsh/site-functions/_ssherpa (deb/rpm)",
+				"$(brew --prefix)/share/zsh/site-functions/_ssherpa (Homebrew)",
+			},
 		},
 		{
 			Token:   "fish",
@@ -322,6 +363,10 @@ func docsArtifacts() []docsArtifact {
 			Badge:   "fish",
 			Group:   "Completions",
 			Hint:    "install this file as ssherpa.fish in fish vendor_completions.d",
+			InstallPaths: []string{
+				"/usr/share/fish/vendor_completions.d/ssherpa.fish (deb/rpm)",
+				"$(brew --prefix)/share/fish/vendor_completions.d/ssherpa.fish (Homebrew)",
+			},
 		},
 		{
 			Token:   "man",
@@ -329,7 +374,11 @@ func docsArtifacts() []docsArtifact {
 			RelPath: "man/ssherpa.1",
 			Badge:   "man",
 			Group:   "Manual",
-			Hint:    "view with: man ./man/ssherpa.1",
+			Hint:    "view with: man ssherpa (installed) or man ./man/ssherpa.1 (source checkout)",
+			InstallPaths: []string{
+				"/usr/share/man/man1/ssherpa.1 (deb/rpm)",
+				"$(brew --prefix)/share/man/man1/ssherpa.1 (Homebrew)",
+			},
 		},
 	}
 }

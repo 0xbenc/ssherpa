@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,9 +33,10 @@ type checkFlags struct {
 }
 
 type checkOutput struct {
-	OK        bool          `json:"ok"`
-	CheckedAt time.Time     `json:"checked_at"`
-	Results   []checkResult `json:"results"`
+	SchemaVersion int           `json:"schema_version"`
+	OK            bool          `json:"ok"`
+	CheckedAt     time.Time     `json:"checked_at"`
+	Results       []checkResult `json:"results"`
 }
 
 type checkResult struct {
@@ -55,6 +57,10 @@ type sshProbeResult struct {
 	Duration time.Duration
 	ExitCode int
 	Err      error
+	// Stderr is the last non-empty line ssh wrote to stderr — the line
+	// OpenSSH puts its actual failure reason on ("Could not resolve
+	// hostname ...", "Permission denied ..."). Empty when ssh was quiet.
+	Stderr string
 }
 
 type icmpProbeResult struct {
@@ -68,7 +74,7 @@ var runLocalBindCheck = defaultLocalBindCheck
 
 func runCheck(args []string, stdout io.Writer, stderr io.Writer) int {
 	if hasHelpFlag(args) {
-		printUsage(stdout)
+		fmt.Fprint(stdout, checkUsage)
 		return 0
 	}
 	flags, ok := parseCheckFlags(args, stderr)
@@ -106,8 +112,10 @@ func runCheck(args []string, stdout io.Writer, stderr io.Writer) int {
 func runCheckWithFlags(flags checkFlags, stderr io.Writer) (checkOutput, int) {
 	_, inventory, err := loadInventory(flags.inventoryFlags)
 	if err != nil {
+		// Inventory load failure exits 2, matching list/show and every
+		// other inventory consumer. (Exit 3 was a check-only collision.)
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
-		return checkOutput{}, 3
+		return checkOutput{}, 2
 	}
 
 	results := []checkResult{}
@@ -135,7 +143,7 @@ func runCheckWithFlags(flags checkFlags, stderr io.Writer) (checkOutput, int) {
 		results = append(results, savedResults...)
 	}
 
-	out := checkOutput{CheckedAt: time.Now().UTC(), Results: results}
+	out := checkOutput{SchemaVersion: jsonSchemaVersion, CheckedAt: time.Now().UTC(), Results: results}
 	out.OK = true
 	for _, result := range results {
 		if result.Status != "ok" {
@@ -291,14 +299,14 @@ func checkAlias(alias hostlist.Alias, base sshcmd.Command, flags checkFlags, ssh
 		result.SSHExitCode = probe.ExitCode
 		if probe.Err != nil || probe.ExitCode != 0 {
 			result.Status = "failed"
-			result.SSHError = checkErrString(probe.Err, probe.ExitCode)
+			result.SSHError = checkErrString(probe)
 		} else {
 			result.Status = "ok"
 		}
 	}
 	if flags.NoICMP {
 		result.ICMPStatus = "skipped"
-		return result
+		return fillCheckMessage(result)
 	}
 	host := alias.HostName
 	if host == "" {
@@ -307,14 +315,15 @@ func checkAlias(alias hostlist.Alias, base sshcmd.Command, flags checkFlags, ssh
 	icmp := runICMPCheckProbe(host, flags.ICMPTimeout)
 	result.ICMPStatus = icmp.Status
 	result.ICMPRttMillis = icmp.Duration.Milliseconds()
-	return result
+	return fillCheckMessage(result)
 }
 
 func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base sshcmd.Command, sshBinaryErr error, stderr io.Writer) ([]checkResult, int) {
 	stateDir, err := state.ResolveDir(flags.StateDir)
 	if err != nil {
+		// State-layer failures exit 1, matching forward/proxy list.
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
-		return nil, 3
+		return nil, 1
 	}
 	var specs []state.StoredForward
 	if flags.SavedForward != "" {
@@ -328,7 +337,7 @@ func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base ssh
 		specs, err = state.ListForwards(stateDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: list saved forwards: %v\n", err)
-			return nil, 3
+			return nil, 1
 		}
 	}
 	results := make([]checkResult, 0, len(specs))
@@ -380,7 +389,7 @@ func checkSavedForward(spec state.StoredForward, inventory hostlist.Inventory, b
 		result.SSHExitCode = probe.ExitCode
 		if probe.Err != nil || probe.ExitCode != 0 {
 			result.Status = "failed"
-			result.SSHError = checkErrString(probe.Err, probe.ExitCode)
+			result.SSHError = checkErrString(probe)
 		} else {
 			result.Status = "ok"
 		}
@@ -390,7 +399,7 @@ func checkSavedForward(spec state.StoredForward, inventory hostlist.Inventory, b
 	}
 	if flags.NoICMP {
 		result.ICMPStatus = "skipped"
-		return result
+		return fillCheckMessage(result)
 	}
 	host := alias.HostName
 	if host == "" {
@@ -399,7 +408,7 @@ func checkSavedForward(spec state.StoredForward, inventory hostlist.Inventory, b
 	icmp := runICMPCheckProbe(host, flags.ICMPTimeout)
 	result.ICMPStatus = icmp.Status
 	result.ICMPRttMillis = icmp.Duration.Milliseconds()
-	return result
+	return fillCheckMessage(result)
 }
 
 func buildCheckProbe(base sshcmd.Command, alias string, hops []string, timeout time.Duration) sshcmd.Command {
@@ -423,19 +432,36 @@ func defaultRunSSHCheckProbe(cmd sshcmd.Command, timeout time.Duration) sshProbe
 		return sshProbeResult{Duration: time.Since(started), ExitCode: 1, Err: err}
 	}
 	proc := exec.CommandContext(ctx, cmd.Argv[0], cmd.Argv[1:]...)
+	var stderrBuf bytes.Buffer
+	proc.Stderr = &stderrBuf
 	err := proc.Run()
 	duration := time.Since(started)
+	tail := stderrTail(stderrBuf.String())
 	if ctx.Err() == context.DeadlineExceeded {
-		return sshProbeResult{Duration: duration, ExitCode: 124, Err: ctx.Err()}
+		return sshProbeResult{Duration: duration, ExitCode: 124, Err: ctx.Err(), Stderr: tail}
 	}
 	if err == nil {
 		return sshProbeResult{Duration: duration, ExitCode: 0}
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return sshProbeResult{Duration: duration, ExitCode: exitErr.ExitCode(), Err: err}
+		return sshProbeResult{Duration: duration, ExitCode: exitErr.ExitCode(), Err: err, Stderr: tail}
 	}
-	return sshProbeResult{Duration: duration, ExitCode: 1, Err: err}
+	return sshProbeResult{Duration: duration, ExitCode: 1, Err: err, Stderr: tail}
+}
+
+// stderrTail returns the last non-empty line of a probe's stderr,
+// trimmed. OpenSSH prints its failure reason there and nowhere else;
+// before this was captured, "Could not resolve hostname" surfaced to
+// users only as "exit status 255".
+func stderrTail(output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func defaultRunICMPCheckProbe(host string, timeout time.Duration) icmpProbeResult {
@@ -502,14 +528,38 @@ func defaultLocalBindCheck(bind string, port int) string {
 	return "ok"
 }
 
-func checkErrString(err error, exitCode int) string {
-	if err != nil {
-		return err.Error()
+// checkErrString picks the most actionable failure description from a
+// probe: ssh's own stderr line first, then the process error, then a
+// generic exit-code message.
+func checkErrString(probe sshProbeResult) string {
+	if probe.Stderr != "" {
+		return probe.Stderr
 	}
-	if exitCode != 0 {
-		return fmt.Sprintf("ssh exited %d", exitCode)
+	if probe.Err != nil {
+		return probe.Err.Error()
+	}
+	if probe.ExitCode != 0 {
+		return fmt.Sprintf("ssh exited %d", probe.ExitCode)
 	}
 	return ""
+}
+
+// fillCheckMessage backfills the human table's MESSAGE column (and the
+// JSON message field) for non-ok results that only populated machine
+// fields. Before this, a failed probe rendered an empty MESSAGE cell.
+func fillCheckMessage(result checkResult) checkResult {
+	if result.Message != "" || result.Status == "ok" {
+		return result
+	}
+	switch {
+	case result.SSHError != "":
+		result.Message = result.SSHError
+	case result.LocalBindStatus == "in_use":
+		result.Message = "local bind in use"
+	case result.ICMPStatus == "failed":
+		result.Message = "icmp probe failed"
+	}
+	return result
 }
 
 func printCheckTable(stdout io.Writer, results []checkResult) {

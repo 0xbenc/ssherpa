@@ -48,6 +48,11 @@ type ThemeConfig struct {
 	BaseName string
 	Codes    map[Role]string
 	Specs    map[Role]string
+	// Warnings collects non-fatal parse diagnostics, such as role keys
+	// this binary does not know about. Unknown keys are tolerated so a
+	// theme.conf written by a newer ssherpa never hard-fails an older
+	// binary; callers decide where to surface the warnings.
+	Warnings []string
 }
 
 func TerminalTheme() Theme {
@@ -187,7 +192,8 @@ func ParseThemeConfig(data []byte) (ThemeConfig, error) {
 		default:
 			role, ok := roleForKey(key)
 			if !ok {
-				return ThemeConfig{}, fmt.Errorf("line %d: unknown theme role %q", index+1, key)
+				cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("line %d: unknown theme role %q ignored", index+1, key))
+				continue
 			}
 			code, err := ParseStyleSpec(value)
 			if err != nil {

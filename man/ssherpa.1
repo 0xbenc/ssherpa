@@ -1,4 +1,4 @@
-.TH SSHERPA 1 "May 2026" "ssherpa" "User Commands"
+.TH SSHERPA 1 "June 2026" "ssherpa" "User Commands"
 .SH NAME
 ssherpa \- terminal UI and supervisor for OpenSSH configs
 .SH SYNOPSIS
@@ -51,6 +51,9 @@ Send one local file to an SSH alias with OpenSSH SFTP.
 .TP
 .B receive
 Receive one remote file from an SSH alias with OpenSSH SFTP.
+.B recv
+is an alias for
+.B receive .
 Both transfer commands refuse to overwrite an existing destination unless
 .B --force
 is set.
@@ -73,8 +76,94 @@ Manage authorized_keys on this device.
 .B theme
 Build and save the terminal UI color schema.
 .TP
+.B list
+List SSH aliases parsed from OpenSSH config, including Include files.
+.TP
+.B show
+Show one parsed SSH alias; exits 2 when the alias is not found.
+.TP
 .B session
-Inspect supervised session records and route maps, or stop every live tracked session.
+Inspect supervised session records, route maps, and recorded transcripts.
+Subcommands:
+.B list
+(flat session list),
+.B map
+(tree of active sessions; \fB--all\fR includes exited),
+.B show
+(one session record),
+.B log
+(cleaned transcript text; \fB--raw\fR for raw output),
+.B replay
+(timed transcript replay),
+.B grep
+(search a transcript; exit codes follow grep(1): 0 match, 1 no match, 2 error),
+.B export
+(transcript as text or asciicast),
+.B bundle export
+/
+.B bundle import
+(portable .ssherpa-session bundles),
+.B identity
+(this machine's recording identity),
+.B browse
+(TUI transcript browser; alias
+.BR transcripts ),
+.B stop-all
+(signal every active tracked session), and
+.B prune
+(remove ended records and their transcript artifacts older than a duration).
+.SH SUPERVISED SESSION KEYS
+Supervised sessions intercept two local control keys. The overlay key
+(default
+.BR Ctrl-^ ,
+rebindable with
+.BR --overlay-key )
+opens the local session-map overlay; the composer key (default
+.BR Ctrl-G ,
+rebindable with
+.BR --composer-key ,
+disable with
+.BR --no-composer )
+opens the local queued-input composer.
+.TP
+.B Ctrl-^
+Open or close the session-map overlay.
+.TP
+.B Ctrl-^ T
+Start transcript recording; press T again in the overlay to pause or resume.
+.TP
+.B Ctrl-^ S
+Send a file to the session host from the overlay.
+.TP
+.B Ctrl-^ V
+Receive a file from the session host from the overlay.
+.TP
+.B Ctrl-^ X X
+Pull the escape rope after confirmation: disconnect every supervised layer
+below and return to the outer shell (exit code 120).
+.TP
+.B Ctrl-^ Ctrl-^ Ctrl-^
+Three presses within 400ms pull the panic escape rope with no confirmation.
+.TP
+.B Ctrl-G
+Open the queued-input composer.
+.SH NESTED LINEAGE AND ACCEPTENV
+Nested-session lineage is forwarded to remotes via OpenSSH
+.B SendEnv
+for exactly these variables:
+.BR SSHERPA_SESSION_ID ,
+.BR SSHERPA_PARENT_SESSION_ID ,
+.BR SSHERPA_DEPTH ,
+.BR SSHERPA_ROUTE ,
+.BR SSHERPA_ORIGIN_HOST .
+Stock sshd rejects them all (default
+.B AcceptEnv
+allows none), so remote lineage deeper than one nesting level, incoming
+session labels, and remote-exported transcript route metadata require a
+one-line server opt-in in sshd_config:
+.B AcceptEnv SSHERPA_* .
+The local session map, escape rope, and incoming presence detection work
+without it.
 .SH CHECK EXAMPLES
 .EX
 ssherpa check prod
@@ -123,8 +212,15 @@ ssherpa send ./build.tar.gz --select prod --print
 .EX
 ssherpa session map
 ssherpa session show 20260529T090238.208041000Z-c8eb1976
+ssherpa session log 20260529T090238.208041000Z-c8eb1976 --tail 100
+ssherpa session grep 20260529T090238.208041000Z-c8eb1976 "permission denied" -i
+ssherpa session replay 20260529T090238.208041000Z-c8eb1976 --speed 2
+ssherpa session export 20260529T090238.208041000Z-c8eb1976 --format asciicast --output prod.cast
+ssherpa session bundle export 20260529T090238.208041000Z-c8eb1976 --output prod.ssherpa-session
+ssherpa session bundle import prod.ssherpa-session
+ssherpa session browse
 ssherpa session stop-all
-ssherpa session stop-all --json
+ssherpa session prune --older-than 720h --dry-run
 .EE
 .SH FILES
 .TP

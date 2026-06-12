@@ -132,10 +132,11 @@ func TestRunHelpCommand(t *testing.T) {
 	assertContains(t, stdout.String(), "check      Test SSH aliases")
 	assertContains(t, stdout.String(), "incoming   Inspect and mark incoming SSH sessions")
 	assertContains(t, stdout.String(), "send       Send a local file")
-	assertContains(t, stdout.String(), "Incoming Commands:")
-	assertContains(t, stdout.String(), "forward saved list")
-	assertContains(t, stdout.String(), "Theme Commands:")
-	assertContains(t, stdout.String(), "Phase 10:")
+	assertContains(t, stdout.String(), `Run "ssherpa help COMMAND" or "ssherpa COMMAND --help" for command usage.`)
+	// The overview must not ship internal development-phase notes.
+	if strings.Contains(stdout.String(), "Phase 10:") {
+		t.Fatalf("help overview still contains internal Phase 10 paragraph:\n%s", stdout.String())
+	}
 }
 
 func TestGeneratedShellAndManArtifactsExist(t *testing.T) {
@@ -192,7 +193,7 @@ Host prod web
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 prod -L 8080:localhost:8080")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 prod -L 8080:localhost:8080")
 }
 
 func TestRunConnectPrintJSON(t *testing.T) {
@@ -215,7 +216,7 @@ Host prod
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal returned error: %v\n%s", err, stdout.String())
 	}
-	if strings.Join(got.Argv, "\x00") != "ssh\x00-o\x00SendEnv=SSHERPA_*\x00-o\x00ConnectTimeout=10\x00prod" || got.Alias != "prod" {
+	if strings.Join(got.Argv, "\x00") != "ssh\x00-o\x00SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST\x00-o\x00ConnectTimeout=10\x00prod" || got.Alias != "prod" {
 		t.Fatalf("print JSON = %#v", got)
 	}
 }
@@ -232,7 +233,7 @@ Host prod
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0", code)
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 prod --help")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 prod --help")
 }
 
 func TestRunConnectPrintDoesNotValidateMissingSSHBinary(t *testing.T) {
@@ -274,7 +275,7 @@ Host prod
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] sftp -b - -F "+config+" -- prod")
+	assertContains(t, stdout.String(), "[print] sftp -b - -o ConnectTimeout=10 -F "+config+" -- prod")
 	assertContains(t, stdout.String(), "put "+local+" /tmp/payload.txt")
 }
 
@@ -320,7 +321,7 @@ Host prod
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	assertContains(t, stdout.String(), "fake sftp stdout")
-	if got := strings.TrimSpace(readFile(t, argvLog)); got != "-b - -F "+config+" -- prod" {
+	if got := strings.TrimSpace(readFile(t, argvLog)); got != "-b - -o ConnectTimeout=10 -F "+config+" -- prod" {
 		t.Fatalf("fake sftp argv = %q", got)
 	}
 	if got := readFile(t, batchLog); got != "put "+local+" /tmp/payload.txt\n" {
@@ -411,8 +412,21 @@ Host prod
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	wantLocal := filepath.Join(localDir, "app.log")
-	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
-		t.Fatalf("fake sftp batch = %q, want local dir expanded", got)
+	assertReceiveBatchUsesTemp(t, readFile(t, batchLog), "/var/log/app.log", wantLocal)
+	if _, err := os.Stat(wantLocal); err != nil {
+		t.Fatalf("final file missing after temp rename: %v", err)
+	}
+}
+
+// assertReceiveBatchUsesTemp checks the receive batch downloads to a
+// hidden .ssherpa temp file beside the final path (renamed into place
+// after a clean sftp exit) instead of truncating the destination
+// directly.
+func assertReceiveBatchUsesTemp(t *testing.T, batch string, remote string, finalLocal string) {
+	t.Helper()
+	wantPrefix := "get " + remote + " " + filepath.Join(filepath.Dir(finalLocal), "."+filepath.Base(finalLocal)+".ssherpa.")
+	if !strings.HasPrefix(batch, wantPrefix) || !strings.HasSuffix(batch, ".part\n") {
+		t.Fatalf("fake sftp batch = %q, want temp download %q...part", batch, wantPrefix)
 	}
 }
 
@@ -457,8 +471,9 @@ Host prod
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	wantLocal := filepath.Join(localDir, "app.log")
-	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
-		t.Fatalf("fake sftp batch = %q, want forced receive batch", got)
+	assertReceiveBatchUsesTemp(t, readFile(t, batchLog), "/var/log/app.log", wantLocal)
+	if _, err := os.Stat(wantLocal); err != nil {
+		t.Fatalf("final file missing after temp rename: %v", err)
 	}
 }
 
@@ -498,8 +513,9 @@ Host prod
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	wantLocal := filepath.Join(localDir, "app.log")
-	if got := readFile(t, batchLog); got != "get /var/log/app.log "+wantLocal+"\n" {
-		t.Fatalf("fake sftp batch = %q, want local basename expanded", got)
+	assertReceiveBatchUsesTemp(t, readFile(t, batchLog), "/var/log/app.log", wantLocal)
+	if _, err := os.Stat(wantLocal); err != nil {
+		t.Fatalf("final file missing after temp rename: %v", err)
 	}
 }
 
@@ -766,7 +782,7 @@ Host prod
 	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "prod\x00-v") {
 		t.Fatalf("record argv = %#v", record.SSHArgv)
 	}
-	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "SendEnv=SSHERPA_*") {
+	if got := strings.Join(record.SSHArgv, "\x00"); !strings.Contains(got, "SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST") {
 		t.Fatalf("record argv = %#v, want session env forwarding", record.SSHArgv)
 	}
 }
@@ -1149,7 +1165,7 @@ Host edge
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 -J bastion,edge prod -A")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 -J bastion,edge prod -A")
 }
 
 func TestRunJumpExecutesFakeSSH(t *testing.T) {
@@ -1301,7 +1317,7 @@ Host prod
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 -D 127.0.0.1:1080 -C -N -o ExitOnForwardFailure=yes prod")
 }
 
 func TestRunProxyPrintCustomBindPortAndPassthrough(t *testing.T) {
@@ -1317,7 +1333,7 @@ Host prod
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 -D 0.0.0.0:1081 -C -N -o ExitOnForwardFailure=yes prod -v")
 }
 
 func TestRunProxyExecutesFakeSSH(t *testing.T) {
@@ -1387,7 +1403,7 @@ Host pgbox
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
 }
 
 func TestRunForwardPrintCustomBindThroughAndPassthrough(t *testing.T) {
@@ -1406,7 +1422,7 @@ Host bastion
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 -J bastion -L 0.0.0.0:5433:db.internal:5432 -N -o ExitOnForwardFailure=yes pgbox -v")
 }
 
 func TestRunForwardAcceptsPositionalAlias(t *testing.T) {
@@ -1422,7 +1438,7 @@ Host pgbox
 	if code != 0 {
 		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
 	}
-	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_*' -o ConnectTimeout=10 -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
+	assertContains(t, stdout.String(), "[print] ssh -o 'SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST' -o ConnectTimeout=10 -L 127.0.0.1:5432:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox")
 }
 
 func TestRunForwardExecutesFakeSSH(t *testing.T) {
@@ -2001,12 +2017,21 @@ func TestRunSessionListShowAndPrune(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("session list returned %d, want 0", code)
 	}
-	var listed []state.SessionRecord
+	var listed sessionListJSON
 	if err := json.Unmarshal(listStdout.Bytes(), &listed); err != nil {
 		t.Fatalf("json.Unmarshal list returned error: %v\n%s", err, listStdout.String())
 	}
-	if len(listed) != 2 || listed[0].ID != "recent" || listed[1].ID != "old" {
-		t.Fatalf("listed = %#v, want newest-first records", listed)
+	if listed.SchemaVersion != 1 {
+		t.Fatalf("schema_version = %d, want 1\n%s", listed.SchemaVersion, listStdout.String())
+	}
+	if len(listed.Sessions) != 2 || listed.Sessions[0].ID != "recent" || listed.Sessions[1].ID != "old" {
+		t.Fatalf("listed = %#v, want newest-first records", listed.Sessions)
+	}
+	// The public projection must not leak internal operational fields.
+	for _, internal := range []string{`"ssh_argv"`, `"control_path"`, `"events"`} {
+		if strings.Contains(listStdout.String(), internal) {
+			t.Fatalf("session list --json leaks %s:\n%s", internal, listStdout.String())
+		}
 	}
 
 	var showStdout bytes.Buffer
@@ -2020,22 +2045,39 @@ func TestRunSessionListShowAndPrune(t *testing.T) {
 	assertContains(t, showStdout.String(), "events:")
 	assertContains(t, showStdout.String(), "latency_disconnect")
 
+	// A transcript artifact next to the pruned record must be listed in
+	// the human prune output (and removed on apply).
+	oldCast := filepath.Join(state.SessionsDir(stateDir), "old.cast")
+	if err := os.WriteFile(oldCast, []byte(`{"version":2,"width":80,"height":24}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write old.cast: %v", err)
+	}
+
 	var pruneStdout bytes.Buffer
 	code = Run([]string{"session", "prune", "--older-than", "168h", "--dry-run", "--state-dir", stateDir}, &pruneStdout, nil, BuildInfo{})
 	if code != 0 {
 		t.Fatalf("session prune dry-run returned %d, want 0", code)
 	}
 	assertContains(t, pruneStdout.String(), "would remove 1 session record")
+	assertContains(t, pruneStdout.String(), "would remove 1 transcript artifact")
+	assertContains(t, pruneStdout.String(), oldCast)
 	if _, err := os.Stat(state.RecordPath(stateDir, "old")); err != nil {
 		t.Fatalf("old record removed during dry-run: %v", err)
 	}
+	if _, err := os.Stat(oldCast); err != nil {
+		t.Fatalf("old.cast removed during dry-run: %v", err)
+	}
 
-	code = Run([]string{"session", "prune", "--older-than", "168h", "--state-dir", stateDir}, nil, nil, BuildInfo{})
+	var applyStdout bytes.Buffer
+	code = Run([]string{"session", "prune", "--older-than", "168h", "--state-dir", stateDir}, &applyStdout, nil, BuildInfo{})
 	if code != 0 {
 		t.Fatalf("session prune apply returned %d, want 0", code)
 	}
+	assertContains(t, applyStdout.String(), "removed 1 transcript artifact")
 	if _, err := os.Stat(state.RecordPath(stateDir, "old")); !os.IsNotExist(err) {
 		t.Fatalf("old record still exists, err=%v", err)
+	}
+	if _, err := os.Stat(oldCast); !os.IsNotExist(err) {
+		t.Fatalf("old.cast still exists, err=%v", err)
 	}
 }
 

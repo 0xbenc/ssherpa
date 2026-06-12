@@ -247,3 +247,91 @@ func TestResolveThemeReportsInvalidConfig(t *testing.T) {
 		t.Fatalf("ResolveTheme returned nil error, want invalid style error")
 	}
 }
+
+// TestParseThemeConfigToleratesUnknownRoleKeys is the WP10
+// forward-compatibility contract: a theme.conf written by a newer
+// ssherpa (with role keys this binary does not know) must parse with
+// warnings, not hard-fail, while known roles still apply.
+func TestParseThemeConfigToleratesUnknownRoleKeys(t *testing.T) {
+	data := []byte(`
+primary = magenta
+hyperlink = bright-blue
+sparkline-glow = bold cyan
+danger = 1;31
+`)
+
+	cfg, err := ParseThemeConfig(data)
+	if err != nil {
+		t.Fatalf("ParseThemeConfig returned error: %v", err)
+	}
+	if got := cfg.Specs[RolePrimary]; got != "magenta" {
+		t.Fatalf("primary spec = %q, want magenta", got)
+	}
+	if got := cfg.Specs[RoleDanger]; got != "1;31" {
+		t.Fatalf("danger spec = %q, want 1;31", got)
+	}
+	if len(cfg.Warnings) != 2 {
+		t.Fatalf("Warnings = %#v, want 2 entries", cfg.Warnings)
+	}
+	if !strings.Contains(cfg.Warnings[0], `unknown theme role "hyperlink"`) {
+		t.Fatalf("Warnings[0] = %q, want unknown hyperlink warning", cfg.Warnings[0])
+	}
+	if !strings.Contains(cfg.Warnings[1], "line 4") || !strings.Contains(cfg.Warnings[1], "sparkline_glow") {
+		t.Fatalf("Warnings[1] = %q, want line 4 sparkline_glow warning", cfg.Warnings[1])
+	}
+}
+
+// TestParseThemeConfigStillRejectsMalformedLines pins what stays a hard
+// error after unknown keys became warnings: lines without an
+// assignment, and invalid style values for KNOWN roles.
+func TestParseThemeConfigStillRejectsMalformedLines(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+	}{
+		{"no assignment", "primary magenta\n"},
+		{"bad value for known role", "primary = imaginary\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := ParseThemeConfig([]byte(c.data)); err == nil {
+				t.Fatalf("ParseThemeConfig(%q) returned nil error", c.data)
+			}
+		})
+	}
+}
+
+// TestParseThemeConfigAcceptsBaseKeySilently pins the legacy
+// `theme`/`base` key: parsed into BaseName, no warning, no error.
+func TestParseThemeConfigAcceptsBaseKeySilently(t *testing.T) {
+	cfg, err := ParseThemeConfig([]byte("theme = vivid\nbase = terminal\n"))
+	if err != nil {
+		t.Fatalf("ParseThemeConfig returned error: %v", err)
+	}
+	if cfg.BaseName != "terminal" {
+		t.Fatalf("BaseName = %q, want terminal (last assignment wins)", cfg.BaseName)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want none", cfg.Warnings)
+	}
+}
+
+// TestResolveThemeToleratesUnknownRoleKeys drives the same contract
+// through ResolveTheme: the theme loads and known overrides apply even
+// when the file carries future role keys.
+func TestResolveThemeToleratesUnknownRoleKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "theme.conf")
+	data := []byte("primary = magenta\nhyperlink = bright-blue\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write theme config: %v", err)
+	}
+
+	theme, err := ResolveTheme(ThemeOptions{File: path, Env: []string{}, SkipDefaultFile: true})
+	if err != nil {
+		t.Fatalf("ResolveTheme returned error: %v", err)
+	}
+	if got := theme.Style(RolePrimary, "prod"); !strings.Contains(got, "\x1b[35m") {
+		t.Fatalf("primary style = %q, want magenta override applied", got)
+	}
+}
