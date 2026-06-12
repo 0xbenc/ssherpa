@@ -172,6 +172,11 @@ type TranscriptSpec struct {
 	MaxBytes  int64      `json:"max_bytes,omitempty"`
 	Truncated bool       `json:"truncated,omitempty"`
 	Input     bool       `json:"input,omitempty"`
+	// StopReason records why the transcript writer stopped early
+	// ("size limit reached", "write error: ..."); empty when the
+	// recording ran to a clean close. Mirrors
+	// transcript.Writer.StopReason().
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 type RecordingOrigin struct {

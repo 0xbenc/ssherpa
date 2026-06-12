@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/state"
@@ -16,6 +17,17 @@ const (
 
 	oscMaxPayload       = 8192
 	telemetryMaxPayload = 16384
+
+	// Bounds applied to remote-derived values at parse time. Telemetry
+	// frames and OSC payloads are remote input: a hostile or buggy
+	// remote can put arbitrary bytes in any string field and arbitrary
+	// growth in any list, and the result is later rendered inside the
+	// trusted overlay and written to the local state dir.
+	remoteMaxStringRunes  = 512
+	telemetryMaxIDRunes   = 128
+	telemetryMaxEvents    = 64
+	telemetryMaxListParts = 32
+	telemetryMaxDepth     = 64
 )
 
 type remoteState struct {
@@ -320,7 +332,124 @@ func parseSessionTelemetryPayload(payload string) (state.SessionRecord, bool) {
 	if strings.TrimSpace(record.ID) == "" {
 		return state.SessionRecord{}, false
 	}
+	return clampTelemetryRecord(record)
+}
+
+// clampTelemetryRecord bounds and sanitizes a SessionRecord received
+// over the wire before it can become a local mirror. Control
+// characters are stripped from every string field, lists and depth are
+// clamped, machine-local references (control socket, transcript file,
+// import provenance) that would otherwise point local tooling at
+// attacker-chosen paths are dropped, and a record whose id cannot be a
+// safe filename is rejected outright.
+func clampTelemetryRecord(record state.SessionRecord) (state.SessionRecord, bool) {
+	record.ID = sanitizeRemoteString(record.ID, telemetryMaxIDRunes)
+	if !safeTelemetryID(record.ID) {
+		return state.SessionRecord{}, false
+	}
+	record.ParentID = sanitizeRemoteString(record.ParentID, telemetryMaxIDRunes)
+	if record.ParentID != "" && !safeTelemetryID(record.ParentID) {
+		record.ParentID = ""
+	}
+	record.OriginHost = sanitizeRemoteString(record.OriginHost, remoteMaxStringRunes)
+	record.TargetAlias = sanitizeRemoteString(record.TargetAlias, remoteMaxStringRunes)
+	record.RemoteHost = sanitizeRemoteString(record.RemoteHost, remoteMaxStringRunes)
+	record.RemoteCWD = sanitizeRemoteString(record.RemoteCWD, remoteMaxStringRunes)
+	record.RemotePrompt = sanitizeRemoteString(record.RemotePrompt, remoteMaxStringRunes)
+	record.Kind = sanitizeRemoteString(record.Kind, remoteMaxStringRunes)
+	record.RunnerMode = sanitizeRemoteString(record.RunnerMode, remoteMaxStringRunes)
+	record.DisconnectReason = sanitizeRemoteString(record.DisconnectReason, remoteMaxStringRunes)
+	record.Route = sanitizeRemoteList(record.Route, telemetryMaxListParts)
+	record.Hops = sanitizeRemoteList(record.Hops, telemetryMaxListParts)
+	record.SSHArgv = sanitizeRemoteList(record.SSHArgv, telemetryMaxListParts)
+	if record.Depth < 0 {
+		record.Depth = 0
+	}
+	if record.Depth > telemetryMaxDepth {
+		record.Depth = telemetryMaxDepth
+	}
+	if len(record.Events) > telemetryMaxEvents {
+		record.Events = record.Events[:telemetryMaxEvents]
+	}
+	for i := range record.Events {
+		record.Events[i].Type = sanitizeRemoteString(record.Events[i].Type, remoteMaxStringRunes)
+		record.Events[i].Message = sanitizeRemoteString(record.Events[i].Message, remoteMaxStringRunes)
+	}
+	record.ControlPath = ""
+	record.Transcript = nil
+	record.Import = nil
+	if record.RecordedBy != nil {
+		origin := *record.RecordedBy
+		origin.MachineID = sanitizeRemoteString(origin.MachineID, remoteMaxStringRunes)
+		origin.SSHerpaVersion = sanitizeRemoteString(origin.SSHerpaVersion, remoteMaxStringRunes)
+		record.RecordedBy = &origin
+	}
+	if record.Forward != nil {
+		forward := *record.Forward
+		forward.LocalBind = sanitizeRemoteString(forward.LocalBind, remoteMaxStringRunes)
+		forward.RemoteHost = sanitizeRemoteString(forward.RemoteHost, remoteMaxStringRunes)
+		forward.Through = sanitizeRemoteString(forward.Through, remoteMaxStringRunes)
+		forward.SavedAlias = sanitizeRemoteString(forward.SavedAlias, remoteMaxStringRunes)
+		record.Forward = &forward
+	}
+	if record.Proxy != nil {
+		proxy := *record.Proxy
+		proxy.Bind = sanitizeRemoteString(proxy.Bind, remoteMaxStringRunes)
+		proxy.SavedAlias = sanitizeRemoteString(proxy.SavedAlias, remoteMaxStringRunes)
+		record.Proxy = &proxy
+	}
 	return record, true
+}
+
+// safeTelemetryID mirrors state's session-id validation: the id names
+// a file in the local state dir, so anything that is not a plain,
+// trimmed path component is rejected (state.WriteRecord would refuse
+// it anyway; rejecting here keeps the bad id out of every other sink).
+func safeTelemetryID(id string) bool {
+	if id == "" || id != strings.TrimSpace(id) {
+		return false
+	}
+	if id != filepath.Base(id) || strings.ContainsAny(id, `/\`) || id == "." || id == ".." {
+		return false
+	}
+	return true
+}
+
+// sanitizeRemoteString strips control characters (C0, DEL, and the C1
+// range) out of a remote-derived string and clamps it to maxRunes.
+// Sanitizing at parse time means every later sink — the overlay, the
+// session map, records on disk, JSON output — only ever sees clean
+// values, so a remote cannot smuggle escape sequences into the
+// trusted local rendering path (e.g. percent-encoded ESC in an OSC 7
+// cwd).
+func sanitizeRemoteString(value string, maxRunes int) string {
+	var b strings.Builder
+	count := 0
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || (0x80 <= r && r <= 0x9f) {
+			continue
+		}
+		if maxRunes > 0 && count >= maxRunes {
+			break
+		}
+		b.WriteRune(r)
+		count++
+	}
+	return b.String()
+}
+
+func sanitizeRemoteList(values []string, maxParts int) []string {
+	if values == nil {
+		return nil
+	}
+	if maxParts > 0 && len(values) > maxParts {
+		values = values[:maxParts]
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, sanitizeRemoteString(value, remoteMaxStringRunes))
+	}
+	return out
 }
 
 func parseOSC7(value string) (host string, cwd string, ok bool) {
@@ -332,11 +461,14 @@ func parseOSC7(value string) (host string, cwd string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	cwd = strings.TrimSpace(u.Path)
+	// url.Parse percent-decodes the path, so %1b et al. would put raw
+	// control bytes into RemoteCWD — which later renders inside the
+	// trusted overlay. Sanitize here, at the trust boundary.
+	cwd = sanitizeRemoteString(strings.TrimSpace(u.Path), remoteMaxStringRunes)
 	if cwd == "" {
 		return "", "", false
 	}
-	return u.Hostname(), cwd, true
+	return sanitizeRemoteString(u.Hostname(), remoteMaxStringRunes), cwd, true
 }
 
 func parseOSC133(value string) (string, bool) {
