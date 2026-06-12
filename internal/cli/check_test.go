@@ -56,6 +56,29 @@ Host prod
 	assertContains(t, stdout.String(), "failed")
 }
 
+func TestRunCheckEmptySelectionIsNotHealthy(t *testing.T) {
+	config := writeConfig(t, `
+Host prod
+  HostName prod.example.com
+`)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"check", "--filter", "nomatch", "--config", config}, &stdout, &stderr, BuildInfo{})
+	if code != 2 {
+		t.Fatalf("Run returned %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	assertContains(t, stderr.String(), "no checks matched the given selector")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"check", "--filter", "nomatch", "--json", "--config", config}, &stdout, &stderr, BuildInfo{})
+	if code != 2 {
+		t.Fatalf("Run --json returned %d, want 2; stderr=%q", code, stderr.String())
+	}
+	assertContains(t, stdout.String(), `"ok": false`)
+	assertContains(t, stdout.String(), `"results": []`)
+}
+
 func TestRunCheckMissingSSHBinaryReturnsStructuredFailure(t *testing.T) {
 	config := writeConfig(t, `
 Host prod

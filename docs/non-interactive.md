@@ -90,7 +90,7 @@ Exit codes are intentionally simple in the current implementation:
 | --- | --- |
 | `0` | Success, no-op, cancelled interactive selection, or clean skip. |
 | `1` | Usage error, validation error, failed write, failed process start, or generic failure. |
-| `2` | Not found, failed check result, or config/inventory load failure for selected commands. |
+| `2` | Not found, failed check result, empty check selection, or config/inventory load failure for selected commands. |
 | `120` | Escape rope pulled from a supervised session. |
 
 `session grep` follows the grep(1) convention: `0` when at least one

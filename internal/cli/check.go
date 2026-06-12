@@ -96,6 +96,12 @@ func runCheck(args []string, stdout io.Writer, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
+	if len(out.Results) == 0 {
+		// A selector that matches nothing must not read as healthy —
+		// monitoring that checks nothing has not checked anything.
+		out.OK = false
+		fmt.Fprintln(stderr, "ssherpa: no checks matched the given selector")
+	}
 	if flags.JSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")

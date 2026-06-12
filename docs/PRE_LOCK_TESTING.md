@@ -524,9 +524,9 @@ state="$(mktemp -d)"
 /tmp/ssherpa-check check --filter nomatch --json --config "$cfg/config" --state-dir "$state"; echo "exit=$?"
 ```
 
-**Expect:** Current behavior: prints "No checks selected." to stdout and exits 0. JSON variant exits 0 with {"ok": true, ..., "results": []}.
+**Expect:** Exit 2 with stderr "ssherpa: no checks matched the given selector" (the table path also prints "No checks selected." to stdout). JSON variant exits 2 with {"ok": false, ..., "results": []}.
 
-> Recorded as-is per the audit request. The silent empty table is gone — there is now an explicit "No checks selected." message (internal/cli/check.go:567) — but the EXIT CODE IS STILL 0 and JSON still reports ok:true, so at the exit-code level a non-matching filter still passes. Scripts should additionally assert results is non-empty. If the team intended a non-zero exit here, that change has not landed.
+> Fixed post-validation: an empty selection is no longer healthy. Monitoring that matched nothing now fails loudly (exit 2, ok:false).
 
 ### [ ] Completion scripts sanity (bash/zsh/fish) *(corrected)*
 
@@ -612,10 +612,9 @@ state="$(mktemp -d)"
 
 ## Known warts confirmed during validation (not regressions)
 
-- `check --filter nomatch` prints "No checks selected." but still
-  **exits 0 / `ok: true`** — the exit-code half of the false-healthy
-  audit finding did not land. Scripts should assert `results` is
-  non-empty. Candidate one-line fix post-review.
+- ~~`check --filter nomatch` exits 0~~ — **fixed**: an empty selection
+  now exits 2 with `ok: false` and a stderr message; monitoring that
+  checks nothing no longer reads as healthy.
 - `check` probes run against the **alias name** without `-F`, so
   `--config` affects enumeration only (pre-existing; cousin of the
   `--config`-is-inventory-only finding in the audit's §15.5 notes).

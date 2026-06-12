@@ -184,7 +184,7 @@ const checkUsage = `Usage:
 Test SSH aliases and saved forwards with a BatchMode SSH probe and a
 best-effort ICMP latency probe. Also accepts --config PATH,
 --state-dir PATH, and --ssh-binary PATH. Exits 0 when every check
-passed and 2 when any check failed.
+passed and 2 when any check failed or no checks matched the selector.
 `
 
 const authkeysUsage = `Usage:
