@@ -92,3 +92,33 @@ Explicit descopes / known residuals (decided, not forgotten):
   reaping bounds the risk (documented in state.go).
 - fish completion syntax was not machine-checked locally (fish not
   installed); run `fish --no-execute completions/ssherpa.fish` once.
+
+## Post-implementation code review (2026-06-12)
+
+A max-effort multi-agent review (Opus subagents: 9 finder angles → verify →
+sweep over the full 24-commit diff) surfaced 15 findings; the confirmed
+real bugs were all fixed:
+
+- **ControlMaster teardown used a hardcoded `ssh`** — a custom
+  `--ssh-binary` (full path off PATH) created the master but `-O exit`
+  missed it, orphaning forwarded ports. Now uses the resolved binary +
+  session env. (28a4568-range)
+- **Escape/control sinks** — `session log/grep/export/follow` printed
+  `Clean`-only text that still leaked raw C1 escape introducers (U+009B
+  CSI). `Clean` now reuses the single `termstyle` scanner (removing a
+  duplicate state machine that disagreed on embedded-ESC) and drops C0
+  (except `\n`/`\t`), DEL, and C1. The `check` table sanitizes the
+  remote ssh-stderr tail.
+- **Tolerant listings dropped entries silently** — `check
+  --saved-forwards` reported all-green while skipping an unreadable
+  spec (now a failed row → exit 2); `stop-all` and `forward/proxy saved
+  list` now warn per skipped file.
+- **Panic deadlock** — record mutations moved to a deferred-unlock
+  helper so a panic can't strand `recordMu` and hang the
+  terminal-restore unwind.
+- **Dash alias write boundary** — `ValidateAliasSpec` now rejects a
+  leading `-`, so ssherpa won't author a host it then refuses.
+
+Accepted tradeoff (not changed): `WriteRecord`'s read-before-write
+merge guards the closed-record-resurrection bug; it fires only on
+coalesced OSC events and costs little next to the existing double-fsync.
