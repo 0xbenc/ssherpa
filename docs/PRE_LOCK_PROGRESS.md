@@ -29,10 +29,10 @@ every commit on this branch.
 | Batch A — WP4 authkeys | **done** (a5ba07f) — incl. review fixes: C1 range, dry-run preview gate, --all-matching docs |
 | Batch A — WP5 sshconfig | **done** (281b0e6) — incl. review fixes: multi-casing delete refusal, resolved-casing plan.Aliases, plan.Warnings printed |
 | Batch A — WP11 release | **done** (1525cc7) — incl. review fixes: SBOM+syft, macos release gate, dependabot direct-only. Completions/man regen + drift test DEFERRED to final pass after Batch C (CLI surface still moving) |
-| Batch B — WP9 transcript durability (torn tail, fsync, export, prune .cast) | pending |
-| Batch B — WP3 clamps (zip-bomb, replay sleep, atomic import) | pending |
-| Batch B — WP6 state integrity (prune path, skip-bad-file, version gates, reaping) | pending |
-| Batch B — WP2 termstyle (skipANSI/Strip CSI final bytes) | pending |
+| Batch B — WP9/WP3 transcript | **done** (d4260d4) — salvage read + ErrTornTail, writer truncate-back+fsync+stop marker, bundle parse-before-export + zip caps + atomic import, replay clamp, full ECMA-48 Clean |
+| Batch B — WP6 state | **done** (1d919df) — prune-by-filename + .cast/.log + orphan sweep, tolerant listings + Detailed variants, ErrFutureStateVersion gates, crashed-local reaping, finalization-preserving WriteRecord, cleanup writes back to read file |
+| Batch B — WP2 termstyle | **done** (35ea824) — ECMA-48 CSI finals + embedded C0, non-CSI grammar, SS3 whole-rune, ANSI-aware Truncate |
+| Batch C handoffs from B (do in Batch C) | torn-tail consumer adoption (cli/session.go:1771, followTranscript, sessionview:1029), cli raw-replay delay clamp, bundle Warning printing, prune Artifacts + cleanup LocalSessions + Skipped printing, Detailed-listing warnings, TranscriptSpec stop_reason field + recorder wiring |
 | Batch C — WP7 supervisor (recover, backoff signals, fd leak, ControlMaster exit) | pending |
 | Batch C — WP8 transfer safety (in-band echo, overwrite gates, timeouts) | pending |
 | Batch C — WP2 render sinks (OSC7, imported metadata, raw-replay confirm) | pending |
