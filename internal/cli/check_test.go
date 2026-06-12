@@ -143,6 +143,39 @@ Host pgbox
 	}
 }
 
+func TestRunCheckSavedForwardsReportsUnreadableSpec(t *testing.T) {
+	oldLocalBind := runLocalBindCheck
+	runLocalBindCheck = func(string, int) string { return "ok" }
+	t.Cleanup(func() { runLocalBindCheck = oldLocalBind })
+
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, _ := writeFakeSSH(t, 0)
+	if err := state.WriteForward(stateDir, state.StoredForward{
+		Name: "good", SSHAlias: "pgbox", LocalBind: "127.0.0.1", LocalPort: 15432, RemoteHost: "127.0.0.1", RemotePort: 5432,
+	}); err != nil {
+		t.Fatalf("WriteForward: %v", err)
+	}
+	// A second saved forward written by a newer ssherpa (future state
+	// version) must not be silently dropped from --saved-forwards.
+	badPath := filepath.Join(stateDir, "forwards", "future.json")
+	if err := os.WriteFile(badPath, []byte(`{"name":"future","ssh_alias":"pgbox","state_version":999}`), 0o600); err != nil {
+		t.Fatalf("write future forward: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"check", "--saved-forwards", "--state-dir", stateDir, "--config", config, "--ssh-binary", fakeSSH, "--no-icmp"}, &stdout, &stderr, BuildInfo{})
+	if code != 2 {
+		t.Fatalf("Run returned %d, want 2 (an unverifiable saved forward must fail); stdout=%q", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "invalid") || !strings.Contains(stdout.String(), "future.json") {
+		t.Fatalf("table did not report the unreadable spec: %q", stdout.String())
+	}
+}
+
 func TestRunCheckSavedForwardMissingAlias(t *testing.T) {
 	stateDir := t.TempDir()
 	config := writeConfig(t, `

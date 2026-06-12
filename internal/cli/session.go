@@ -1350,10 +1350,18 @@ func listRecordsWarnSkipped(stateDir string, stderr io.Writer) ([]state.SessionR
 	if err != nil {
 		return nil, err
 	}
-	for _, skip := range skipped {
-		fmt.Fprintf(stderr, "ssherpa: skipping unreadable session record %s: %s\n", termstyle.Sanitize(skip.Path), termstyle.Sanitize(skip.Reason))
-	}
+	warnSkippedFiles(stderr, "session record", skipped)
 	return records, nil
+}
+
+// warnSkippedFiles prints one stderr line per file a tolerant listing
+// skipped, so silently dropping a corrupt or future-format catalog
+// entry never looks like the entry does not exist. Path and reason can
+// carry bytes from a tampered file, so both are sanitized.
+func warnSkippedFiles(stderr io.Writer, kind string, skipped []state.SkippedFile) {
+	for _, skip := range skipped {
+		fmt.Fprintf(stderr, "ssherpa: skipping unreadable %s %s: %s\n", kind, termstyle.Sanitize(skip.Path), termstyle.Sanitize(skip.Reason))
+	}
 }
 
 func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -1407,7 +1415,10 @@ func runSessionStopAll(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1
 	}
-	records, err := state.ListRecords(stateDir)
+	// Use the warning variant: a live tunnel/proxy whose record is
+	// corrupt or future-format would otherwise be skipped silently and
+	// left running while stop-all reported success.
+	records, err := listRecordsWarnSkipped(stateDir, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
 		return 1

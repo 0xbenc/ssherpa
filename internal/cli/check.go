@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -333,6 +334,7 @@ func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base ssh
 		return nil, 1
 	}
 	var specs []state.StoredForward
+	var skipped []state.SkippedFile
 	if flags.SavedForward != "" {
 		spec, err := state.ReadForward(stateDir, flags.SavedForward)
 		if err != nil {
@@ -341,15 +343,21 @@ func checkSavedForwards(flags checkFlags, inventory hostlist.Inventory, base ssh
 		specs = []state.StoredForward{spec}
 	} else {
 		var err error
-		specs, err = state.ListForwards(stateDir)
+		specs, skipped, err = state.ListForwardsDetailed(stateDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: list saved forwards: %v\n", err)
 			return nil, 1
 		}
 	}
-	results := make([]checkResult, 0, len(specs))
+	results := make([]checkResult, 0, len(specs)+len(skipped))
 	for _, spec := range specs {
 		results = append(results, checkSavedForward(spec, inventory, base, flags, sshBinaryErr))
+	}
+	// A saved forward we cannot read (corrupt or written by a newer
+	// ssherpa) is reported as a failed check, not silently dropped —
+	// otherwise check would exit 0 while leaving a forward unverified.
+	for _, s := range skipped {
+		results = append(results, checkResult{Kind: "saved_forward", Name: filepath.Base(s.Path), Status: "invalid", ICMPStatus: "skipped", LocalBindStatus: "skipped", Message: s.Reason})
 	}
 	return results, 0
 }
