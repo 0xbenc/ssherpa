@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -543,7 +544,7 @@ func sessionListDetailLines(record state.SessionRecord, theme termstyle.Theme, w
 func detailLine(theme termstyle.Theme, label string, value string, width int) string {
 	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 12))
 	valueWidth := max(0, width-termstyle.VisibleWidth(labelText)-2)
-	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(value, "-"), valueWidth))
+	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(cleanField(value), "-"), valueWidth))
 }
 
 func importBadge(record state.SessionRecord) string {
@@ -726,13 +727,13 @@ func metadataLines(record state.SessionRecord, theme termstyle.Theme, width int)
 func metadataLine(theme termstyle.Theme, label string, value string, width int) string {
 	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 13))
 	valueWidth := max(0, width-termstyle.VisibleWidth(labelText)-2)
-	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(value, "-"), valueWidth))
+	return labelText + "  " + theme.Style(termstyle.RoleForeground, truncateVisible(defaultString(cleanField(value), "-"), valueWidth))
 }
 
 func wrapMetadataValue(theme termstyle.Theme, label string, value string, width int) []string {
 	labelText := theme.Style(termstyle.RoleAccent, termstyle.PadRight(label, 13))
 	valueWidth := max(1, width-termstyle.VisibleWidth(labelText)-2)
-	wrapped := wrapIdentityText(defaultString(value, "-"), valueWidth)
+	wrapped := wrapIdentityText(defaultString(cleanField(value), "-"), valueWidth)
 	out := make([]string, 0, len(wrapped))
 	for i, line := range wrapped {
 		currentLabel := labelText
@@ -897,6 +898,7 @@ type transcriptModel struct {
 	query       string
 	lines       []string
 	errText     string
+	warnText    string
 	scroll      int
 	width       int
 	height      int
@@ -996,6 +998,9 @@ func (m transcriptModel) View() tea.View {
 		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, truncateVisible(meta, inner)), width))
 		lines = append(lines, boxDivider(m.theme, width))
 	}
+	if m.warnText != "" {
+		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleWarning, truncateVisible(m.warnText, inner)), width))
+	}
 	if m.errText != "" {
 		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleDanger, truncateVisible(m.errText, inner)), width))
 	} else {
@@ -1027,12 +1032,21 @@ func (m transcriptModel) View() tea.View {
 func (m *transcriptModel) reload() {
 	path := transcriptPath(m.stateDir, m.record)
 	rec, err := transcript.Read(path)
-	if err != nil {
+	if err != nil && !errors.Is(err, transcript.ErrTornTail) {
 		m.errText = err.Error()
+		m.warnText = ""
 		m.lines = nil
 		return
 	}
 	m.errText = ""
+	var warnings []string
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("transcript tail is incomplete; showing %d frame(s)", len(rec.Frames)))
+	}
+	if rec.SkippedLines > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d unparseable line(s) skipped", rec.SkippedLines))
+	}
+	m.warnText = strings.Join(warnings, " · ")
 	text := transcript.Text(rec, transcript.TextOptions{Raw: m.raw})
 	m.lines = strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if len(m.lines) == 1 && m.lines[0] == "" {
@@ -1124,7 +1138,7 @@ func transcriptMetaLine(m transcriptModel) string {
 	if m.record.Import != nil {
 		parts = append(parts, "source "+ShortSessionID(m.record.Import.SourceSessionID))
 		parts = append(parts, "machine "+shortMachineID(m.record.Import.SourceMachineID))
-		parts = append(parts, m.record.Import.OriginClass)
+		parts = append(parts, cleanField(m.record.Import.OriginClass))
 	}
 	if m.record.Transcript != nil {
 		parts = append(parts, humanBytes(m.record.Transcript.Bytes))
@@ -1152,7 +1166,7 @@ func importedHeaderLabel(record state.SessionRecord) string {
 }
 
 func shortMachineID(id string) string {
-	id = strings.TrimSpace(id)
+	id = strings.TrimSpace(cleanField(id))
 	if id == "" {
 		return "unknown"
 	}
@@ -1297,12 +1311,26 @@ func KindBadge(record state.SessionRecord) string {
 	}
 }
 
+// cleanField sanitizes a session-record string for terminal rendering.
+// Record fields are untrusted at the render boundary — a hostile remote
+// (telemetry mirrors) or an imported bundle controls them — so every
+// sink strips terminal escape sequences regardless of any parse-time
+// cleaning upstream.
+func cleanField(value string) string {
+	if strings.IndexByte(value, 0x1b) < 0 {
+		return value
+	}
+	return termstyle.Strip(value)
+}
+
 func Target(record state.SessionRecord) string {
-	if strings.TrimSpace(record.TargetAlias) != "" {
-		return record.TargetAlias
+	if alias := strings.TrimSpace(cleanField(record.TargetAlias)); alias != "" {
+		return alias
 	}
 	if len(record.Route) > 0 {
-		return record.Route[len(record.Route)-1]
+		if last := strings.TrimSpace(cleanField(record.Route[len(record.Route)-1])); last != "" {
+			return last
+		}
 	}
 	return "-"
 }
@@ -1311,7 +1339,11 @@ func FormatRoute(route []string) string {
 	if len(route) == 0 {
 		return "-"
 	}
-	return strings.Join(route, " -> ")
+	parts := make([]string, len(route))
+	for i, part := range route {
+		parts[i] = cleanField(part)
+	}
+	return strings.Join(parts, " -> ")
 }
 
 func FormatDisplayRoute(route []string) string {
@@ -1337,7 +1369,7 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 			target = target + " " + badge
 		}
 		fmt.Fprintf(w, "%s\t%s\tdepth=%d\ttarget=%s\troute=%s\tstarted=%s\n",
-			record.ID,
+			cleanField(record.ID),
 			StatusLabel(record),
 			record.Depth,
 			target,
@@ -1348,10 +1380,10 @@ func writeListGroup(w io.Writer, title string, records []state.SessionRecord, ac
 			fmt.Fprintf(w, "\thealth=%s\n", health)
 		}
 		if record.Transcript != nil {
-			fmt.Fprintf(w, "\ttranscript=%s\tbytes=%s\n", record.Transcript.Path, humanBytes(record.Transcript.Bytes))
+			fmt.Fprintf(w, "\ttranscript=%s\tbytes=%s\n", cleanField(record.Transcript.Path), humanBytes(record.Transcript.Bytes))
 		}
 		if record.Import != nil {
-			fmt.Fprintf(w, "\timport=%s\tsource_session=%s\tsource_machine=%s\n", record.Import.OriginClass, record.Import.SourceSessionID, shortMachineID(record.Import.SourceMachineID))
+			fmt.Fprintf(w, "\timport=%s\tsource_session=%s\tsource_machine=%s\n", cleanField(record.Import.OriginClass), cleanField(record.Import.SourceSessionID), shortMachineID(record.Import.SourceMachineID))
 		}
 	}
 }
@@ -1473,7 +1505,7 @@ func statusRole(record state.SessionRecord, currentID string) termstyle.Role {
 }
 
 func ShortSessionID(id string) string {
-	id = strings.TrimSpace(id)
+	id = strings.TrimSpace(cleanField(id))
 	if id == "" || len(id) <= 12 {
 		return id
 	}
@@ -1567,7 +1599,7 @@ func addManagedName(values map[string]bool, name string) {
 
 func sessionDetailLines(prefix string, record state.SessionRecord, theme termstyle.Theme, width int) []string {
 	parts := []string{}
-	if mode := strings.TrimSpace(record.RunnerMode); mode != "" {
+	if mode := strings.TrimSpace(cleanField(record.RunnerMode)); mode != "" {
 		if record.RemoteMirror {
 			mode = "remote " + mode
 		}
@@ -1656,7 +1688,10 @@ func displayRouteParts(route []string) []string {
 	if len(route) == 0 {
 		return []string{"here"}
 	}
-	parts := append([]string(nil), route...)
+	parts := make([]string, len(route))
+	for i, part := range route {
+		parts[i] = cleanField(part)
+	}
 	if parts[0] != "here" {
 		parts = append([]string{"here"}, parts...)
 	}
@@ -1726,7 +1761,7 @@ func displayRecordsForMap(records []state.SessionRecord) []state.SessionRecord {
 func lineageParts(record state.SessionRecord) []string {
 	var parts []string
 	appendPart := func(part string) {
-		part = strings.TrimSpace(part)
+		part = strings.TrimSpace(cleanField(part))
 		if part == "" {
 			return
 		}
@@ -1764,7 +1799,7 @@ func ForwardSummary(record state.SessionRecord) string {
 	summary := "local " + forwardEndpoint(record.Forward.LocalBind, record.Forward.LocalPort) + " -> remote " + forwardEndpoint(record.Forward.RemoteHost, record.Forward.RemotePort)
 	var parts []string
 	if record.Forward.SavedAlias != "" {
-		parts = append(parts, "saved "+record.Forward.SavedAlias)
+		parts = append(parts, "saved "+cleanField(record.Forward.SavedAlias))
 	}
 	if record.Forward.Detached {
 		parts = append(parts, "background")
@@ -1785,7 +1820,7 @@ func ProxySummary(record state.SessionRecord) string {
 	summary := "SOCKS " + forwardEndpoint(record.Proxy.Bind, record.Proxy.Port)
 	var parts []string
 	if record.Proxy.SavedAlias != "" {
-		parts = append(parts, "saved "+record.Proxy.SavedAlias)
+		parts = append(parts, "saved "+cleanField(record.Proxy.SavedAlias))
 	}
 	if record.Proxy.Detached {
 		parts = append(parts, "background")
@@ -1802,9 +1837,9 @@ func ProxySummary(record state.SessionRecord) string {
 func RemoteSummary(record state.SessionRecord) string {
 	var parts []string
 	if record.RemoteCWD != "" {
-		cwd := record.RemoteCWD
+		cwd := cleanField(record.RemoteCWD)
 		if record.RemoteHost != "" {
-			cwd = record.RemoteHost + ":" + cwd
+			cwd = cleanField(record.RemoteHost) + ":" + cwd
 		}
 		parts = append(parts, "cwd "+cwd)
 	}
@@ -1828,7 +1863,7 @@ func promptSummary(value string) string {
 }
 
 func forwardEndpoint(host string, port int) string {
-	host = strings.TrimSpace(host)
+	host = strings.TrimSpace(cleanField(host))
 	if host == "" {
 		host = "127.0.0.1"
 	}
@@ -1946,7 +1981,7 @@ func clamp(value int, low int, high int) int {
 
 func HealthSummary(record state.SessionRecord) string {
 	if record.DisconnectReason != "" {
-		return "disconnected: " + record.DisconnectReason
+		return "disconnected: " + cleanField(record.DisconnectReason)
 	}
 	if len(record.Events) == 0 {
 		return ""
@@ -1954,9 +1989,9 @@ func HealthSummary(record state.SessionRecord) string {
 	last := record.Events[len(record.Events)-1]
 	switch last.Type {
 	case "latency_warning":
-		return last.Message
+		return cleanField(last.Message)
 	case "latency_disconnect":
-		return "disconnected: " + last.Message
+		return "disconnected: " + cleanField(last.Message)
 	}
 	return ""
 }

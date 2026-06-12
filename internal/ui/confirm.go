@@ -171,13 +171,28 @@ func confirmButton(theme pickerTheme, label string, selected bool, danger bool) 
 	return theme.theme.Style(role, " "+text+" ")
 }
 
+// wrapConfirmText word-wraps a confirm message to width, honoring explicit
+// newlines: each input line wraps independently and blank lines survive, so
+// multi-entry confirms (one entry per line) render line-per-entry instead of
+// collapsing into a single paragraph.
 func wrapConfirmText(value string, width int) []string {
 	if width <= 0 {
 		return []string{value}
 	}
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	var lines []string
+	for _, paragraph := range strings.Split(value, "\n") {
+		lines = append(lines, wrapConfirmLine(paragraph, width)...)
+	}
+	return lines
+}
+
+func wrapConfirmLine(value string, width int) []string {
 	words := strings.Fields(value)
 	if len(words) == 0 {
-		return nil
+		return []string{""}
 	}
 	var lines []string
 	line := words[0]
