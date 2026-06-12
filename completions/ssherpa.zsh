@@ -228,6 +228,60 @@ _ssherpa() {
             '--theme-file[edit this theme config path]:path:_files' \
             '--no-color[disable color styling]'
           ;;
+        authkeys)
+          if [[ $words[3] == seed ]]; then
+            _arguments \
+              '3:subcommand:(seed)' \
+              '--json[emit JSON]' \
+              '--all[include pattern aliases]' \
+              '--filter[filter aliases]:substring' \
+              '--user[filter aliases by user]:user' \
+              '--config[read SSH config]:path:_files' \
+              '--key[public key line]:key' \
+              '--key-file[public key file]:path:_files' \
+              '--from-dir[key directory]:path:_files' \
+              '--target[remote SSH alias]:alias' \
+              '--hop[target route TARGET=HOP[,HOP...]]:route' \
+              '--dry-run[preview without writing]' \
+              '--yes[skip confirmation]' \
+              '--ssh-keygen[ssh-keygen binary]:path:_files' \
+              '--ssh-binary[SSH binary]:path:_files' \
+              '--timeout[SSH timeout]:duration'
+          elif [[ $words[3] == revoke || $words[3] == unseed ]]; then
+            _arguments \
+              '3:subcommand:(revoke unseed)' \
+              '--json[emit JSON]' \
+              '--all[include pattern aliases]' \
+              '--filter[filter aliases]:substring' \
+              '--user[filter aliases by user]:user' \
+              '--config[read SSH config]:path:_files' \
+              '--key[public key line]:key' \
+              '--key-file[public key file]:path:_files' \
+              '--target[remote SSH alias]:alias' \
+              '--hop[target route TARGET=HOP[,HOP...]]:route' \
+              '--dry-run[preview without writing]' \
+              '--yes[skip confirmation]' \
+              '--ssh-keygen[ssh-keygen binary]:path:_files' \
+              '--ssh-binary[SSH binary]:path:_files' \
+              '--timeout[SSH timeout]:duration'
+          else
+            _arguments \
+              '2:subcommand:(list add merge replace delete seed revoke unseed)' \
+              '--json[emit JSON]' \
+              '--path[authorized_keys path]:path:_files' \
+              '--key[public key line]:key' \
+              '--key-file[public key file]:path:_files' \
+              '--from-dir[key directory]:path:_files' \
+              '--target[remote SSH alias]:alias' \
+              '--hop[target route TARGET=HOP[,HOP...]]:route' \
+              '--fingerprint[key fingerprint]:fingerprint' \
+              '--dry-run[preview without writing]' \
+              '--yes[skip confirmation]' \
+              '--ssh-keygen[ssh-keygen binary]:path:_files' \
+              '--ssh-binary[SSH binary]:path:_files' \
+              '--timeout[SSH timeout]:duration'
+          fi
+          ;;
         session)
           if [[ $words[2] == bundle ]]; then
             _arguments \

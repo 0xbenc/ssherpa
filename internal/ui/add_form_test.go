@@ -29,8 +29,8 @@ func TestAddAliasFormCanChooseNoIdentity(t *testing.T) {
 	if m.idBuf != "" {
 		t.Fatalf("idBuf = %q, want empty", m.idBuf)
 	}
-	if m.step != addStepIdentitiesOnly {
-		t.Fatalf("step = %d, want identities-only", m.step)
+	if m.step != addStepReview {
+		t.Fatalf("step = %d, want review", m.step)
 	}
 }
 
@@ -48,6 +48,9 @@ func TestAddAliasFormCanChooseDiscoveredIdentity(t *testing.T) {
 	}
 	if m.step != addStepIdentitiesOnly {
 		t.Fatalf("step = %d, want identities-only", m.step)
+	}
+	if !m.idsOnly {
+		t.Fatalf("idsOnly = false, want true after choosing an identity file")
 	}
 }
 
@@ -70,6 +73,82 @@ func TestAddAliasFormCustomIdentityPath(t *testing.T) {
 	}
 	if m.step != addStepIdentitiesOnly {
 		t.Fatalf("step = %d, want identities-only", m.step)
+	}
+	if !m.idsOnly {
+		t.Fatalf("idsOnly = false, want true after choosing a custom identity file")
+	}
+}
+
+func TestAddAliasFormSkipsAuthModeForEmptyCustomIdentityPath(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial:       AddAliasResult{HostName: "prod.example.com", Alias: "prod"},
+		IdentityFiles: []string{"~/.ssh/id_ed25519"},
+	}, termstyle.Theme{})
+	m.step = addStepIdentityCustom
+
+	m = updateAddAlias(m, keyPress(tea.KeyEnter, ""))
+
+	if m.idBuf != "" {
+		t.Fatalf("idBuf = %q, want empty", m.idBuf)
+	}
+	if m.idsOnly {
+		t.Fatalf("idsOnly = true, want false without an identity file")
+	}
+	if m.step != addStepReview {
+		t.Fatalf("step = %d, want review", m.step)
+	}
+}
+
+func TestAddAliasAuthModeUsesExplicitChoices(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial: AddAliasResult{
+			HostName:     "prod.example.com",
+			Alias:        "prod",
+			IdentityFile: "~/.ssh/id_ed25519",
+		},
+	}, termstyle.TerminalTheme().WithNoColor(true))
+	m.step = addStepIdentitiesOnly
+
+	text := m.View().Content
+
+	for _, want := range []string{
+		"How strictly should SSH use the selected identity file?",
+		"Normal SSH authentication",
+		"Only this identity file",
+		"Write IdentitiesOnly yes for this alias",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("view missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "[ ]") || strings.Contains(text, "[x]") {
+		t.Fatalf("auth mode view should not render fake checkbox:\n%s", text)
+	}
+}
+
+func TestAddAliasAuthModeCanMoveFromOnlyToNormal(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial:       AddAliasResult{HostName: "prod.example.com", Alias: "prod"},
+		IdentityFiles: []string{"~/.ssh/id_ed25519"},
+	}, termstyle.TerminalTheme().WithNoColor(true))
+	m.step = addStepIdentity
+
+	m = updateAddAlias(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyEnter, ""))
+
+	if !m.idsOnly {
+		t.Fatalf("idsOnly = false, want only-this-identity default")
+	}
+	if text := m.View().Content; !strings.Contains(text, "> Only this identity file") {
+		t.Fatalf("auth mode should select only-this-identity by default:\n%s", text)
+	}
+
+	m = updateAddAlias(m, keyPress(tea.KeyLeft, ""))
+
+	if m.idsOnly {
+		t.Fatalf("idsOnly = true, want normal authentication after moving left")
+	}
+	if text := m.View().Content; !strings.Contains(text, "> Normal SSH authentication") {
+		t.Fatalf("auth mode should move selection to normal authentication:\n%s", text)
 	}
 }
 

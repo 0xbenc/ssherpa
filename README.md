@@ -31,6 +31,8 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   [Server-side setup](#server-side-setup-optional).
 - **File sending:** send or receive individual files over OpenSSH SFTP, with
   overwrite protection and picker-driven paths.
+- **Remote key seeding:** install or remove validated public keys on many saved
+  SSH aliases, including hosts reached through ProxyJump routes, without sudo.
 - **Escape rope:** `Ctrl-^`, `X`, `X` disconnects every supervised layer below
   you and returns to the outer shell. Mash `Ctrl-^` three times for the
   no-questions-asked panic rope.

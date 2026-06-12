@@ -676,6 +676,19 @@ Shared authkeys mutation flags:
 | `--yes`, `-y` | Skip confirmation. |
 | `--ssh-keygen PATH` | Use this `ssh-keygen` binary for validation. |
 
+Remote seed/revoke flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--target ALIAS` | Remote SSH alias to seed. Repeat for multiple hosts. |
+| `--hop TARGET=HOP[,HOP...]` | ProxyJump route for one selected target. Repeat for multiple routed targets. |
+| `--ssh-binary PATH` | Use this SSH binary. |
+| `--timeout DURATION` | SSH connection timeout; default `10s`. |
+| `--config PATH`, `--all`, `--filter`, `--user` | Inventory selection flags used to resolve aliases. |
+
+`revoke` accepts one key from `--key` or `--key-file`; directory removal is not
+supported because the remote removal flow is intentionally single-key.
+
 ### list
 
 ```sh
@@ -707,6 +720,35 @@ ssherpa authkeys replace --from-dir DIR [shared flags]
 
 Replaces the file with valid keys found in `DIR`.
 
+### seed
+
+```sh
+ssherpa authkeys seed --key "ssh-ed25519 ..." --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [remote flags]
+ssherpa authkeys seed --key-file PATH.pub --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [remote flags]
+ssherpa authkeys seed --from-dir DIR --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [remote flags]
+```
+
+Seeds validated public keys to remote SSH aliases by appending missing keys to
+the SSH login user's `~/.ssh/authorized_keys`. It never uses sudo and never
+writes another account's home directory. Use repeated `--target` for multiple
+hosts and repeated `--hop TARGET=HOP[,HOP...]` when a target needs ProxyJump
+routing. After a successful non-dry-run write, ssherpa reconnects to the host
+and verifies the expected key identities are present in the remote file.
+
+### revoke
+
+```sh
+ssherpa authkeys revoke --key "ssh-ed25519 ..." --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [remote flags]
+ssherpa authkeys revoke --key-file PATH.pub --target ALIAS [--target ALIAS...] [--hop ALIAS=HOP[,HOP...]] [remote flags]
+ssherpa authkeys unseed ...
+```
+
+Removes one validated public key from remote SSH aliases by deleting matching
+key identities from the SSH login user's `~/.ssh/authorized_keys`. It never
+uses sudo and does not touch another account's home directory. After a
+successful non-dry-run removal, ssherpa reconnects and verifies the key
+identity is absent.
+
 ### delete
 
 ```sh
@@ -729,6 +771,8 @@ ssherpa authkeys list --json
 ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub --dry-run
 ssherpa authkeys merge --from-dir ./keys --yes
 ssherpa authkeys replace --from-dir ./keys --dry-run
+ssherpa authkeys seed --key-file ~/.ssh/id_ed25519.pub --target prod --target lab --hop lab=bastion --yes
+ssherpa authkeys revoke --key-file ~/.ssh/old.pub --target prod --target lab --hop lab=bastion --yes
 ssherpa authkeys delete --fingerprint SHA256:abc... --yes
 ```
 
