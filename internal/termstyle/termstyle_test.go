@@ -64,6 +64,7 @@ func TestStripAndVisibleWidthNonCSISequences(t *testing.T) {
 		{"charset designations", "\x1b(Bhello\x1b)0", "hello"},
 		{"decaln", "\x1b#8x", "x"},
 		{"ss3 key", "\x1bOPdone", "done"},
+		{"ss2 shifted char", "a\x1bNxb", "ab"},
 		{"ss3 multibyte rune not split", "\x1bO日x", "x"},
 		{"osc bel", "\x1b]0;title\x07text", "text"},
 		{"osc st", "\x1b]0;title\x1b\\text", "text"},

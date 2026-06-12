@@ -19,6 +19,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/fsutil"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 const (
@@ -825,92 +826,50 @@ func filteredFrames(frames []Frame, opts TextOptions) []Frame {
 
 // Clean strips terminal escape sequences from recorded output and normalizes
 // carriage returns to newlines. Transcript frames are untrusted (a hostile
-// remote, or an imported bundle, controls the bytes), so the stripper covers
-// the full ESC grammar — CSI, OSC, DCS/SOS/PM/APC strings, SS2/SS3, charset
-// designators, single-byte sequences like RIS, and bare ESC bytes — rather
-// than only color codes.
+// remote, or an imported bundle, controls the bytes), so it removes the full
+// ESC grammar via termstyle.Strip (the single ECMA-48 scanner shared with the
+// UI) and then drops raw control characters that survive as literal bytes —
+// C0 (except newline and tab), DEL, and the C1 range U+0080–U+009F, where
+// U+009B is CSI to xterm-class terminals — so cleaned text printed to a real
+// terminal cannot carry an escape introducer.
 func Clean(value string) string {
-	value = stripEscapes(value)
+	value = termstyle.Strip(value)
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	value = strings.ReplaceAll(value, "\r", "\n")
-	return value
+	return dropControlRunes(value)
 }
 
-// stripEscapes removes every ESC-introduced sequence from value via a small
-// state machine over the ECMA-48 escape grammar. Unterminated sequences at
-// the end of input are dropped (fail closed).
-func stripEscapes(value string) string {
-	var b strings.Builder
-	b.Grow(len(value))
-	for i := 0; i < len(value); {
-		c := value[i]
-		if c != 0x1b {
-			b.WriteByte(c)
-			i++
-			continue
-		}
-		i++
-		if i >= len(value) {
+// dropControlRunes removes control characters that would reach the terminal
+// as raw bytes, keeping only newline and tab from the C0 set. Newlines are
+// significant in transcript text (lines), so unlike termstyle.Sanitize this
+// preserves them.
+func dropControlRunes(value string) string {
+	clean := true
+	for _, r := range value {
+		if isDisplayControl(r) {
+			clean = false
 			break
 		}
-		switch next := value[i]; {
-		case next == '[':
-			// CSI: parameter/intermediate bytes, then one final byte @-~.
-			i++
-			for i < len(value) {
-				final := value[i]
-				i++
-				if final >= 0x40 && final <= 0x7e {
-					break
-				}
-			}
-		case next == ']':
-			// OSC string, terminated by BEL or ST.
-			i = skipEscapeString(value, i+1)
-		case next == 'P', next == 'X', next == '^', next == '_':
-			// DCS, SOS, PM, APC strings, terminated by ST (BEL accepted).
-			i = skipEscapeString(value, i+1)
-		case next == 'N', next == 'O':
-			// SS2/SS3 shift the next single character.
-			i++
-			if i < len(value) {
-				i++
-			}
-		case next >= 0x20 && next <= 0x2f:
-			// Intermediate byte(s) then a final byte, e.g. charset
-			// designators such as ESC ( B.
-			i++
-			for i < len(value) && value[i] >= 0x20 && value[i] <= 0x2f {
-				i++
-			}
-			if i < len(value) {
-				i++
-			}
-		case next >= 0x30 && next <= 0x7e:
-			// Two-byte sequence, e.g. RIS (ESC c), DECSC (ESC 7).
-			i++
-		default:
-			// ESC before a control or high byte: drop the bare ESC and
-			// process the following byte normally.
+	}
+	if clean {
+		return value
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if isDisplayControl(r) {
+			continue
 		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }
 
-// skipEscapeString consumes a control-string payload starting at i and
-// returns the index just past its BEL or ST (ESC \) terminator, or the end
-// of input when unterminated.
-func skipEscapeString(value string, i int) int {
-	for i < len(value) {
-		if value[i] == '\a' {
-			return i + 1
-		}
-		if value[i] == 0x1b && i+1 < len(value) && value[i+1] == '\\' {
-			return i + 2
-		}
-		i++
+func isDisplayControl(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
 	}
-	return i
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 func ExportAsciicast(w io.Writer, rec Recording) error {

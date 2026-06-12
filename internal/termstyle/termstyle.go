@@ -92,7 +92,7 @@ func isUnsafeControl(r rune) bool {
 //	CSI    ESC [ params(0x30-0x3F) intermediates(0x20-0x2F) final(0x40-0x7E)
 //	OSC    ESC ] ... terminated by BEL or ST (ESC \)
 //	DCS/SOS/PM/APC  ESC P / X / ^ / _ ... terminated by ST (ESC \)
-//	SS3    ESC O <byte>                          (e.g. ESC O P for F1)
+//	SS2/SS3  ESC N / O <char>                    (e.g. ESC O P for F1)
 //	nF     ESC intermediates(0x20-0x2F) final(0x30-0x7E)  (e.g. ESC ( B)
 //	Fp/Fe/Fs  ESC final(0x30-0x7E)               (e.g. ESC =, ESC 7, ESC c)
 //
@@ -112,10 +112,10 @@ func skipEscape(value string, start int) int {
 		return skipEscString(value, i+1, true)
 	case 'P', 'X', '^', '_':
 		return skipEscString(value, i+1, false)
-	case 'O':
-		// SS3: the following character names a key. Consume a whole
-		// rune so a multibyte character is not split into replacement
-		// bytes.
+	case 'N', 'O':
+		// SS2/SS3: the following character is shifted in from G2/G3.
+		// Consume a whole rune so a multibyte character is not split
+		// into replacement bytes.
 		if i+1 < len(value) {
 			_, size := utf8.DecodeRuneInString(value[i+1:])
 			return i + 1 + size

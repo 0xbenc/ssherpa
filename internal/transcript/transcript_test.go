@@ -375,6 +375,11 @@ func TestCleanStripsEscapeSequences(t *testing.T) {
 		{name: "esc before high byte", in: "a\x1b\xc3\xa9", want: "a\xc3\xa9"},
 		{name: "cr normalization", in: "one\r\ntwo\rthree", want: "one\ntwo\nthree"},
 		{name: "plain text untouched", in: "plain text", want: "plain text"},
+		{name: "c1 csi dropped", in: "real\u009b31mEVIL", want: "real31mEVIL"},
+		{name: "c1 osc dropped", in: "a\u009d0;t\u009cb", want: "a0;tb"},
+		{name: "raw bel and backspace dropped", in: "a\bb\ac", want: "abc"},
+		{name: "del dropped", in: "a\x7fb", want: "ab"},
+		{name: "tab and newline preserved", in: "a\tb\nc", want: "a\tb\nc"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -384,6 +389,11 @@ func TestCleanStripsEscapeSequences(t *testing.T) {
 			}
 			if strings.ContainsRune(got, 0x1b) {
 				t.Fatalf("Clean(%q) leaked ESC: %q", tc.in, got)
+			}
+			for _, r := range got {
+				if r != '\n' && r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
+					t.Fatalf("Clean(%q) leaked control %U: %q", tc.in, r, got)
+				}
 			}
 		})
 	}
