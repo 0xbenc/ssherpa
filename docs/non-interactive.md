@@ -667,10 +667,17 @@ Replaces the file with valid keys found in `DIR`.
 ### delete
 
 ```sh
-ssherpa authkeys delete --fingerprint SHA256:... [--fingerprint SHA256:...] [shared flags]
+ssherpa authkeys delete --fingerprint SHA256:... [--fingerprint SHA256:...] [--all-matching] [shared flags]
 ssherpa authkeys delete SHA256:... [SHA256:...] [shared flags]
 ssherpa authkeys remove ...
 ```
+
+A fingerprint identifies the key blob, so two entries granting the same key
+with different options (for example different `from=` restrictions) share one
+fingerprint. When a fingerprint matches more than one entry, `delete --yes`
+refuses with exit `1` and lists every matching entry; pass `--all-matching`
+to delete them all non-interactively. Interactive deletes list every entry in
+the confirmation. `--dry-run` previews the full removal either way.
 
 Examples:
 

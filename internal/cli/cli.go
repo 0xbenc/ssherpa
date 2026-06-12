@@ -126,7 +126,7 @@ Authorized Keys Commands:
   ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub [--yes]
   ssherpa authkeys merge --from-dir ./keys [--dry-run]
   ssherpa authkeys replace --from-dir ./keys [--yes]
-  ssherpa authkeys delete --fingerprint SHA256:... [--yes]
+  ssherpa authkeys delete --fingerprint SHA256:... [--all-matching] [--yes]
 
 Session Commands:
   ssherpa session list [--json] [--state-dir PATH]

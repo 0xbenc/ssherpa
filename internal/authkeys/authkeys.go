@@ -212,6 +212,9 @@ func ValidateStructural(key AuthorizedKey) error {
 	if _, err := decodeBlob(key.Blob); err != nil {
 		return fmt.Errorf("SSH public key blob is not valid base64: %w", err)
 	}
+	if err := validateOptions(key.Options); err != nil {
+		return err
+	}
 	if err := validateComment(key.Comment); err != nil {
 		return err
 	}
@@ -219,12 +222,24 @@ func ValidateStructural(key AuthorizedKey) error {
 }
 
 func validateComment(comment string) error {
-	for _, r := range comment {
+	return validateFieldText(comment, "comment")
+}
+
+// validateOptions rejects control characters in the options field. scanFields
+// is quote-aware, so a newline inside a quoted option value (for example
+// command="...\n...") survives into the options token; rendering it would
+// smuggle a second physical line into authorized_keys.
+func validateOptions(options string) error {
+	return validateFieldText(options, "options")
+}
+
+func validateFieldText(value string, field string) error {
+	for _, r := range value {
 		if r == '\t' {
 			continue
 		}
-		if r < 0x20 || r == 0x7f {
-			return errors.New("SSH public key comment cannot contain control characters")
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return fmt.Errorf("SSH public key %s cannot contain control characters", field)
 		}
 	}
 	return nil

@@ -88,6 +88,61 @@ func TestParsePublicKeyLineRejectsControlCharsInComment(t *testing.T) {
 	}
 }
 
+func TestParsePublicKeyLineRejectsControlCharsInOptions(t *testing.T) {
+	cases := []struct {
+		name    string
+		options string
+	}{
+		{"newline in quoted command", "command=\"echo a\nrm -rf /\""},
+		{"newline between option fields", "command=\"echo a\"\nno-pty"},
+		{"carriage return in quoted command", "command=\"echo a\rinjected\""},
+		{"nul in quoted command", "command=\"echo a\x00b\""},
+		{"escape in quoted from", "from=\"10.0.0.0/8\x1bfoo\""},
+		{"delete in quoted environment", "environment=\"FOO=bar\x7f\""},
+		{"c1 csi in quoted command", "command=\"echo a\u009bb\""},
+		{"c1 nel in quoted from", "from=\"10.0.0.0/8\u0085foo\""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePublicKeyLine(tt.options + " " + ed25519Key)
+			if err == nil {
+				t.Fatal("ParsePublicKeyLine returned nil error, want rejected control character")
+			}
+			if !strings.Contains(err.Error(), "options cannot contain control characters") {
+				t.Fatalf("error = %v, want options control-character diagnostic", err)
+			}
+		})
+	}
+}
+
+func TestParsePublicKeyLineAllowsComplexQuotedOptions(t *testing.T) {
+	cases := []struct {
+		name    string
+		options string
+	}{
+		{"quoted command", `command="echo hi"`},
+		{"quoted from", `from="10.0.0.0/8"`},
+		{"comma separated mixed quotes", `from="10.0.0.0/8",command="echo hello world",no-agent-forwarding`},
+		{"escaped quote in command", `command="echo \"quoted\""`},
+		{"environment and permitopen", `environment="FOO=bar",permitopen="192.0.2.1:80"`},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			line := tt.options + " " + ed25519Key
+			key, err := ParsePublicKeyLine(line)
+			if err != nil {
+				t.Fatalf("ParsePublicKeyLine returned error: %v", err)
+			}
+			if key.Options != tt.options {
+				t.Fatalf("Options = %q, want %q", key.Options, tt.options)
+			}
+			if got := key.Render(); got != line {
+				t.Fatalf("Render = %q, want %q", got, line)
+			}
+		})
+	}
+}
+
 func TestParsePublicKeyLineAllowsTabInComment(t *testing.T) {
 	line := ed25519Key + "\twork laptop"
 
@@ -240,6 +295,24 @@ func TestPlanAddRejectsProgrammaticControlCharComment(t *testing.T) {
 	}
 }
 
+func TestPlanAddRejectsProgrammaticControlCharOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	key := mustParseKey(t, ed25519Key)
+	key.Options = "command=\"echo a\nrm -rf /\""
+
+	_, err := PlanAdd(path, key, PlanOptions{Validator: Validator{SkipSSHKeygen: true}})
+	if err == nil {
+		t.Fatal("PlanAdd returned nil error, want rejected control character")
+	}
+	if !strings.Contains(err.Error(), "options cannot contain control characters") {
+		t.Fatalf("error = %v, want options control-character diagnostic", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("authorized_keys exists after rejected plan, err=%v", err)
+	}
+}
+
 func TestPlanAddDuplicateWithDifferentOptionsWarnsWithoutChanging(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "authorized_keys")
@@ -342,6 +415,39 @@ func TestPlanDeletePreservesCommentsAndUnrelatedLines(t *testing.T) {
 	}
 	if plan.Stats.Deleted != 1 {
 		t.Fatalf("Deleted = %d, want 1", plan.Stats.Deleted)
+	}
+}
+
+func TestPlanDeleteCarriesEveryEntrySharingFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	key := mustParseKey(t, ed25519Key)
+	fp, err := key.SHA256Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	contents := `from="10.0.0.0/8" ` + ed25519Key + "\n" +
+		`command="uptime",no-pty ` + ed25519Key + "\n" +
+		ecdsaKey + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write authorized_keys: %v", err)
+	}
+
+	plan, err := PlanDelete(path, []string{fp})
+	if err != nil {
+		t.Fatalf("PlanDelete returned error: %v", err)
+	}
+	if plan.Stats.Deleted != 2 || len(plan.Keys) != 2 {
+		t.Fatalf("Deleted = %d Keys = %#v, want both matching entries", plan.Stats.Deleted, plan.Keys)
+	}
+	if plan.Keys[0].Options != `from="10.0.0.0/8"` || plan.Keys[0].Line != 1 {
+		t.Fatalf("Keys[0] = %#v, want first entry with options", plan.Keys[0])
+	}
+	if plan.Keys[1].Options != `command="uptime",no-pty` || plan.Keys[1].Line != 2 {
+		t.Fatalf("Keys[1] = %#v, want second entry with options", plan.Keys[1])
+	}
+	if got := string(plan.NewData); strings.Contains(got, "ssh-ed25519") || !strings.Contains(got, ecdsaKey) {
+		t.Fatalf("NewData = %q, want only unrelated key preserved", got)
 	}
 }
 
