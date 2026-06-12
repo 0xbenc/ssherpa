@@ -177,13 +177,14 @@ local destinations are not overwritten unless --force is set.
 
 const checkUsage = `Usage:
   ssherpa check ALIAS... [--json] [--timeout 5s] [--icmp-timeout 2s] [--no-icmp]
-  ssherpa check --filter SUBSTR [--json]
+  ssherpa check --filter SUBSTR [--user USER] [--all] [--json]
   ssherpa check --saved-forward NAME [--json]
   ssherpa check --saved-forwards [--json]
 
 Test SSH aliases and saved forwards with a BatchMode SSH probe and a
-best-effort ICMP latency probe. Exits 0 when every check passed and 2
-when any check failed.
+best-effort ICMP latency probe. Also accepts --config PATH,
+--state-dir PATH, and --ssh-binary PATH. Exits 0 when every check
+passed and 2 when any check failed.
 `
 
 const authkeysUsage = `Usage:
@@ -1408,7 +1409,11 @@ func runList(args []string, stdout io.Writer, stderr io.Writer) int {
 		if flags.Filter != "" || flags.User != "" {
 			fmt.Fprintln(stderr, "ssherpa: no hosts matched the current filter")
 		} else {
-			fmt.Fprintf(stderr, "ssherpa: no hosts found in %s; run \"ssherpa add\" to create one\n", graph.RootPath)
+			// Hosts with User git (github.com et al.) are hidden by
+			// default, so "no hosts" can mean "only git hosts" — point
+			// at the toggle rather than telling that user to add hosts
+			// they already have.
+			fmt.Fprintf(stderr, "ssherpa: no hosts found in %s; run \"ssherpa add\" to create one (hosts with User git are hidden by default; set SSHERPA_IGNORE_USER_GIT=0 to show them)\n", graph.RootPath)
 		}
 		return 0
 	}

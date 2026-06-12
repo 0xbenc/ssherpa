@@ -53,7 +53,7 @@ Send one local file to an SSH alias with OpenSSH SFTP.
 Receive one remote file from an SSH alias with OpenSSH SFTP.
 .B recv
 is an alias for
-.B receive .
+.BR receive .
 Both transfer commands refuse to overwrite an existing destination unless
 .B --force
 is set.
@@ -160,8 +160,10 @@ Stock sshd rejects them all (default
 .B AcceptEnv
 allows none), so remote lineage deeper than one nesting level, incoming
 session labels, and remote-exported transcript route metadata require a
-one-line server opt-in in sshd_config:
-.B AcceptEnv SSHERPA_* .
+one-line server opt-in:
+.B AcceptEnv SSHERPA_*
+in
+.IR sshd_config .
 The local session map, escape rope, and incoming presence detection work
 without it.
 .SH CHECK EXAMPLES
@@ -183,7 +185,9 @@ Install the hook printed by
 .B ssherpa incoming hook
 in the remote account's login shell startup file. SSHerpa labels require the
 receiving sshd to allow
-.B AcceptEnv SSHERPA_* .
+.B AcceptEnv SSHERPA_*
+in
+.IR sshd_config .
 The label is advisory: clients can spoof accepted environment variables.
 .SH SAVED FORWARD EXAMPLES
 .EX

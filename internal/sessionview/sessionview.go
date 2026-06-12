@@ -1314,13 +1314,19 @@ func KindBadge(record state.SessionRecord) string {
 // cleanField sanitizes a session-record string for terminal rendering.
 // Record fields are untrusted at the render boundary — a hostile remote
 // (telemetry mirrors) or an imported bundle controls them — so every
-// sink strips terminal escape sequences regardless of any parse-time
-// cleaning upstream.
+// sink neutralizes escape sequences AND raw C0/C1 control bytes
+// (U+009B is CSI to xterm-class terminals) regardless of any
+// parse-time cleaning upstream. The scan below only routes strings
+// that could carry something unsafe through Sanitize: ESC, C0 (except
+// tab), DEL, or a 0xC2 lead byte (the UTF-8 prefix of every C1 rune).
 func cleanField(value string) string {
-	if strings.IndexByte(value, 0x1b) < 0 {
-		return value
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if b == 0x1b || (b < 0x20 && b != '\t') || b == 0x7f || b == 0xc2 {
+			return termstyle.Sanitize(value)
+		}
 	}
-	return termstyle.Strip(value)
+	return value
 }
 
 func Target(record state.SessionRecord) string {

@@ -602,9 +602,9 @@ func escapeInjectedRecord() state.SessionRecord {
 	exitCode := 1
 	return state.SessionRecord{
 		ID:          "20260604T120000.000000000Z-evil\x1b[2J",
-		TargetAlias: "prod\x1b]0;owned\x07",
-		Route:       []string{"bastion\x1b[2J", "prod\x1b[31m"},
-		Hops:        []string{"bastion\x1bc"},
+		TargetAlias: "prod\x1b]0;owned\x07\u009b31mEVIL\rSPOOF",
+		Route:       []string{"bastion\x1b[2J", "prod\x1b[31m\nNEWLINE"},
+		Hops:        []string{"bastion\x1bc\u009d0;x\a"},
 		SSHArgv:     []string{"ssh", "-o", "Proxy\x1b[9999;9999H"},
 		RemoteHost:  "db\x1b[5m",
 		RemoteCWD:   "/srv\x1b]52;c;ZXZpbA==\x07",
@@ -654,6 +654,19 @@ func TestMetadataLinesStripEscapeInjectedFields(t *testing.T) {
 	for _, want := range []string{"prod", "bastion", "latency", "probe", "supervised", "imported_other"} {
 		assertContainsText(t, joined, want)
 	}
+	// Raw C0/C1 controls are as dangerous as ESC sequences: U+009B is
+	// CSI to xterm-class terminals, and \r/\n spoof fields in
+	// line-oriented output. metadataLines joins per-line, so no line
+	// may contain its own embedded line break or any other control.
+	for _, line := range lines {
+		for _, r := range line {
+			if r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
+				t.Fatalf("metadata line contains raw control %U: %q", r, line)
+			}
+		}
+	}
+	assertNotContainsText(t, joined, "\u009b")
+	assertNotContainsText(t, joined, "SPOOF\r")
 }
 
 func TestWriteListStripsEscapeInjectedFields(t *testing.T) {

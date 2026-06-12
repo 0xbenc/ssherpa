@@ -2139,22 +2139,26 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 		t.Fatalf("session map --json returned %d, want 0", code)
 	}
 	var got struct {
-		Scope    string `json:"scope"`
-		Total    int    `json:"total"`
-		Active   int    `json:"active"`
-		Recorded int    `json:"recorded"`
-		Roots    []struct {
-			Record   state.SessionRecord `json:"record"`
+		SchemaVersion int    `json:"schema_version"`
+		Scope         string `json:"scope"`
+		Total         int    `json:"total"`
+		Active        int    `json:"active"`
+		Recorded      int    `json:"recorded"`
+		Roots         []struct {
+			Session  sessionJSON `json:"session"`
 			Children []struct {
-				Record state.SessionRecord `json:"record"`
+				Session sessionJSON `json:"session"`
 			} `json:"children"`
 		} `json:"roots"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal map returned error: %v\n%s", err, stdout.String())
 	}
-	if got.Scope != "active" || got.Total != 1 || got.Active != 1 || got.Recorded != 2 || len(got.Roots) != 1 || got.Roots[0].Record.ID != "child" || len(got.Roots[0].Children) != 0 {
+	if got.SchemaVersion != 1 || got.Scope != "active" || got.Total != 1 || got.Active != 1 || got.Recorded != 2 || len(got.Roots) != 1 || got.Roots[0].Session.ID != "child" || len(got.Roots[0].Children) != 0 {
 		t.Fatalf("active map json = %#v", got)
+	}
+	for _, leak := range []string{"ssh_argv", "control_path", "state_version", "\"events\""} {
+		assertNotContains(t, stdout.String(), leak)
 	}
 
 	stdout.Reset()
@@ -2162,22 +2166,15 @@ func TestRunSessionMapBuildsLineage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("session map --all --json returned %d, want 0", code)
 	}
-	got = struct {
-		Scope    string `json:"scope"`
-		Total    int    `json:"total"`
-		Active   int    `json:"active"`
-		Recorded int    `json:"recorded"`
-		Roots    []struct {
-			Record   state.SessionRecord `json:"record"`
-			Children []struct {
-				Record state.SessionRecord `json:"record"`
-			} `json:"children"`
-		} `json:"roots"`
-	}{}
+	stdout.Reset()
+	code = Run([]string{"session", "map", "--all", "--json", "--state-dir", stateDir}, &stdout, nil, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("session map --all --json rerun returned %d, want 0", code)
+	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json.Unmarshal map --all returned error: %v\n%s", err, stdout.String())
 	}
-	if got.Scope != "all" || got.Total != 2 || got.Recorded != 2 || len(got.Roots) != 1 || got.Roots[0].Record.ID != "root" || len(got.Roots[0].Children) != 1 || got.Roots[0].Children[0].Record.ID != "child" {
+	if got.Scope != "all" || got.Total != 2 || got.Recorded != 2 || len(got.Roots) != 1 || got.Roots[0].Session.ID != "root" || len(got.Roots[0].Children) != 1 || got.Roots[0].Children[0].Session.ID != "child" {
 		t.Fatalf("map json = %#v", got)
 	}
 }

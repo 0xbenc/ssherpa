@@ -50,6 +50,41 @@ func Strip(value string) string {
 	return b.String()
 }
 
+// Sanitize neutralizes untrusted text for terminal display: it strips
+// escape sequences like Strip and additionally drops raw control
+// characters — C0 (except tab), DEL, and the C1 range U+0080–U+009F,
+// which xterm-class terminals treat as escape introducers (U+009B is
+// CSI) and which Strip alone passes through. Use it on any string a
+// remote host or an imported bundle may have influenced.
+func Sanitize(value string) string {
+	stripped := Strip(value)
+	clean := true
+	for _, r := range stripped {
+		if isUnsafeControl(r) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return stripped
+	}
+	var b strings.Builder
+	for _, r := range stripped {
+		if isUnsafeControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isUnsafeControl(r rune) bool {
+	if r == '\t' {
+		return false
+	}
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
 // skipEscape returns the index just past the escape sequence starting at
 // value[start], which must be an ESC byte. It recognizes the escape forms
 // real PTYs emit, per ECMA-48:

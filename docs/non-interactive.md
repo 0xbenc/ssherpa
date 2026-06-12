@@ -72,6 +72,16 @@ on the remote side — requires server-side `AcceptEnv SSHERPA_*`. The
 local session map, escape rope, and incoming presence detection work
 without it. See the README's "Server-side setup (optional)" section.
 
+### Internal IPC arguments
+
+`ssherpa --__supervisor [--__detached-id ID] [--__detached-state-dir
+DIR] [--__detached-log-path PATH] ...` is the internal re-exec protocol
+between a foreground ssherpa and the background daemon it spawns for
+`forward --background` and `proxy --background`. It is not part of the
+stable CLI contract: the argv shape may change between versions without
+notice, and it is only guaranteed to work when parent and child run the
+same ssherpa build. Do not invoke it directly or script against it.
+
 ## Exit Codes
 
 Exit codes are intentionally simple in the current implementation:
@@ -843,9 +853,22 @@ Saving from the theme editor drops unknown keys.
 
 ## JSON-Capable Commands
 
-The top-level JSON envelopes of `list`, `show`, and `check` carry a
-`"schema_version": 1` field. Changes within 1.x are additive only; the
-number moves when a field changes meaning.
+The top-level JSON envelopes of `list`, `show`, `check`, `session list`,
+`session show`, `session map`, `session prune`, and `session bundle
+import` carry a `"schema_version": 1` field. Changes within 1.x are
+additive only; the number moves when a field changes meaning.
+
+`session list --json` and `session show --json` emit a public projection
+of each session record, not the raw internal struct:
+`{"schema_version": 1, "state_dir": ..., "sessions": [...]}` and
+`{"schema_version": 1, "session": {...}}` respectively. The projection
+carries `id`, `parent_id`, `depth`, `route`, `target_alias`, `kind`,
+`runner_mode`, `started_at`, `ended_at`, `exit_code`,
+`disconnect_reason`, `local_pid`, `ssh_pid`, `origin`, and `transcript`,
+`recorded_by`, and `import` summaries. Internal operational fields
+(`ssh_argv`, `control_path`, raw `events`, `state_version`) are
+deliberately not part of the stable contract; `session map --json` and
+`session prune --json` use the same projection.
 
 Commands supporting `--json`:
 

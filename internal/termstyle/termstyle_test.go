@@ -93,6 +93,33 @@ func TestStripAndVisibleWidthNonCSISequences(t *testing.T) {
 	}
 }
 
+func TestSanitizeDropsRawControls(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain passthrough", "hello world", "hello world"},
+		{"tab kept", "a\tb", "a\tb"},
+		{"escape sequence stripped", "a\x1b[31mb", "ab"},
+		{"carriage return dropped", "real\rSPOOF", "realSPOOF"},
+		{"newline dropped", "one\ntwo", "onetwo"},
+		{"bel dropped", "ding\x07dong", "dingdong"},
+		{"backspace dropped", "ab\x08c", "abc"},
+		{"del dropped", "ab\x7fc", "abc"},
+		{"c1 csi dropped", "prod\u009b31mEVIL", "prod31mEVIL"},
+		{"c1 osc dropped", "x\u009d0;t\u009cy", "x0;ty"},
+		{"multibyte preserved", "日本語", "日本語"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Sanitize(tc.input); got != tc.want {
+				t.Fatalf("Sanitize(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	cases := []struct {
 		name  string

@@ -65,6 +65,24 @@ func TestRunSessionLogGrepAndExportTranscript(t *testing.T) {
 		t.Fatalf("grep stdout = %q", stdout.String())
 	}
 
+	// grep(1) convention: no match exits 1, an invalid pattern is an
+	// error and exits 2 — the two must not be confusable.
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"session", "grep", id, "no-such-needle", "--state-dir", stateDir}, &stdout, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("grep no-match code = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"session", "grep", id, "[invalid", "--state-dir", stateDir}, &stdout, &stderr, BuildInfo{})
+	if code != 2 {
+		t.Fatalf("grep invalid-pattern code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "grep transcript:") {
+		t.Fatalf("grep invalid-pattern stderr = %q", stderr.String())
+	}
+
 	outPath := filepath.Join(t.TempDir(), "prod.txt")
 	stdout.Reset()
 	stderr.Reset()
