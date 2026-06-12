@@ -268,7 +268,7 @@ func parseLine(raw string) (parsedLine, error) {
 func splitFields(raw string) ([]string, error) {
 	var fields []string
 	var b strings.Builder
-	inQuote := false
+	var quote rune // 0 when outside quotes, otherwise the opening quote rune
 	escaped := false
 	inField := false
 
@@ -289,18 +289,27 @@ func splitFields(raw string) ([]string, error) {
 		}
 
 		switch {
-		case r == '\\' && inQuote:
+		case r == '\\' && quote != 0:
 			escaped = true
-		case r == '"':
-			inQuote = !inQuote
-			inField = true
-		case r == '#' && !inQuote:
-			flush()
-			if inQuote {
-				return nil, errors.New("unclosed quote")
+		case r == '"' || r == '\'':
+			// Modern OpenSSH (argv_split, >= 8.7) treats single quotes
+			// as quote characters too and fatals on an unmatched one;
+			// recognizing them here keeps read parity so the rendered-
+			// document safety net rejects any value that would make
+			// ssh terminate with "invalid quotes".
+			switch quote {
+			case 0:
+				quote = r
+			case r:
+				quote = 0
+			default:
+				b.WriteRune(r)
 			}
+			inField = true
+		case r == '#' && quote == 0:
+			flush()
 			return fields, nil
-		case isSpace(r) && !inQuote:
+		case isSpace(r) && quote == 0:
 			flush()
 		default:
 			b.WriteRune(r)
@@ -311,7 +320,7 @@ func splitFields(raw string) ([]string, error) {
 	if escaped {
 		b.WriteRune('\\')
 	}
-	if inQuote {
+	if quote != 0 {
 		return nil, errors.New("unclosed quote")
 	}
 	flush()

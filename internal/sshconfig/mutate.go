@@ -80,7 +80,7 @@ func PlanAddOrUpdate(path string, spec AliasSpec) (MutationPlan, error) {
 		return MutationPlan{}, err
 	}
 
-	matches := doc.findExactAliasBlocks(spec.Alias)
+	matches := doc.findAliasBlocks(spec.Alias)
 	if len(matches) > 1 {
 		return MutationPlan{}, fmt.Errorf("alias %q appears %d times in %s; delete duplicates or choose one source before updating", spec.Alias, len(matches), path)
 	}
@@ -88,10 +88,18 @@ func PlanAddOrUpdate(path string, spec AliasSpec) (MutationPlan, error) {
 	action := "added"
 	line := len(doc.Lines) + 1
 	if len(matches) == 0 {
+		// Policy: brand-new aliases are written lowercase. Existing
+		// stanzas keep their original casing (below): OpenSSH Host
+		// matching is case-sensitive, so rewriting the pattern's case
+		// would orphan the name the user already connects with.
+		spec.Alias = strings.ToLower(spec.Alias)
 		doc.appendStanza(spec)
 	} else {
 		action = "updated"
 		match := matches[0]
+		// Update the stanza we matched and adopt its original pattern
+		// casing; never append a near-duplicate sibling stanza.
+		spec.Alias = match.block.Patterns[match.index]
 		line = match.block.SourceLine
 		if len(match.block.Patterns) == 1 {
 			doc.replaceBlockFields(match.block, spec)
@@ -134,6 +142,7 @@ func PlanDeleteAliases(path string, aliases []string, opts DeleteOptions) (Mutat
 	seen := map[string]bool{}
 	removed := make([]string, 0, len(aliases))
 	notFound := make([]string, 0)
+	var warnings []string
 	for _, alias := range aliases {
 		alias = strings.TrimSpace(alias)
 		if alias == "" || seen[alias] {
@@ -145,12 +154,23 @@ func PlanDeleteAliases(path string, aliases []string, opts DeleteOptions) (Mutat
 			return MutationPlan{}, err
 		}
 
-		changed, err := doc.deleteAlias(alias, opts)
+		changed, removedNames, aliasWarnings, err := doc.deleteAlias(alias, opts)
 		if err != nil {
 			return MutationPlan{}, err
 		}
+		warnings = append(warnings, aliasWarnings...)
 		if changed {
 			removed = append(removed, alias)
+			// Case-insensitive matching may resolve to a stanza whose
+			// pattern casing differs from the requested name; report
+			// the resolved names too so callers (catalog cleanup,
+			// messaging) operate on what was actually removed.
+			for _, name := range removedNames {
+				if name != alias && !seen[name] {
+					seen[name] = true
+					removed = append(removed, name)
+				}
+			}
 		} else {
 			notFound = append(notFound, alias)
 		}
@@ -174,6 +194,7 @@ func PlanDeleteAliases(path string, aliases []string, opts DeleteOptions) (Mutat
 		OldData:   append([]byte(nil), doc.data...),
 		NewData:   newData,
 		Changed:   !bytes.Equal(doc.data, newData),
+		Warnings:  warnings,
 		NotFound:  notFound,
 		LineCount: len(removed),
 	}, nil
@@ -185,11 +206,12 @@ func ExistingAliasSpec(path string, alias string) (AliasSpec, bool, error) {
 		return AliasSpec{}, false, err
 	}
 
-	matches := doc.findExactAliasBlocks(alias)
+	matches := doc.findAliasBlocks(alias)
 	if len(matches) == 0 {
 		return AliasSpec{}, false, nil
 	}
-	spec := doc.specFromBlock(matches[0].block, alias)
+	match := matches[0]
+	spec := doc.specFromBlock(match.block, match.block.Patterns[match.index])
 	return spec, true, nil
 }
 
@@ -197,26 +219,54 @@ func FindAliasOccurrences(graph *Graph, alias string) []AliasOccurrence {
 	if graph == nil {
 		return nil
 	}
-	var occurrences []AliasOccurrence
+	// Exact-case matches win; when none exist, fall back to
+	// case-insensitive matches so callers resolve the same stanza the
+	// mutation planner will edit (and never plan against a near-duplicate).
+	var exact, folded []AliasOccurrence
 	for _, block := range graph.Blocks {
+		isExact := false
+		isFolded := false
 		for _, pattern := range block.Patterns {
 			if pattern == alias {
-				occurrences = append(occurrences, AliasOccurrence{
-					Path:        block.SourcePath,
-					Line:        block.SourceLine,
-					Patterns:    append([]string(nil), block.Patterns...),
-					Conditional: block.Conditional,
-				})
+				isExact = true
 				break
 			}
+			if strings.EqualFold(pattern, alias) {
+				isFolded = true
+			}
+		}
+		if !isExact && !isFolded {
+			continue
+		}
+		occurrence := AliasOccurrence{
+			Path:        block.SourcePath,
+			Line:        block.SourceLine,
+			Patterns:    append([]string(nil), block.Patterns...),
+			Conditional: block.Conditional,
+		}
+		if isExact {
+			exact = append(exact, occurrence)
+		} else {
+			folded = append(folded, occurrence)
 		}
 	}
-	return occurrences
+	if len(exact) > 0 {
+		return exact
+	}
+	return folded
 }
 
 func ValidateAliasSpec(spec AliasSpec, allowPattern bool) error {
 	if err := validateAliasName(spec.Alias, allowPattern); err != nil {
 		return err
+	}
+	// ssh rejects quote and backslash characters in destination names
+	// outright ("hostname contains invalid characters", verified against
+	// OpenSSH 10.2), so an alias containing them could be written but
+	// never used. Refuse it here with a clear error. Deletion is not
+	// gated on this so legacy stanzas can still be cleaned up.
+	if strings.ContainsAny(spec.Alias, `'"\`) {
+		return errors.New("alias cannot contain quote or backslash characters; ssh rejects them in destination names")
 	}
 	if spec.HostName == "" {
 		return errors.New("HostName is required")
@@ -230,6 +280,13 @@ func ValidateAliasSpec(spec AliasSpec, allowPattern bool) error {
 	} {
 		if strings.ContainsAny(value, "\r\n") {
 			return fmt.Errorf("%s cannot contain a newline", name)
+		}
+		// Control characters are unrepresentable in ssh_config: a NUL
+		// truncates the line for ssh's parser (leaving an unbalanced
+		// quote that fatals every invocation) and vertical-tab/form-feed
+		// split tokens. Refuse instead of writing a broken config.
+		if containsControlRune(value) {
+			return fmt.Errorf("%s cannot contain control characters", name)
 		}
 	}
 	if spec.Port != "" {
@@ -248,8 +305,8 @@ func validateAliasName(alias string, allowPattern bool) error {
 	if strings.ContainsAny(alias, " \t\r\n") {
 		return errors.New("alias cannot contain whitespace")
 	}
-	if strings.ContainsAny(alias, "\x00") {
-		return errors.New("alias cannot contain NUL")
+	if containsControlRune(alias) {
+		return errors.New("alias cannot contain control characters")
 	}
 	if !allowPattern && (strings.HasPrefix(alias, "!") || strings.ContainsAny(alias, "*?")) {
 		return errors.New("alias cannot be a wildcard or negated pattern")
@@ -258,10 +315,12 @@ func validateAliasName(alias string, allowPattern bool) error {
 }
 
 func normalizeAliasSpec(spec AliasSpec) AliasSpec {
-	// Policy: alias names are always written lowercase. Folding here
-	// (the single chokepoint before any Host stanza is rendered)
-	// guarantees compliance regardless of how the name was entered.
-	spec.Alias = strings.ToLower(strings.TrimSpace(spec.Alias))
+	// Casing is intentionally preserved here: lookups must see the name
+	// as given so an edit of "Host Prod" updates that stanza instead of
+	// appending a lowercase sibling. PlanAddOrUpdate lowercases only
+	// genuinely new aliases (policy) and adopts the matched stanza's
+	// casing on update.
+	spec.Alias = strings.TrimSpace(spec.Alias)
 	spec.HostName = strings.TrimSpace(spec.HostName)
 	spec.User = strings.TrimSpace(spec.User)
 	spec.Port = strings.TrimSpace(spec.Port)
@@ -331,26 +390,10 @@ func (d *Document) appendStanza(spec AliasSpec) {
 }
 
 func (d *Document) replaceBlockFields(block DocumentBlock, spec AliasSpec) {
-	indent := d.blockIndent(block)
-	managed := renderManagedLines(spec, indent)
-	lines := make([]string, 0, len(d.Lines)+len(managed))
+	body := d.renderBlockBody(block, spec)
+	lines := make([]string, 0, block.Start+1+len(body)+len(d.Lines)-block.End)
 	lines = append(lines, d.Lines[:block.Start+1]...)
-
-	inserted := false
-	for i := block.Start + 1; i < block.End; i++ {
-		parsed, err := parseLine(d.Lines[i])
-		if err == nil && isManagedOption(parsed.Keyword) {
-			if !inserted {
-				lines = append(lines, managed...)
-				inserted = true
-			}
-			continue
-		}
-		lines = append(lines, d.Lines[i])
-	}
-	if !inserted {
-		lines = append(lines, managed...)
-	}
+	lines = append(lines, body...)
 	lines = append(lines, d.Lines[block.End:]...)
 	d.Lines = lines
 	d.HadTrailingNewline = true
@@ -362,11 +405,15 @@ func (d *Document) splitAliasBlock(block DocumentBlock, aliasIndex int, spec Ali
 	remaining = append(remaining, block.Patterns[aliasIndex+1:]...)
 	d.Lines[block.Start] = renderHostLine(d.Lines[block.Start], remaining)
 
-	insert := make([]string, 0, len(renderStanzaLines(spec))+2)
+	// Carry the stanza's whole body — unmanaged options included — into
+	// the split-out stanza, so editing one alias out of a shared stanza
+	// cannot silently drop ForwardAgent, LocalForward, etc. for it.
+	stanza := append([]string{"Host " + renderValue(spec.Alias)}, d.renderBlockBody(block, spec)...)
+	insert := make([]string, 0, len(stanza)+2)
 	if block.End > 0 && strings.TrimSpace(d.Lines[block.End-1]) != "" {
 		insert = append(insert, "")
 	}
-	insert = append(insert, renderStanzaLines(spec)...)
+	insert = append(insert, stanza...)
 	if block.End < len(d.Lines) && strings.TrimSpace(d.Lines[block.End]) != "" {
 		insert = append(insert, "")
 	}
@@ -379,19 +426,89 @@ func (d *Document) splitAliasBlock(block DocumentBlock, aliasIndex int, spec Ali
 	d.reparse()
 }
 
-func (d *Document) deleteAlias(alias string, opts DeleteOptions) (bool, error) {
+// renderBlockBody returns block's body lines with the managed options
+// replaced by spec's values. Unmanaged options, comments, and unparseable
+// lines are preserved verbatim. When spec keeps the stanza's first
+// IdentityFile value, every existing IdentityFile line is preserved as-is:
+// IdentityFile accumulates in OpenSSH, so an edit that does not change
+// identities must not collapse multiple identities into one.
+func (d *Document) renderBlockBody(block DocumentBlock, spec AliasSpec) []string {
+	indent := d.blockIndent(block)
+	preserveIdentities := spec.IdentityFile != "" && spec.IdentityFile == d.firstIdentityFile(block)
+	managed := renderManagedLines(spec, indent, preserveIdentities)
+	body := make([]string, 0, block.End-block.Start-1+len(managed))
+	inserted := false
+	for i := block.Start + 1; i < block.End; i++ {
+		parsed, err := parseLine(d.Lines[i])
+		if err == nil && isManagedOption(parsed.Keyword) {
+			if preserveIdentities && parsed.Keyword == "identityfile" {
+				body = append(body, d.Lines[i])
+				continue
+			}
+			if !inserted {
+				body = append(body, managed...)
+				inserted = true
+			}
+			continue
+		}
+		body = append(body, d.Lines[i])
+	}
+	if !inserted {
+		body = append(body, managed...)
+	}
+	return body
+}
+
+func (d *Document) firstIdentityFile(block DocumentBlock) string {
+	for i := block.Start + 1; i < block.End; i++ {
+		parsed, err := parseLine(d.Lines[i])
+		if err == nil && parsed.Keyword == "identityfile" && len(parsed.Values) > 0 {
+			return parsed.Values[0]
+		}
+	}
+	return ""
+}
+
+func (d *Document) deleteAlias(alias string, opts DeleteOptions) (bool, []string, []string, error) {
 	changed := false
+	var warnings []string
+	var removedNames []string
+	// Decide the match mode once: exact-case matches win, and the
+	// case-insensitive fallback never widens a delete that already
+	// matched exactly.
+	fold := len(d.matchAliasBlocks(alias, false)) == 0
+	if fold {
+		seen := map[string]struct{}{}
+		var casings []string
+		for _, m := range d.matchAliasBlocks(alias, true) {
+			name := m.block.Patterns[m.index]
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				casings = append(casings, name)
+			}
+		}
+		if len(casings) > 1 {
+			return false, nil, nil, fmt.Errorf("alias %q matches multiple stanzas with different casings (%s) in %s; delete each casing explicitly", alias, strings.Join(casings, ", "), d.Path)
+		}
+	}
 	for {
-		matches := d.findExactAliasBlocks(alias)
+		matches := d.matchAliasBlocks(alias, fold)
 		if len(matches) == 0 {
 			break
 		}
 		match := matches[len(matches)-1]
 		if containsPattern(match.block.Patterns) && !opts.AllowPatterns {
-			return false, fmt.Errorf("alias %q is in a Host stanza with wildcard or negated patterns at %s:%d; use explicit pattern deletion or edit manually", alias, d.Path, match.block.SourceLine)
+			return false, nil, nil, fmt.Errorf("alias %q is in a Host stanza with wildcard or negated patterns at %s:%d; use explicit pattern deletion or edit manually", alias, d.Path, match.block.SourceLine)
 		}
+		removedNames = append(removedNames, match.block.Patterns[match.index])
 		if len(match.block.Patterns) == 1 {
 			start, end := d.removalRange(match.block)
+			for i := start; i < end; i++ {
+				parsed, err := parseLine(d.Lines[i])
+				if err == nil && parsed.Keyword == "include" {
+					warnings = append(warnings, fmt.Sprintf("deleting alias %q also removes %q (%s:%d)", alias, strings.TrimSpace(d.Lines[i]), d.Path, i+1))
+				}
+			}
 			d.Lines = append(d.Lines[:start], d.Lines[end:]...)
 			changed = true
 			d.reparse()
@@ -404,11 +521,11 @@ func (d *Document) deleteAlias(alias string, opts DeleteOptions) (bool, error) {
 		d.reparse()
 	}
 	if !changed {
-		return false, nil
+		return false, nil, warnings, nil
 	}
 	d.HadTrailingNewline = true
 	d.reparse()
-	return true, nil
+	return true, removedNames, warnings, nil
 }
 
 func (d *Document) removalRange(block DocumentBlock) (int, int) {
@@ -465,11 +582,28 @@ type aliasBlockMatch struct {
 	index int
 }
 
-func (d *Document) findExactAliasBlocks(alias string) []aliasBlockMatch {
+// findAliasBlocks returns the blocks whose Host patterns name alias.
+// Exact-case matches win; when none exist, case-insensitive matches are
+// returned instead so a lookup by differently-cased name still resolves the
+// stanza ssh keeps (OpenSSH Host matching is case-sensitive, so updating the
+// matched stanza — never appending a near-duplicate sibling — is the only
+// safe edit).
+func (d *Document) findAliasBlocks(alias string) []aliasBlockMatch {
+	if exact := d.matchAliasBlocks(alias, false); len(exact) > 0 {
+		return exact
+	}
+	return d.matchAliasBlocks(alias, true)
+}
+
+func (d *Document) matchAliasBlocks(alias string, fold bool) []aliasBlockMatch {
 	var matches []aliasBlockMatch
 	for _, block := range d.Blocks {
 		for i, pattern := range block.Patterns {
-			if pattern == alias {
+			ok := pattern == alias
+			if fold {
+				ok = strings.EqualFold(pattern, alias)
+			}
+			if ok {
 				matches = append(matches, aliasBlockMatch{block: block, index: i})
 			}
 		}
@@ -526,15 +660,38 @@ func (d *Document) reparse() {
 	if current >= 0 {
 		d.Blocks[current].End = len(d.Lines)
 	}
+	for i := range d.Blocks {
+		d.Blocks[i].End = d.tightenBlockEnd(d.Blocks[i])
+	}
+}
+
+// tightenBlockEnd excludes trailing lines that do not belong to the stanza —
+// blank lines, comments (which usually document the NEXT stanza or the file
+// tail), Include directives (whose hosts live beyond this block), and
+// anything unparseable — so deleting a stanza can never remove unrelated
+// content.
+func (d *Document) tightenBlockEnd(block DocumentBlock) int {
+	end := block.End
+	for end > block.Start+1 {
+		line, err := parseLine(d.Lines[end-1])
+		if err == nil && line.Keyword != "" && line.Keyword != "include" {
+			break
+		}
+		end--
+	}
+	return end
 }
 
 func renderStanzaLines(spec AliasSpec) []string {
 	lines := []string{"Host " + renderValue(spec.Alias)}
-	lines = append(lines, renderManagedLines(spec, "  ")...)
+	lines = append(lines, renderManagedLines(spec, "  ", false)...)
 	return lines
 }
 
-func renderManagedLines(spec AliasSpec, indent string) []string {
+// renderManagedLines renders the managed options for spec. omitIdentity
+// suppresses the IdentityFile line for callers that preserve a stanza's
+// existing (possibly multiple) IdentityFile lines verbatim.
+func renderManagedLines(spec AliasSpec, indent string, omitIdentity bool) []string {
 	lines := []string{indent + "HostName " + renderValue(spec.HostName)}
 	if spec.User != "" {
 		lines = append(lines, indent+"User "+renderValue(spec.User))
@@ -542,7 +699,7 @@ func renderManagedLines(spec AliasSpec, indent string) []string {
 	if spec.Port != "" {
 		lines = append(lines, indent+"Port "+renderValue(spec.Port))
 	}
-	if spec.IdentityFile != "" {
+	if spec.IdentityFile != "" && !omitIdentity {
 		lines = append(lines, indent+"IdentityFile "+renderValue(spec.IdentityFile))
 	}
 	if spec.IdentitiesOnly {
@@ -572,7 +729,7 @@ func renderHostLine(original string, patterns []string) string {
 }
 
 func splitInlineComment(line string) (string, string) {
-	inQuote := false
+	var quote rune
 	escaped := false
 	for i, r := range line {
 		if escaped {
@@ -580,22 +737,34 @@ func splitInlineComment(line string) (string, string) {
 			continue
 		}
 		switch {
-		case r == '\\' && inQuote:
+		case r == '\\' && quote != 0:
 			escaped = true
-		case r == '"':
-			inQuote = !inQuote
-		case r == '#' && !inQuote:
+		case r == '"' || r == '\'':
+			switch quote {
+			case 0:
+				quote = r
+			case r:
+				quote = 0
+			}
+		case r == '#' && quote == 0:
 			return strings.TrimRight(line[:i], " \t"), line[i:]
 		}
 	}
 	return strings.TrimRight(line, " \t"), ""
 }
 
+// renderValue quotes values containing whitespace, comment, or quote
+// characters. Double quotes with backslash escapes are the form modern
+// OpenSSH (argv_split, >= 8.7) parses for every such value — including bare
+// single quotes, which MUST be quoted: an unquoted apostrophe makes ssh
+// fatal with "invalid quotes" for every host in the file. Verified against
+// OpenSSH 10.2: `User "o'br\"ien"` and `IdentityFile "a\\b"` round-trip to
+// the intended values; bare `o'brien` terminates ssh.
 func renderValue(value string) string {
 	if value == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(value, " \t#\"\\") {
+	if !strings.ContainsAny(value, " \t#\"\\'") {
 		return value
 	}
 	value = strings.ReplaceAll(value, `\`, `\\`)
@@ -610,6 +779,15 @@ func isManagedOption(keyword string) bool {
 	default:
 		return false
 	}
+}
+
+func containsControlRune(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func containsPattern(patterns []string) bool {

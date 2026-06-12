@@ -66,6 +66,41 @@ func TestParseLineSupportsEqualsQuotesAndComments(t *testing.T) {
 	}
 }
 
+func TestSplitFieldsRecognizesSingleQuotes(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string
+		wantErr bool
+	}{
+		{name: "single-quoted value", raw: "User 'o brien'", want: []string{"User", "o brien"}},
+		{name: "double quote inside single quotes", raw: `User 'say"hi'`, want: []string{"User", `say"hi`}},
+		{name: "single quote inside double quotes", raw: `User "o'brien"`, want: []string{"User", "o'brien"}},
+		// Modern OpenSSH fatals on an unmatched single quote
+		// ("invalid quotes"); read parity must reject it too so the
+		// rendered-document safety net catches it.
+		{name: "bare apostrophe", raw: "User o'brien", wantErr: true},
+		{name: "unclosed single quote", raw: "User 'open", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fields, err := splitFields(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("splitFields(%q) = %#v, want error", tt.raw, fields)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("splitFields(%q) returned error: %v", tt.raw, err)
+			}
+			if strings.Join(fields, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Fatalf("splitFields(%q) = %#v, want %#v", tt.raw, fields, tt.want)
+			}
+		})
+	}
+}
+
 func assertBlock(t *testing.T, graph *Graph, pattern string, host string, user string, port string, identities []string, conditional bool) {
 	t.Helper()
 
