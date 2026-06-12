@@ -18,6 +18,8 @@ Users are expected to upgrade to the latest available minor version to receive s
 
 If you believe you have discovered a security vulnerability in ssherpa, please report it privately and do not disclose it publicly until the issue has been investigated and addressed.
 
+To report privately, use GitHub's private vulnerability reporting on the [0xbenc/ssherpa](https://github.com/0xbenc/ssherpa) repository: open the repository's **Security** tab and choose **Report a vulnerability** (or go directly to <https://github.com/0xbenc/ssherpa/security/advisories/new>).
+
 Security reports should include:
 
 - A description of the vulnerability

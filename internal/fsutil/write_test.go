@@ -44,6 +44,41 @@ func TestAtomicWriteFileCreatesBackupAndPreservesMode(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteFileBackupUsesEffectiveMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(path, []byte("old key\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+
+	result, err := AtomicWriteFile(path, []byte("new key\n"), WriteOptions{
+		Backup: true,
+		Mode:   0o600,
+	})
+	if err != nil {
+		t.Fatalf("AtomicWriteFile returned error: %v", err)
+	}
+	if result.BackupPath == "" {
+		t.Fatalf("BackupPath is empty")
+	}
+	assertFile(t, result.BackupPath, "old key\n")
+
+	stat, err := os.Stat(result.BackupPath)
+	if err != nil {
+		t.Fatalf("os.Stat returned error: %v", err)
+	}
+	if got := stat.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup mode = %#o, want 0600", got)
+	}
+
+	stat, err = os.Stat(path)
+	if err != nil {
+		t.Fatalf("os.Stat returned error: %v", err)
+	}
+	if got := stat.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %#o, want 0600", got)
+	}
+}
+
 func TestAtomicWriteFileDryRunDoesNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config")
 	if err := os.WriteFile(path, []byte("Host old\n"), 0o600); err != nil {

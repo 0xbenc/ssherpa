@@ -61,16 +61,16 @@ func AtomicWriteFile(path string, data []byte, opts WriteOptions) (WriteResult, 
 	mode := os.FileMode(DefaultFileMode)
 	if exists {
 		mode = stat.Mode().Perm()
-		if opts.Backup {
-			backup, err := createBackup(result.Path, old, mode, opts)
-			if err != nil {
-				return result, err
-			}
-			result.BackupPath = backup
-		}
 	}
 	if opts.Mode != 0 {
 		mode = opts.Mode.Perm()
+	}
+	if exists && opts.Backup {
+		backup, err := createBackup(result.Path, old, mode, opts)
+		if err != nil {
+			return result, err
+		}
+		result.BackupPath = backup
 	}
 
 	if err := writeTempRename(result.Path, data, mode); err != nil {
