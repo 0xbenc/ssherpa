@@ -20,14 +20,15 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
 
 ## Standouts
 
-- **Session map:** press `Ctrl-]` in a supervised session to see the active
-  route and nested lineage.
+- **Session map:** press `Ctrl-^` in a supervised session to see the active
+  route and nested lineage (rebindable with `--overlay-key`).
 - **File sending:** send or receive individual files over OpenSSH SFTP, with
   overwrite protection and picker-driven paths.
-- **Escape rope:** `Ctrl-]`, `X`, `X` disconnects every supervised layer below
-  you and returns to the outer shell.
+- **Escape rope:** `Ctrl-^`, `X`, `X` disconnects every supervised layer below
+  you and returns to the outer shell. Mash `Ctrl-^` three times for the
+  no-questions-asked panic rope.
 - **Session recording:** start, pause, and resume replayable output transcripts
-  from the `Ctrl-]` session map overlay. Browse recordings from the TUI or use
+  from the `Ctrl-^` session map overlay. Browse recordings from the TUI or use
   `ssherpa session log`, `grep`, `replay`, and `export`. Portable transcript
   bundles can be imported on another machine and are labeled as local, imported
   from this machine, imported from another machine, or unknown origin.

@@ -156,6 +156,7 @@ Connect flags:
 | `--latency-disconnect DURATION` | Disconnect after sustained unhealthy probes. Requires `--latency-warn`. |
 | `--composer-key KEY` | Change queued-input composer control key. Example: `ctrl-r`. |
 | `--no-composer` | Disable the queued-input composer. |
+| `--overlay-key KEY` | Change the session-map overlay (and escape rope) control key; default `ctrl-^`. |
 | `--no-record` | Disable overlay-controlled transcript recording for this supervised session. |
 | `--record-max-bytes BYTES` | Cap the transcript file size once recording is started. Accepts suffixes like `50MB` or `100MiB`; default `50MB`. |
 | `--no-kitty` | Disable Kitty SSH command detection. |
@@ -180,14 +181,22 @@ Supervised-session keys:
 
 | Key | Action |
 | --- | --- |
-| `Ctrl-]` | Open or close the local session-map overlay. |
-| `Ctrl-]`, `T` | Start transcript recording. Press `T` again in the overlay to pause or resume. |
-| `Ctrl-]`, `X`, `X` | Pull the escape rope after confirmation. |
-| `Ctrl-]` three times quickly | Panic escape rope, no confirmation. |
+| `Ctrl-^` | Open or close the local session-map overlay. |
+| `Ctrl-^`, `T` | Start transcript recording. Press `T` again in the overlay to pause or resume. |
+| `Ctrl-^`, `X`, `X` | Pull the escape rope after confirmation. |
+| `Ctrl-^` three times quickly | Panic escape rope, no confirmation. |
 | `Ctrl-G` | Open queued-input composer by default. |
 
+`Ctrl-^` is `Ctrl-Shift-6` on US layouts; most terminals also send the same
+byte for plain `Ctrl-6`. The key was chosen because almost nothing else uses
+it (mosh picked the same byte for its escape character for the same reason).
+If it collides with something you need — vim's alternate-file toggle, or mosh
+running inside a supervised session — rebind it with `--overlay-key KEY`, for
+example `--overlay-key 'ctrl-]'`. Versions before 1.8 used `Ctrl-]`, which
+conflicted with telnet's escape character and vim's jump-to-tag.
+
 Supervised sessions do not record immediately. Open the local session-map
-overlay with `Ctrl-]` and press `T` to start, pause, or resume visible terminal
+overlay with `Ctrl-^` and press `T` to start, pause, or resume visible terminal
 output recording. Recording writes to `STATE_DIR/sessions/SESSION_ID.cast` in an
 asciinema-v2-compatible JSONL format with `0600` permissions. Local input is not
 recorded. `--no-record` removes this opt-in recording path for the session.
@@ -747,8 +756,8 @@ metadata in the transcript viewer. It also includes a confirmed
 delete-all-local-data action, available from the Sessions menu and from the
 route map with `D`; this removes ssherpa state data but does not remove SSH
 config. Recording itself is started, paused, and resumed from the in-session
-`Ctrl-]` map overlay. Raw replay of imported recordings is treated as untrusted
-terminal output. During interactive raw replay, press `Ctrl-]` to pause playback
+`Ctrl-^` map overlay. Raw replay of imported recordings is treated as untrusted
+terminal output. During interactive raw replay, press `Ctrl-^` to pause playback
 and open local replay controls: `space` or `q` resumes, `r` restarts from the
 beginning, and `m` returns to the ssherpa menus. `Ctrl-C` also stops playback and
 returns to the menus.

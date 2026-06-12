@@ -83,6 +83,8 @@ type connectOptions struct {
 	SSHBinary      string
 	Watchdog       session.WatchdogOptions
 	Composer       session.ComposerOptions
+	OverlayKey     byte
+	OverlayKeyName string
 	Reconnect      session.ReconnectOptions
 	NoColor        bool
 	ThemeName      string
@@ -113,6 +115,8 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 			Hotkey:     flags.ComposerKey,
 			HotkeyName: flags.ComposerKeyName,
 		},
+		OverlayKey:     flags.OverlayKey,
+		OverlayKeyName: flags.OverlayKeyName,
 		NoColor:        flags.NoColor,
 		ThemeName:      flags.ThemeName,
 		ThemeFile:      flags.ThemeFile,
@@ -545,6 +549,24 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -750,6 +772,24 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -964,6 +1004,24 @@ func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -1848,6 +1906,9 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.ComposerKey != 0 {
 		args = append(args, "--composer-key", flags.ComposerKeyName)
+	}
+	if flags.OverlayKey != 0 {
+		args = append(args, "--overlay-key", flags.OverlayKeyName)
 	}
 	if flags.NoComposer {
 		args = append(args, "--no-composer")

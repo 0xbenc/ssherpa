@@ -30,8 +30,8 @@ import (
 
 const (
 	RunnerModeSupervised   = "supervised"
-	OverlayHotkey          = byte(0x1d)
-	OverlayHotkeyName      = "Ctrl-]"
+	OverlayHotkey          = byte(0x1e)
+	OverlayHotkeyName      = "Ctrl-^"
 	ComposerHotkey         = byte(0x07)
 	ComposerHotkeyName     = "Ctrl-G"
 	ComposerSendHotkey     = byte(0x07)
@@ -214,6 +214,25 @@ type InbandSendFunc func(InbandSendRequest) (InbandSendResult, error)
 type OverlayOptions struct {
 	Send    OverlayTransferFunc
 	Receive OverlayTransferFunc
+	// Key overrides the overlay hotkey byte. Zero means OverlayHotkey.
+	Key byte
+	// KeyName is the display label matching Key. Empty means
+	// OverlayHotkeyName.
+	KeyName string
+}
+
+func (o OverlayOptions) hotkey() byte {
+	if o.Key == 0 {
+		return OverlayHotkey
+	}
+	return o.Key
+}
+
+func (o OverlayOptions) hotkeyName() string {
+	if o.KeyName == "" {
+		return OverlayHotkeyName
+	}
+	return o.KeyName
 }
 
 type WatchdogOptions struct {
@@ -751,7 +770,7 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outp
 			switch {
 			case localInterrupts && buf[0] == 0x03 && startupInterruptible != nil && startupInterruptible.Load() && interruptLocal != nil:
 				interruptLocal()
-			case buf[0] == OverlayHotkey:
+			case buf[0] == overlay.hotkey():
 				showSessionOverlay(ptmxRef, stdin, output, tap, stateDir, currentID, overlayBase, overlay, theme, pullRope, recorder, suspendTerminal, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
 				if ptmx := ptmxRef.get(); ptmx != nil {
@@ -827,7 +846,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			continue
 		}
 
-		if key == OverlayHotkey {
+		if key == overlay.hotkey() {
 			if time.Since(lastTap) <= escapeRopePanicWindow {
 				taps++
 				lastTap = time.Now()
@@ -1138,7 +1157,7 @@ func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
 
 func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, overlay OverlayOptions, theme termstyle.Theme, recorder *sessionRecorder) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
-	actions := []string{fmt.Sprintf("%s/q/Esc close", OverlayHotkeyName), "r refresh"}
+	actions := []string{fmt.Sprintf("%s/q/Esc close", overlay.hotkeyName()), "r refresh"}
 	if recorder != nil {
 		actions = append(actions, recorder.HelpAction())
 	}
@@ -1148,7 +1167,7 @@ func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID 
 	if overlay.Receive != nil {
 		actions = append(actions, "v receive")
 	}
-	actions = append(actions, "X escape rope", fmt.Sprintf("%sx3 panic", OverlayHotkeyName), "local only")
+	actions = append(actions, "X escape rope", fmt.Sprintf("%sx3 panic", overlay.hotkeyName()), "local only")
 	help := strings.Join(actions, "   ")
 	lines := sessionOverlayLines(stateDir, currentID, theme, width, height, help)
 

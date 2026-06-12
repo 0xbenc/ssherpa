@@ -583,7 +583,7 @@ func transcriptActionItems(record state.SessionRecord) []ui.ManagementItem {
 	return append(items[:3], append([]ui.ManagementItem{remove}, items[3:]...)...)
 }
 
-const replayOverlayHotkey = byte(0x1d)
+const replayOverlayHotkey = byte(0x1e)
 
 type replayCommand int
 

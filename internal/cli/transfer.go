@@ -710,17 +710,20 @@ func showTransferComplete(stderr io.Writer, opts transferCompleteOptions) error 
 }
 
 func overlayTransferOptions(options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) session.OverlayOptions {
+	overlay := session.OverlayOptions{
+		Key:     options.OverlayKey,
+		KeyName: options.OverlayKeyName,
+	}
 	if metadata.TargetAlias == "" || metadata.Kind != "" {
-		return session.OverlayOptions{}
+		return overlay
 	}
-	return session.OverlayOptions{
-		Send: func(req session.OverlayTransferRequest) int {
-			return runOverlaySend(options, req, stdout, stderr)
-		},
-		Receive: func(req session.OverlayTransferRequest) int {
-			return runOverlayReceive(options, req, stdout, stderr)
-		},
+	overlay.Send = func(req session.OverlayTransferRequest) int {
+		return runOverlaySend(options, req, stdout, stderr)
 	}
+	overlay.Receive = func(req session.OverlayTransferRequest) int {
+		return runOverlayReceive(options, req, stdout, stderr)
+	}
+	return overlay
 }
 
 func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, stdout io.Writer, stderr io.Writer) int {

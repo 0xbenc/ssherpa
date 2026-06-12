@@ -65,6 +65,7 @@ Connect Flags:
   --composer-key KEY
                      Open local queued-input composer with KEY; default ctrl-g
   --no-composer      Disable local queued-input composer
+  --overlay-key KEY  Open session-map overlay with KEY; default ctrl-^
   --no-record        Disable output transcript recording for this supervised session
   --record-max-bytes BYTES
                      Cap transcript size; default 50MB
@@ -141,10 +142,11 @@ Phase 10:
   management are available. Supervised PTY sessions, session maps, and
   upgraded picker UX are available. The TUI defaults to the terminal
   palette, supports theme role overrides, includes a live theme editor,
-  and still honors --no-color. In supervised sessions, Ctrl-] opens
-  the local active-session map overlay and Ctrl-G opens the local input
-  composer. Opt-in sidecar latency warnings and explicit latency
-  disconnects are available with supervised sessions.
+  and still honors --no-color. In supervised sessions, Ctrl-^ opens
+  the local active-session map overlay (rebindable with --overlay-key)
+  and Ctrl-G opens the local input composer. Opt-in sidecar latency
+  warnings and explicit latency disconnects are available with
+  supervised sessions.
 `
 
 type BuildInfo struct {
@@ -236,6 +238,8 @@ type connectFlags struct {
 	ComposerKey       byte
 	ComposerKeyName   string
 	NoComposer        bool
+	OverlayKey        byte
+	OverlayKeyName    string
 	NoRecord          bool
 	RecordMaxBytes    int64
 	NoKitty           bool
@@ -556,6 +560,24 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -639,6 +661,22 @@ func validateComposerFlags(flags connectFlags, stderr io.Writer) bool {
 		fmt.Fprintln(stderr, "ssherpa: composer flags require supervised mode; remove --direct")
 		return false
 	}
+	if flags.Direct && flags.OverlayKey != 0 {
+		fmt.Fprintln(stderr, "ssherpa: --overlay-key requires supervised mode; remove --direct")
+		return false
+	}
+	overlayKey, overlayName := session.OverlayHotkey, session.OverlayHotkeyName
+	if flags.OverlayKey != 0 {
+		overlayKey, overlayName = flags.OverlayKey, flags.OverlayKeyName
+	}
+	composerKey, composerName := session.ComposerHotkey, session.ComposerHotkeyName
+	if flags.ComposerKey != 0 {
+		composerKey, composerName = flags.ComposerKey, flags.ComposerKeyName
+	}
+	if !flags.NoComposer && overlayKey == composerKey {
+		fmt.Fprintf(stderr, "ssherpa: overlay key %s conflicts with composer key %s; change one of them\n", overlayName, composerName)
+		return false
+	}
 	return true
 }
 
@@ -698,7 +736,7 @@ func parseControlKey(value string, stderr io.Writer, flag string) (byte, string,
 		key = normalized[0] - 'a' + 1
 		label = "Ctrl-" + strings.ToUpper(normalized)
 	}
-	if key == 0x00 || key == 0x03 || key == 0x04 || key == 0x0d || key == 0x0a || key == 0x1b || key == 0x7f || key == session.OverlayHotkey {
+	if key == 0x00 || key == 0x03 || key == 0x04 || key == 0x0d || key == 0x0a || key == 0x1b || key == 0x7f {
 		fmt.Fprintf(stderr, "ssherpa: %s cannot use reserved key %s\n", flag, label)
 		return 0, "", false
 	}
@@ -827,6 +865,9 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		scope = append(scope, "composer=off")
 	} else if flags.ComposerKeyName != "" {
 		scope = append(scope, "composer="+flags.ComposerKeyName)
+	}
+	if flags.OverlayKeyName != "" {
+		scope = append(scope, "overlay="+flags.OverlayKeyName)
 	}
 	if flags.NoRecord {
 		scope = append(scope, "recording=off")

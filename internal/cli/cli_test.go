@@ -916,9 +916,24 @@ Host prod
 			want: "composer flags require supervised mode",
 		},
 		{
-			name: "reserved overlay key",
-			args: []string{"--select", "prod", "--config", config, "--composer-key", "ctrl-]"},
-			want: "reserved key Ctrl-]",
+			name: "composer key conflicts with default overlay key",
+			args: []string{"--select", "prod", "--config", config, "--composer-key", "ctrl-^"},
+			want: "overlay key Ctrl-^ conflicts with composer key Ctrl-^",
+		},
+		{
+			name: "overlay key conflicts with default composer key",
+			args: []string{"--select", "prod", "--config", config, "--overlay-key", "ctrl-g"},
+			want: "overlay key Ctrl-G conflicts with composer key Ctrl-G",
+		},
+		{
+			name: "reserved key",
+			args: []string{"--select", "prod", "--config", config, "--composer-key", "ctrl-c"},
+			want: "reserved key Ctrl-C",
+		},
+		{
+			name: "direct mode cannot configure overlay key",
+			args: []string{"--direct", "--select", "prod", "--config", config, "--overlay-key", "ctrl-]"},
+			want: "--overlay-key requires supervised mode",
 		},
 		{
 			name: "invalid key",

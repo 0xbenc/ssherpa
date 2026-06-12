@@ -699,6 +699,56 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 }
 
+func TestRunSupervisedCustomOverlayKeyOpensOverlayAndFreesDefault(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	// With the overlay rebound to Ctrl-] (0x1d), the default Ctrl-^ (0x1e)
+	// must pass through to the remote and 0x1d must open the overlay.
+	input := []byte{'a', OverlayHotkey, byte(0x1d), 'q', 'b'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=3 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+			Overlay:  OverlayOptions{Key: 0x1d, KeyName: "Ctrl-]"},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "a"+string(OverlayHotkey)+"b" {
+		t.Fatalf("remote input = %q, want default hotkey to pass through", string(got))
+	}
+	if !strings.Contains(stdout.String(), "ssherpa session map") {
+		t.Fatalf("stdout = %q, want local overlay", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Ctrl-]/q/Esc close") {
+		t.Fatalf("stdout = %q, want overlay help to show custom key name", stdout.String())
+	}
+}
+
 func TestRunSupervisedOverlaySendActionDoesNotReachRemote(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
