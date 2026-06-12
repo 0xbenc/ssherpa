@@ -33,7 +33,9 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   bundles can be imported on another machine and are labeled as local, imported
   from this machine, imported from another machine, or unknown origin.
 - **Presets:** save reusable local port-forward and SOCKS proxy entries, launch
-  them later, and stop tracked background sessions by name.
+  them later, and stop tracked background sessions by name. Tunnels reconnect
+  with backoff when ssh exits; pair with `ServerAliveInterval` in your ssh
+  config so dead links exit instead of hanging (see the CLI reference).
 - **Full Theming:** adjust the colors to your liking and save presets.
 
 ## Install

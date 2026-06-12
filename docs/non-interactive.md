@@ -435,6 +435,22 @@ ssherpa forward --select pgbox --local 127.0.0.1:5433 --remote db.internal:5432 
 ssherpa forward --select pg --background --reconnect-max 10
 ```
 
+**Reconnect reacts to ssh exiting — not to a silently dead link.** If the
+connection dies without the ssh process noticing (NAT mapping timeout,
+laptop sleep/resume, network change), nothing triggers a reconnect because
+ssherpa does not inject keepalives or override your OpenSSH settings. To
+make ssh itself detect dead links and exit (which then triggers ssherpa's
+reconnect), set keepalives in your `~/.ssh/config` for the relevant hosts:
+
+```
+Host pgbox
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+```
+
+For interactive sessions, `--latency-warn` / `--latency-disconnect` provide
+an opt-in sidecar health probe with the same goal.
+
 ### Management
 
 ```sh
