@@ -336,8 +336,9 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			record.SSHArgv = append([]string(nil), command.Argv...)
 			record.ControlPath = controlPath
 			destination := metadata.TargetAlias
+			sshBinary := command.Argv[0]
 			defer func() {
-				exitControlMaster(controlPath, destination)
+				exitControlMaster(sshBinary, env, controlPath, destination)
 				_ = os.Remove(controlPath)
 			}()
 		}
@@ -833,10 +834,11 @@ const controlMasterExitTimeout = 2 * time.Second
 // ControlPersist window (10m), during which it keeps holding any
 // forwarded ports. Best-effort: a dead or never-started master is the
 // common, fine case.
-func exitControlMaster(controlPath string, destination string) {
+func exitControlMaster(sshBinary string, env []string, controlPath string, destination string) {
+	sshBinary = strings.TrimSpace(sshBinary)
 	controlPath = strings.TrimSpace(controlPath)
 	destination = strings.TrimSpace(destination)
-	if controlPath == "" || destination == "" {
+	if sshBinary == "" || controlPath == "" || destination == "" {
 		return
 	}
 	if _, err := os.Stat(controlPath); err != nil {
@@ -844,7 +846,13 @@ func exitControlMaster(controlPath string, destination string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), controlMasterExitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", "-O", "exit", "-o", "ControlPath="+controlPath, destination)
+	// Use the same ssh binary and environment that created the master:
+	// a custom --ssh-binary/SSHERPA_SSH_BINARY may not be on PATH (and a
+	// bare "ssh" might be absent or a different build), in which case
+	// `-O exit` would silently miss the real master and leave it holding
+	// forwarded ports for the full ControlPersist window.
+	cmd := exec.CommandContext(ctx, sshBinary, "-O", "exit", "-o", "ControlPath="+controlPath, destination)
+	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

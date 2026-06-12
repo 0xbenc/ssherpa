@@ -1763,7 +1763,7 @@ exit 0
 			Stdin:    stdin,
 			Stdout:   &stdout,
 			Stderr:   &stderrBuf,
-			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "SSHERPA_TEST_CM_MARKER=" + marker},
 			Now:      fixedClock(),
 		},
 	)
@@ -1789,6 +1789,65 @@ exit 0
 	}
 	if _, err := os.Stat(controlPath); !os.IsNotExist(err) {
 		t.Fatalf("control socket stat err = %v, want removed", err)
+	}
+}
+
+func TestRunSupervisedControlMasterTeardownUsesResolvedBinary(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	// The custom ssh binary is a full path NOT on PATH, and its basename
+	// must be "ssh" so WithControlMaster injects the multiplexing options.
+	// A hardcoded bare "ssh" teardown could not find it.
+	binDir := t.TempDir()
+	customSSH := filepath.Join(binDir, "ssh")
+	marker := filepath.Join(t.TempDir(), "control-exit-args")
+	script := `#!/bin/sh
+if [ "$1" = "-O" ]; then
+  printf '%s\n' "$*" > "$SSHERPA_TEST_CM_MARKER"
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+    ControlPath=*) : > "${arg#ControlPath=}" ;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(customSSH, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+	t.Setenv("SSHERPA_TEST_CM_MARKER", marker)
+	// Deliberately do NOT add binDir to PATH: a bare "ssh" must not
+	// resolve to this binary, so only a teardown using the resolved
+	// full path can reach the master.
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+	var stdout, stderrBuf bytes.Buffer
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{customSSH, "prod"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderrBuf,
+			Env:      []string{"PATH=/nonexistent", "SSHERPA_TEST_CM_MARKER=" + marker},
+			Now:      fixedClock(),
+		},
+	)
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderrBuf.String())
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("ssh -O exit was not invoked via the resolved binary: %v", err)
+	}
+	if !strings.Contains(string(data), "-O exit") {
+		t.Fatalf("ssh -O exit args = %q", strings.TrimSpace(string(data)))
 	}
 }
 

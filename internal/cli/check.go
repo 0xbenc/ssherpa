@@ -18,6 +18,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
 type checkFlags struct {
@@ -576,8 +577,12 @@ func printCheckTable(stdout io.Writer, results []checkResult) {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "KIND\tNAME\tSTATUS\tSSH_MS\tICMP\tICMP_MS\tLOCAL_BIND\tMESSAGE")
 	for _, r := range results {
+		// Name comes from the (possibly synced) ssh config and Message
+		// carries the remote host's ssh stderr tail — both are untrusted
+		// at this render boundary, so strip terminal escapes and control
+		// bytes before they reach the operator's terminal.
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
-			r.Kind, r.Name, r.Status, r.SSHRttMillis, r.ICMPStatus, r.ICMPRttMillis, r.LocalBindStatus, r.Message)
+			r.Kind, termstyle.Sanitize(r.Name), r.Status, r.SSHRttMillis, r.ICMPStatus, r.ICMPRttMillis, r.LocalBindStatus, termstyle.Sanitize(r.Message))
 	}
 	_ = tw.Flush()
 }
