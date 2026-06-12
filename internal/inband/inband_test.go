@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,6 +105,34 @@ func TestNewSendPlanRejectsOversizePayload(t *testing.T) {
 	}
 }
 
+// TestNewSendPlanRejectsSentinelBearingPaths pins that no plan may
+// embed the sentinel stem in a path: the receiver and commit commands
+// quote paths verbatim, so /tmp/SSHERPA_C_READY.bin would put a literal
+// sentinel back into the typed command and its PTY echo would satisfy
+// the driver's matcher — the exact hole the quote-split closed.
+func TestNewSendPlanRejectsSentinelBearingPaths(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	tests := []struct {
+		name string
+		opts SendOptions
+	}{
+		{"destination", SendOptions{Destination: "/tmp/SSHERPA_C_READY.bin", Size: 5, SHA256: hash}},
+		{"temp path", SendOptions{Destination: "/tmp/out.bin", TempPath: "/tmp/SSHERPA_C_DONE.tmp", Size: 5, SHA256: hash}},
+		{"nonce-derived temp path", SendOptions{Destination: "/tmp/out.bin", Nonce: "SSHERPA_C_PROBE", Size: 5, SHA256: hash}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewSendPlan(tt.opts); err == nil || !strings.Contains(err.Error(), "sentinel") {
+				t.Fatalf("NewSendPlan error = %v, want sentinel rejection", err)
+			}
+		})
+	}
+
+	if _, _, err := NewSendPlanFromReader("/tmp/SSHERPA_C_READY.bin", "n1", strings.NewReader("hello"), 0); err == nil || !strings.Contains(err.Error(), "sentinel") {
+		t.Fatalf("NewSendPlanFromReader error = %v, want sentinel rejection", err)
+	}
+}
+
 func TestParseCompletion(t *testing.T) {
 	hash := strings.Repeat("b", 64)
 	ok, err := ParseCompletion("noise\nSSHERPA_C_DONE 0 "+hash+"\n", hash)
@@ -145,7 +174,7 @@ func TestParseCompletionFailureSentinels(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
 			}
-			if strings.Contains(err.Error(), "completion sentinel not found") {
+			if errors.Is(err, ErrNoCompletion) {
 				t.Fatalf("error %v would not fail fast in the session driver", err)
 			}
 		})
@@ -165,8 +194,8 @@ func TestParseCompletionIgnoresPartialAndEchoedLines(t *testing.T) {
 	}
 
 	echoed := plan.ProbeCommand + "\r\n" + plan.ReceiverCommand + "\r\n"
-	if ok, err := ParseCompletion(echoed, hash); ok || err == nil || !strings.Contains(err.Error(), "completion sentinel not found") {
-		t.Fatalf("echoed commands returned ok=%v err=%v, want not-found", ok, err)
+	if ok, err := ParseCompletion(echoed, hash); ok || !errors.Is(err, ErrNoCompletion) {
+		t.Fatalf("echoed commands returned ok=%v err=%v, want ErrNoCompletion", ok, err)
 	}
 
 	partials := []string{
@@ -174,8 +203,8 @@ func TestParseCompletionIgnoresPartialAndEchoedLines(t *testing.T) {
 		FailPrefix + " head",
 	}
 	for _, partial := range partials {
-		if ok, err := ParseCompletion("noise\n"+partial, hash); ok || err == nil || !strings.Contains(err.Error(), "completion sentinel not found") {
-			t.Fatalf("partial line %q returned ok=%v err=%v, want not-found", partial, ok, err)
+		if ok, err := ParseCompletion("noise\n"+partial, hash); ok || !errors.Is(err, ErrNoCompletion) {
+			t.Fatalf("partial line %q returned ok=%v err=%v, want ErrNoCompletion", partial, ok, err)
 		}
 	}
 }

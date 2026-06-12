@@ -1176,6 +1176,14 @@ func runOverlayTransfer(fn OverlayTransferFunc, req OverlayTransferRequest, susp
 	})
 }
 
+// In-band driver wait windows. Package-level so the deterministic
+// driver tests can shrink them; production code never overrides them.
+var (
+	inbandProbeTimeout    = 5 * time.Second
+	inbandReadyTimeout    = 5 * time.Second
+	inbandCompleteTimeout = 30 * time.Second
+)
+
 func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 	return func(req InbandSendRequest) (InbandSendResult, error) {
 		localPath := strings.TrimSpace(req.LocalPath)
@@ -1219,7 +1227,7 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 		if err := writeLine(plan.ProbeCommand); err != nil {
 			return InbandSendResult{}, fmt.Errorf("write capability probe: %w", err)
 		}
-		probe, err := waitForInbandOutput(output, 5*time.Second, func(text string) (bool, error) {
+		probe, err := waitForInbandOutput(output, inbandProbeTimeout, func(text string) (bool, error) {
 			switch {
 			case strings.Contains(text, inband.ProbePrefix+" ok"):
 				return true, nil
@@ -1239,7 +1247,7 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 		if err := writeLine(plan.ReceiverCommand); err != nil {
 			return InbandSendResult{}, fmt.Errorf("write receiver command: %w", err)
 		}
-		ready, err := waitForInbandOutput(output, 5*time.Second, func(text string) (bool, error) {
+		ready, err := waitForInbandOutput(output, inbandReadyTimeout, func(text string) (bool, error) {
 			return strings.Contains(text, inband.ReadyPrefix), nil
 		})
 		if err != nil {
@@ -1269,12 +1277,12 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 			_ = writeLine(plan.ResetCommand)
 			return InbandSendResult{}, fmt.Errorf("flush payload: %w", err)
 		}
-		done, err := waitForInbandOutput(output, 30*time.Second, func(text string) (bool, error) {
+		done, err := waitForInbandOutput(output, inbandCompleteTimeout, func(text string) (bool, error) {
 			ok, parseErr := inband.ParseCompletion(text, plan.SHA256)
 			if parseErr == nil && ok {
 				return true, nil
 			}
-			if parseErr != nil && !strings.Contains(parseErr.Error(), "completion sentinel not found") {
+			if parseErr != nil && !errors.Is(parseErr, inband.ErrNoCompletion) {
 				return false, parseErr
 			}
 			return false, nil
@@ -2049,11 +2057,21 @@ type sessionRecorderOptions struct {
 	Now      func() time.Time
 }
 
+// transcriptWriter is the subset of *transcript.Writer the recorder
+// drives; tests substitute a close-failing implementation to pin the
+// persist-before-propagate contract of sessionRecorder.Close.
+type transcriptWriter interface {
+	WriteOutput(at time.Time, data []byte)
+	WriteMarker(at time.Time, message string)
+	Close(ended time.Time) (state.TranscriptSpec, error)
+	StopReason() string
+}
+
 type sessionRecorder struct {
 	mu       sync.Mutex
 	disabled bool
 	active   bool
-	writer   *transcript.Writer
+	writer   transcriptWriter
 	stateDir string
 	command  sshcmd.Command
 	env      []string
@@ -2155,14 +2173,15 @@ func (r *sessionRecorder) Close(ended time.Time) error {
 		return nil
 	}
 	spec, err := writer.Close(ended)
-	if err != nil {
-		return err
-	}
 	// Persist why recording stopped early (size limit, write error) so
-	// the record explains a transcript that ends before the session did.
+	// the record explains a transcript that ends before the session
+	// did — and persist before propagating any close error: a failing
+	// disk is exactly the scenario in which stop_reason and ended_at
+	// must not be lost (Close still returns a usable snapshot alongside
+	// its error).
 	spec.StopReason = writer.StopReason()
 	r.updateRecord(spec)
-	return nil
+	return err
 }
 
 func (r *sessionRecorder) startLocked() (string, error) {

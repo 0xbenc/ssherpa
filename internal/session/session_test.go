@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -2052,6 +2053,72 @@ func sessionEventTypes(record state.SessionRecord) []string {
 		types = append(types, event.Type)
 	}
 	return types
+}
+
+// failingTranscriptWriter is a transcriptWriter whose Close fails the
+// way a dying disk would, after having recorded a stop reason.
+type failingTranscriptWriter struct {
+	spec state.TranscriptSpec
+	err  error
+}
+
+func (w *failingTranscriptWriter) WriteOutput(time.Time, []byte) {}
+func (w *failingTranscriptWriter) WriteMarker(time.Time, string) {}
+func (w *failingTranscriptWriter) StopReason() string            { return "write error: disk full" }
+func (w *failingTranscriptWriter) Close(ended time.Time) (state.TranscriptSpec, error) {
+	spec := w.spec
+	endedUTC := ended.UTC()
+	spec.EndedAt = &endedUTC
+	return spec, w.err
+}
+
+// TestSessionRecorderClosePersistsRecordWhenWriterCloseFails pins the
+// persist-before-propagate contract of sessionRecorder.Close: a close
+// error (failing disk) is exactly the scenario in which stop_reason and
+// ended_at must still reach the session record, and the error must
+// still surface to the caller.
+func TestSessionRecorderClosePersistsRecordWhenWriterCloseFails(t *testing.T) {
+	stateDir := t.TempDir()
+	record := state.SessionRecord{ID: "rec-close", TargetAlias: "prod", StartedAt: time.Now().UTC()}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	closeErr := errors.New("close transcript: disk full")
+	recorder := &sessionRecorder{
+		stateDir: stateDir,
+		record:   &record,
+		recordMu: &sync.Mutex{},
+		now:      time.Now,
+		active:   true,
+		writer: &failingTranscriptWriter{
+			spec: state.TranscriptSpec{
+				Path:      transcript.Path(stateDir, record.ID),
+				Format:    transcript.FormatAsciicast,
+				StartedAt: record.StartedAt,
+			},
+			err: closeErr,
+		},
+	}
+	ended := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
+
+	err := recorder.Close(ended)
+
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Close error = %v, want propagated %v", err, closeErr)
+	}
+	stored, readErr := state.ReadRecord(stateDir, record.ID)
+	if readErr != nil {
+		t.Fatalf("read record: %v", readErr)
+	}
+	if stored.Transcript == nil {
+		t.Fatalf("record.Transcript is nil after failing close, want persisted spec")
+	}
+	if stored.Transcript.StopReason != "write error: disk full" {
+		t.Fatalf("StopReason = %q, want writer's stop reason persisted", stored.Transcript.StopReason)
+	}
+	if stored.Transcript.EndedAt == nil || !stored.Transcript.EndedAt.Equal(ended) {
+		t.Fatalf("EndedAt = %v, want %v persisted despite the close error", stored.Transcript.EndedAt, ended)
+	}
 }
 
 func transcriptOutput(recording transcript.Recording) string {

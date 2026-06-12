@@ -215,7 +215,11 @@ func TestSessionSendEnvOptionAcceptedBySSH(t *testing.T) {
 	if err != nil {
 		t.Skip("ssh not available in PATH")
 	}
-	out, err := exec.Command(sshPath, "-G", "-o", SessionSendEnvOption(), "localhost").CombinedOutput()
+	// -F /dev/null isolates the probe from the developer's real ssh
+	// config: a Match exec block there would run arbitrary commands as
+	// a test side effect, and config parse errors would fail the test
+	// for reasons unrelated to the option under test.
+	out, err := exec.Command(sshPath, "-G", "-F", "/dev/null", "-o", SessionSendEnvOption(), "localhost").CombinedOutput()
 	if err != nil {
 		t.Fatalf("ssh -G returned error: %v\n%s", err, out)
 	}

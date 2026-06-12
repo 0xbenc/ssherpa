@@ -167,8 +167,86 @@ func TestReceiveRenamesTempIntoPlaceOnSuccess(t *testing.T) {
 	if transfer.LocalPath != final {
 		t.Fatalf("transfer.LocalPath = %q, want final path %q", transfer.LocalPath, final)
 	}
+	assertFileMode(t, final, 0o600)
 	assertNoPartFiles(t, destDir)
 	assertContains(t, readFile(t, batchLog), "get /srv/app/payload.txt "+filepath.Join(destDir, ".payload.txt.ssherpa."))
+}
+
+// TestReceiveOverwritePreservesDestinationMode pins that the temp+rename
+// dance does not silently tighten a confirmed overwrite to os.CreateTemp's
+// 0600: the renamed file must carry the destination's prior mode.
+func TestReceiveOverwritePreservesDestinationMode(t *testing.T) {
+	fakeSFTP, _ := writeDirAwareFakeSFTP(t, 0)
+	destDir := t.TempDir()
+	final := filepath.Join(destDir, "payload.txt")
+	if err := os.WriteFile(final, []byte("original"), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+	if err := os.Chmod(final, 0o644); err != nil {
+		t.Fatalf("chmod original: %v", err)
+	}
+	flags := transferFlags{
+		SFTPBinary: fakeSFTP,
+		LocalPath:  final,
+		RemotePath: "/srv/app/payload.txt",
+		Force:      true,
+	}
+	var stdout, stderr bytes.Buffer
+
+	code, _, _ := executeSFTPTransfer(sshcmd.SFTPTransferReceive, flags, hostlist.Alias{Name: "prod"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("code = %d, want success; stderr=%q", code, stderr.String())
+	}
+	if got := readFile(t, final); got != "partial" {
+		t.Fatalf("final = %q, want downloaded content", got)
+	}
+	assertFileMode(t, final, 0o644)
+}
+
+// TestReceiveFreshDownloadGetsUmaskDefaultMode pins that a download to a
+// path that did not exist before ends up with the same permissions a
+// plain create would have produced (0666 minus the umask), not the 0600
+// that os.CreateTemp gave the staging file.
+func TestReceiveFreshDownloadGetsUmaskDefaultMode(t *testing.T) {
+	fakeSFTP, _ := writeDirAwareFakeSFTP(t, 0)
+	destDir := t.TempDir()
+	final := filepath.Join(destDir, "fresh.txt")
+	flags := transferFlags{
+		SFTPBinary: fakeSFTP,
+		LocalPath:  final,
+		RemotePath: "/srv/app/payload.txt",
+		Force:      true,
+	}
+	var stdout, stderr bytes.Buffer
+
+	code, _, _ := executeSFTPTransfer(sshcmd.SFTPTransferReceive, flags, hostlist.Alias{Name: "prod"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("code = %d, want success; stderr=%q", code, stderr.String())
+	}
+	probePath := filepath.Join(t.TempDir(), "umask-probe")
+	probe, err := os.OpenFile(probePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	if err != nil {
+		t.Fatalf("create umask probe: %v", err)
+	}
+	probeInfo, err := probe.Stat()
+	_ = probe.Close()
+	if err != nil {
+		t.Fatalf("stat umask probe: %v", err)
+	}
+	assertFileMode(t, final, probeInfo.Mode().Perm())
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %#o, want %#o", path, got, want)
+	}
 }
 
 // TestExecuteSFTPTransferRejectsControlCharacterPaths pins that CR/LF

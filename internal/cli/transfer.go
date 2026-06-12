@@ -263,12 +263,51 @@ func runSFTPReceive(cmd sshcmd.Command, transfer *sshcmd.SFTPTransfer, stdout io
 		_ = os.Remove(tempPath)
 		return code
 	}
+	// The rename replaces the destination inode outright: a hardlinked
+	// or symlinked destination is detached rather than written through.
+	// That is intended hardening — a link planted at the destination
+	// cannot redirect the download elsewhere. Because os.CreateTemp
+	// leaves the temp 0600, carry the destination's prior mode across
+	// the overwrite (the user confirmed replacing that file, not
+	// tightening it) or apply the umask-derived default for a fresh
+	// download; on probe failure the temp's restrictive 0600 stands.
+	if mode, err := downloadFileMode(finalPath, tempPath); err == nil {
+		_ = os.Chmod(tempPath, mode)
+	}
 	if err := os.Rename(tempPath, finalPath); err != nil {
 		_ = os.Remove(tempPath)
 		fmt.Fprintf(stderr, "ssherpa: move downloaded file into place: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// downloadFileMode returns the permissions the renamed download should
+// carry: the existing destination's mode when overwriting, otherwise
+// the 0o666-minus-umask default a plain create would have produced. The
+// umask is probed by creating a sibling file rather than via
+// syscall.Umask, which would race other threads by mutating
+// process-global state.
+func downloadFileMode(finalPath string, tempPath string) (os.FileMode, error) {
+	info, err := os.Stat(finalPath)
+	if err == nil {
+		return info.Mode().Perm(), nil
+	}
+	if !os.IsNotExist(err) {
+		return 0, err
+	}
+	probePath := tempPath + ".mode"
+	probe, err := os.OpenFile(probePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	if err != nil {
+		return 0, err
+	}
+	probeInfo, err := probe.Stat()
+	_ = probe.Close()
+	_ = os.Remove(probePath)
+	if err != nil {
+		return 0, err
+	}
+	return probeInfo.Mode().Perm(), nil
 }
 
 func resolveTransferAlias(flags transferFlags, inventory hostlist.Inventory, stderr io.Writer) (hostlist.Alias, bool, int) {

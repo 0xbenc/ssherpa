@@ -15,7 +15,19 @@ const (
 	FailPrefix      = "SSHERPA_C_FAIL"
 	ProbePrefix     = "SSHERPA_C_PROBE"
 	ReadyPrefix     = "SSHERPA_C_READY"
+	// sentinelStem is the shared prefix of every sentinel above. Paths
+	// may never contain it: the receiver and commit one-liners embed the
+	// destination and temp path verbatim, so a path like
+	// /tmp/SSHERPA_C_READY.bin would put a literal sentinel back into
+	// the typed command and reopen the echo-match hole the quote-split
+	// closed.
+	sentinelStem = "SSHERPA_C_"
 )
+
+// ErrNoCompletion reports that the scanned output holds no complete
+// DONE or FAIL sentinel line yet. The session driver treats it as
+// "still streaming" via errors.Is and keeps waiting.
+var ErrNoCompletion = errors.New("completion sentinel not found")
 
 type SendOptions struct {
 	Destination string
@@ -43,6 +55,9 @@ func NewSendPlan(opts SendOptions) (SendPlan, error) {
 	if dest == "" {
 		return SendPlan{}, errors.New("destination is required")
 	}
+	if strings.Contains(dest, sentinelStem) {
+		return SendPlan{}, fmt.Errorf("destination must not contain the transfer sentinel marker %q", sentinelStem)
+	}
 	if opts.Size < 0 {
 		return SendPlan{}, errors.New("size cannot be negative")
 	}
@@ -64,6 +79,12 @@ func NewSendPlan(opts SendOptions) (SendPlan, error) {
 			nonce = "transfer"
 		}
 		temp = dest + ".ssherpa." + nonce + ".tmp"
+	}
+	// Checked after derivation so explicit TempPath and nonce-derived
+	// paths are covered alike (sanitizeToken keeps "_" and would let a
+	// sentinel-bearing nonce through).
+	if strings.Contains(temp, sentinelStem) {
+		return SendPlan{}, fmt.Errorf("temp path must not contain the transfer sentinel marker %q", sentinelStem)
 	}
 	b64Len := Base64Length(opts.Size)
 	return SendPlan{
@@ -159,7 +180,7 @@ func ParseCompletion(output string, expectedSHA256 string) (bool, error) {
 			return true, nil
 		}
 	}
-	return false, errors.New("completion sentinel not found")
+	return false, ErrNoCompletion
 }
 
 // failureError maps a FailPrefix reason code emitted by the receiver or
