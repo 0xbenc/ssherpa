@@ -30,8 +30,8 @@ import (
 
 const (
 	RunnerModeSupervised   = "supervised"
-	OverlayHotkey          = byte(0x1d)
-	OverlayHotkeyName      = "Ctrl-]"
+	OverlayHotkey          = byte(0x1e)
+	OverlayHotkeyName      = "Ctrl-^"
 	ComposerHotkey         = byte(0x07)
 	ComposerHotkeyName     = "Ctrl-G"
 	ComposerSendHotkey     = byte(0x07)
@@ -214,6 +214,25 @@ type InbandSendFunc func(InbandSendRequest) (InbandSendResult, error)
 type OverlayOptions struct {
 	Send    OverlayTransferFunc
 	Receive OverlayTransferFunc
+	// Key overrides the overlay hotkey byte. Zero means OverlayHotkey.
+	Key byte
+	// KeyName is the display label matching Key. Empty means
+	// OverlayHotkeyName.
+	KeyName string
+}
+
+func (o OverlayOptions) hotkey() byte {
+	if o.Key == 0 {
+		return OverlayHotkey
+	}
+	return o.Key
+}
+
+func (o OverlayOptions) hotkeyName() string {
+	if o.KeyName == "" {
+		return OverlayHotkeyName
+	}
+	return o.KeyName
 }
 
 type WatchdogOptions struct {
@@ -276,7 +295,38 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		origin := state.RecordingOriginForIdentity(identity, opts.SSHerpaVersion)
 		record.RecordedBy = &origin
 	}
-	if controlPath, ok, err := prepareControlMaster(stateDir, record.ID, metadata); err != nil {
+
+	guard := newTerminalGuard()
+	var recordMu sync.Mutex
+	// A panic in the supervisor's own goroutine must never leave the
+	// user's terminal in raw mode or strand the session record open.
+	// Restore + finalize, then re-panic so the bug stays loudly
+	// visible. TryLock: if the panic escaped a recordMu-held section,
+	// taking the lock again would deadlock the unwind.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		guard.restore()
+		if recordMu.TryLock() {
+			endedAt := now().UTC()
+			record.DisconnectReason = panicDisconnectReason
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    endedAt,
+				Type:    panicDisconnectReason,
+				Message: fmt.Sprintf("supervisor panicked: %v", r),
+			})
+			if record.EndedAt == nil {
+				record.EndedAt = &endedAt
+			}
+			_ = state.WriteRecord(stateDir, record)
+			recordMu.Unlock()
+		}
+		panic(r)
+	}()
+
+	if controlPath, ok, err := prepareControlMaster(stateDir, record.ID, metadata, env); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: prepare SSH control socket: %v\n", err)
 		return 1
 	} else if ok {
@@ -285,11 +335,15 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			command = controlled
 			record.SSHArgv = append([]string(nil), command.Argv...)
 			record.ControlPath = controlPath
-			defer func() { _ = os.Remove(controlPath) }()
+			destination := metadata.TargetAlias
+			sshBinary := command.Argv[0]
+			defer func() {
+				exitControlMaster(sshBinary, env, controlPath, destination)
+				_ = os.Remove(controlPath)
+			}()
 		}
 	}
 	overlayBase := overlayTransferRequestFromRecord("", stateDir, record)
-	var recordMu sync.Mutex
 	recorder := newSessionRecorder(sessionRecorderOptions{
 		Disabled: opts.NoRecord,
 		StateDir: stateDir,
@@ -308,8 +362,11 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 
 	// Detached mode has no PTY consumer — skip raw mode entirely.
 	// makeRawIfTerminal handles a non-tty stdin gracefully too, but
-	// explicitly skipping makes the daemon's intent obvious.
-	restoreTerminal := func() {}
+	// explicitly skipping makes the daemon's intent obvious. The guard
+	// owns the restore function: overlay transfers re-arm it from the
+	// input goroutine while the supervisor's defer (and the panic
+	// handlers) read it, so it must be mutex-protected, not a bare
+	// closure variable.
 	suspendTerminal := func(fn func()) {
 		fn()
 	}
@@ -321,17 +378,17 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
 			return 1
 		}
-		restoreTerminal = restore
-		defer func() { restoreTerminal() }()
+		guard.arm(restore)
+		defer guard.restore()
 		suspendTerminal = func(fn func()) {
-			restoreTerminal()
+			guard.restore()
 			defer func() {
 				restore, err := makeRawIfTerminal(stdin)
 				if err != nil {
 					fmt.Fprintf(stderr, "ssherpa: restore raw terminal mode: %v\n", err)
 					return
 				}
-				restoreTerminal = restore
+				guard.arm(restore)
 			}()
 			fn()
 		}
@@ -362,15 +419,15 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			return
 		}
 		close(ropePulledCh)
-		recordMu.Lock()
-		record.DisconnectReason = EscapeRopeReason
-		record.Events = append(record.Events, state.SessionEvent{
-			Time:    now().UTC(),
-			Type:    EscapeRopeReason,
-			Message: "escape rope pulled; disconnecting all downstream sessions",
+		withLock(&recordMu, func() {
+			record.DisconnectReason = EscapeRopeReason
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    EscapeRopeReason,
+				Message: "escape rope pulled; disconnecting all downstream sessions",
+			})
+			_ = state.WriteRecord(stateDir, record)
 		})
-		_ = state.WriteRecord(stateDir, record)
-		recordMu.Unlock()
 		proc := procRefShared.get()
 		if proc == nil {
 			// Mid-backoff: no live process. The retry loop wakes on
@@ -399,15 +456,15 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			return
 		}
 		close(interruptedCh)
-		recordMu.Lock()
-		record.DisconnectReason = InterruptReason
-		record.Events = append(record.Events, state.SessionEvent{
-			Time:    now().UTC(),
-			Type:    InterruptReason,
-			Message: "connection attempt interrupted locally with Ctrl+C",
+		withLock(&recordMu, func() {
+			record.DisconnectReason = InterruptReason
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    InterruptReason,
+				Message: "connection attempt interrupted locally with Ctrl+C",
+			})
+			_ = state.WriteRecord(stateDir, record)
 		})
-		_ = state.WriteRecord(stateDir, record)
-		recordMu.Unlock()
 		proc := procRefShared.get()
 		if proc == nil {
 			return
@@ -424,6 +481,76 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}(proc)
 	}
 
+	// failSupervisor is the child-goroutine panic handler: a panic in
+	// copyInput/copyOutput/the watchdog/the signal forwarder must not
+	// crash the whole process with the terminal still in raw mode. It
+	// restores the terminal, finalizes the panic reason on the record,
+	// tears down the current ssh attempt, and wakes the retry loop so
+	// RunSupervised returns through its normal finalization path.
+	// TryLock mirrors the top-level recover: the panicking goroutine
+	// may have been holding recordMu.
+	var panicked atomic.Bool
+	panickedCh := make(chan struct{})
+	failSupervisor := func(origin string, value any) {
+		guard.restore()
+		if !panicked.CompareAndSwap(false, true) {
+			return
+		}
+		if recordMu.TryLock() {
+			record.DisconnectReason = panicDisconnectReason
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    panicDisconnectReason,
+				Message: fmt.Sprintf("internal panic in %s: %v", origin, value),
+			})
+			_ = state.WriteRecord(stateDir, record)
+			recordMu.Unlock()
+		}
+		fmt.Fprintf(stderr, "\r\nssherpa: internal error: %s panicked: %v\r\n", origin, value)
+		close(panickedCh)
+		proc := procRefShared.get()
+		if proc == nil {
+			return
+		}
+		signalSessionGroup(proc, syscall.SIGHUP)
+		go func(p *os.Process) {
+			timer := time.NewTimer(escapeRopeKillGrace)
+			defer timer.Stop()
+			select {
+			case <-ropeCtx.Done():
+			case <-timer.C:
+				signalSessionGroup(p, syscall.SIGKILL)
+			}
+		}(proc)
+	}
+
+	// Lifetime signal coverage. forwardSignals is installed only while
+	// an attempt's ssh process is alive, so without this handler a
+	// SIGTERM/SIGHUP/SIGQUIT during the reconnect backoff sleep would
+	// kill the supervisor with no finalization — `forward stop` would
+	// report success and leave a permanently "running" record. pullRope
+	// is idempotent, so overlapping with the per-attempt forwarder is
+	// harmless, and closing ropePulledCh wakes the backoff sleep.
+	lifetimeSignals := make(chan os.Signal, 4)
+	signal.Notify(lifetimeSignals, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	lifetimeSignalsDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-lifetimeSignalsDone:
+				return
+			case sig := <-lifetimeSignals:
+				if sig != nil {
+					pullRope()
+				}
+			}
+		}
+	}()
+	defer func() {
+		signal.Stop(lifetimeSignals)
+		close(lifetimeSignalsDone)
+	}()
+
 	output := &lockedWriter{w: stdout}
 	tap := &outputTap{}
 	startupInterruptible := &atomic.Bool{}
@@ -434,7 +561,10 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		if !inputStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, recorder, suspendTerminal, terminalInput, startupInterruptible, interruptLocal, inputDone)
+		go func() {
+			defer recoverSupervisorPanic("session input loop", failSupervisor)
+			copyInput(ptmxRefShared, stdin, output, tap, stateDir, record.ID, overlayBase, opts.Composer, opts.Overlay, theme, pullRope, recorder, suspendTerminal, terminalInput, startupInterruptible, interruptLocal, inputDone)
+		}()
 	}
 	if opts.Detached {
 		// In detached mode there is no stdin to forward and no
@@ -445,7 +575,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 
 	var lastWaitErr error
 	for attempt := 1; ; attempt++ {
-		if ropePulled.Load() || interrupted.Load() {
+		if ropePulled.Load() || interrupted.Load() || panicked.Load() {
 			break
 		}
 		ac := attemptContext{
@@ -466,6 +596,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			now:                  now,
 			onPtmxReady:          startInput,
 			pullRope:             pullRope,
+			onPanic:              failSupervisor,
 		}
 		waitErr := attemptOnce(ac)
 		lastWaitErr = waitErr
@@ -475,7 +606,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			fmt.Fprintf(stderr, "ssherpa: run %s: %v\n", sshcmd.QuoteArgv(command.Argv), waitErr)
 			return 1
 		}
-		if ropePulled.Load() || interrupted.Load() {
+		if ropePulled.Load() || interrupted.Load() || panicked.Load() {
 			break
 		}
 		if waitErr == nil {
@@ -485,32 +616,32 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 		if !shouldRetry(metadata.Kind, opts.Reconnect, waitErr, attempt) {
 			if attempt > 1 {
-				recordMu.Lock()
-				record.Events = append(record.Events, state.SessionEvent{
-					Time:    now().UTC(),
-					Type:    "reconnect_gave_up",
-					Message: fmt.Sprintf("attempt %d: %v", attempt, waitErr),
+				withLock(&recordMu, func() {
+					record.Events = append(record.Events, state.SessionEvent{
+						Time:    now().UTC(),
+						Type:    "reconnect_gave_up",
+						Message: fmt.Sprintf("attempt %d: %v", attempt, waitErr),
+					})
+					_ = state.WriteRecord(stateDir, record)
 				})
-				_ = state.WriteRecord(stateDir, record)
-				recordMu.Unlock()
 			}
 			break
 		}
 		backoff := computeBackoff(attempt, opts.Reconnect)
-		recordMu.Lock()
-		record.Events = append(record.Events, state.SessionEvent{
-			Time:    now().UTC(),
-			Type:    "reconnect_scheduled",
-			Message: fmt.Sprintf("attempt %d failed: %v; retrying in %s", attempt, waitErr, backoff),
+		withLock(&recordMu, func() {
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    "reconnect_scheduled",
+				Message: fmt.Sprintf("attempt %d failed: %v; retrying in %s", attempt, waitErr, backoff),
+			})
+			if record.Forward != nil {
+				record.Forward.RetryCount = attempt
+			}
+			if record.Proxy != nil {
+				record.Proxy.RetryCount = attempt
+			}
+			_ = state.WriteRecord(stateDir, record)
 		})
-		if record.Forward != nil {
-			record.Forward.RetryCount = attempt
-		}
-		if record.Proxy != nil {
-			record.Proxy.RetryCount = attempt
-		}
-		_ = state.WriteRecord(stateDir, record)
-		recordMu.Unlock()
 		recorder.WriteMarker(now().UTC(), fmt.Sprintf("reconnect scheduled after attempt %d failed: %v", attempt, waitErr))
 		fmt.Fprintf(stderr, "\r\nssherpa: session attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
 		timer := time.NewTimer(backoff)
@@ -518,6 +649,8 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		case <-ropePulledCh:
 			timer.Stop()
 		case <-interruptedCh:
+			timer.Stop()
+		case <-panickedCh:
 			timer.Stop()
 		case <-timer.C:
 		}
@@ -530,14 +663,18 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	} else if interrupted.Load() {
 		exitCode = InterruptExitCode
 		fmt.Fprint(stderr, "\r\nssherpa: connection attempt interrupted\r\n")
+	} else if panicked.Load() {
+		// failSupervisor already reported the panic on stderr.
+		exitCode = 1
 	}
 	endedAt := now().UTC()
-	recordMu.Lock()
-	record.EndedAt = &endedAt
-	record.ExitCode = &exitCode
-	err = state.WriteRecord(stateDir, record)
-	recordForTelemetry := record
-	recordMu.Unlock()
+	var recordForTelemetry state.SessionRecord
+	withLock(&recordMu, func() {
+		record.EndedAt = &endedAt
+		record.ExitCode = &exitCode
+		err = state.WriteRecord(stateDir, record)
+		recordForTelemetry = record
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: update session record: %v\n", err)
 		if exitCode == 0 {
@@ -618,17 +755,109 @@ func buildRecord(command sshcmd.Command, metadata Metadata, started time.Time, e
 	}
 }
 
-func prepareControlMaster(stateDir string, recordID string, metadata Metadata) (string, bool, error) {
+func prepareControlMaster(stateDir string, recordID string, metadata Metadata, env []string) (string, bool, error) {
 	if strings.TrimSpace(recordID) == "" || !interactiveSessionKind(metadata.Kind) {
 		return "", false, nil
 	}
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("ssherpa-%d", os.Getuid()), "cm")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir, err := controlMasterDir(env)
+	if err != nil {
 		return "", false, err
 	}
 	sum := sha1.Sum([]byte(stateDir + "\x00" + recordID))
 	path := filepath.Join(dir, hex.EncodeToString(sum[:8])+".sock")
 	return path, true, nil
+}
+
+// controlMasterDir picks the directory holding SSH control sockets.
+// A user-private runtime dir (XDG_RUNTIME_DIR, mirroring
+// internal/incoming) is preferred; on the world-writable os.TempDir()
+// fallback the path is predictable, so an existing dir is verified —
+// a /tmp/ssherpa-<uid> pre-created by another user (or left
+// group/other-accessible) must not be able to capture authenticated
+// control sockets.
+func controlMasterDir(env []string) (string, error) {
+	if value := strings.TrimSpace(sessionEnvValue(env, "XDG_RUNTIME_DIR")); value != "" {
+		dir := filepath.Join(value, "ssherpa", "cm")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
+	base := filepath.Join(os.TempDir(), fmt.Sprintf("ssherpa-%d", os.Getuid()))
+	dir := filepath.Join(base, "cm")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	for _, path := range []string{base, dir} {
+		if err := verifyPrivateDir(path); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+// verifyPrivateDir refuses a control-socket directory that is a
+// symlink, not a directory, or owned by another user, and tightens
+// group/other permission bits on a directory we do own. MkdirAll
+// happily reuses an attacker-precreated path, so existence alone
+// proves nothing on a shared /tmp.
+func verifyPrivateDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("control socket directory %s is not a directory", path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("control socket directory %s: cannot verify ownership", path)
+	}
+	if int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("control socket directory %s is owned by uid %d, not the current user", path, stat.Uid)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(path, 0o700); err != nil {
+			return fmt.Errorf("control socket directory %s is group/other accessible and cannot be tightened: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// controlMasterExitTimeout bounds the best-effort `ssh -O exit` at
+// session teardown. Talking to a local unix socket is fast; a wedged
+// master must not delay the user's return to their shell.
+const controlMasterExitTimeout = 2 * time.Second
+
+// exitControlMaster asks the multiplexing master listening on
+// controlPath to exit before the socket is unlinked. Unlinking a live
+// socket only orphans the authenticated master for the full
+// ControlPersist window (10m), during which it keeps holding any
+// forwarded ports. Best-effort: a dead or never-started master is the
+// common, fine case.
+func exitControlMaster(sshBinary string, env []string, controlPath string, destination string) {
+	sshBinary = strings.TrimSpace(sshBinary)
+	controlPath = strings.TrimSpace(controlPath)
+	destination = strings.TrimSpace(destination)
+	if sshBinary == "" || controlPath == "" || destination == "" {
+		return
+	}
+	if _, err := os.Stat(controlPath); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), controlMasterExitTimeout)
+	defer cancel()
+	// Use the same ssh binary and environment that created the master:
+	// a custom --ssh-binary/SSHERPA_SSH_BINARY may not be on PATH (and a
+	// bare "ssh" might be absent or a different build), in which case
+	// `-O exit` would silently miss the real master and leave it holding
+	// forwarded ports for the full ControlPersist window.
+	cmd := exec.CommandContext(ctx, sshBinary, "-O", "exit", "-o", "ControlPath="+controlPath, destination)
+	cmd.Env = env
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	_ = cmd.Run()
 }
 
 func interactiveSessionKind(kind string) bool {
@@ -660,6 +889,58 @@ func withEnv(env []string, updates []string) []string {
 		}
 	}
 	return result
+}
+
+// panicDisconnectReason marks a session torn down because the
+// supervisor (or one of its goroutines) panicked. Recorded as the
+// session's DisconnectReason so the map shows why the session died.
+const panicDisconnectReason = "panic"
+
+// terminalGuard owns the raw-mode restore function. The supervisor
+// goroutine arms it, overlay transfers re-arm it from the input
+// goroutine after a suspend, and panic handlers on any goroutine may
+// fire it — so access is mutex-protected and restore runs the armed
+// function exactly once per arm.
+type terminalGuard struct {
+	mu sync.Mutex
+	fn func()
+}
+
+func newTerminalGuard() *terminalGuard {
+	return &terminalGuard{}
+}
+
+func (g *terminalGuard) arm(restore func()) {
+	g.mu.Lock()
+	g.fn = restore
+	g.mu.Unlock()
+}
+
+func (g *terminalGuard) restore() {
+	g.mu.Lock()
+	fn := g.fn
+	g.fn = nil
+	g.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// recoverSupervisorPanic is the deferred recover wrapper for the
+// supervisor's child goroutines (input/output loops, watchdog, signal
+// forwarder). A panic there would otherwise crash the whole process
+// with the terminal still in raw mode. onPanic is RunSupervised's
+// failSupervisor; callers without one (direct attemptOnce use in
+// tests) get the panic re-raised so it cannot be silently swallowed.
+func recoverSupervisorPanic(origin string, onPanic func(string, any)) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if onPanic == nil {
+		panic(r)
+	}
+	onPanic(origin, r)
 }
 
 func makeRawIfTerminal(stdin *os.File) (func(), error) {
@@ -751,7 +1032,7 @@ func copyInput(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, tap *outp
 			switch {
 			case localInterrupts && buf[0] == 0x03 && startupInterruptible != nil && startupInterruptible.Load() && interruptLocal != nil:
 				interruptLocal()
-			case buf[0] == OverlayHotkey:
+			case buf[0] == overlay.hotkey():
 				showSessionOverlay(ptmxRef, stdin, output, tap, stateDir, currentID, overlayBase, overlay, theme, pullRope, recorder, suspendTerminal, time.Now())
 			case composer.enabled() && buf[0] == composer.hotkey():
 				if ptmx := ptmxRef.get(); ptmx != nil {
@@ -827,7 +1108,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			continue
 		}
 
-		if key == OverlayHotkey {
+		if key == overlay.hotkey() {
 			if time.Since(lastTap) <= escapeRopePanicWindow {
 				taps++
 				lastTap = time.Now()
@@ -904,6 +1185,14 @@ func runOverlayTransfer(fn OverlayTransferFunc, req OverlayTransferRequest, susp
 	})
 }
 
+// In-band driver wait windows. Package-level so the deterministic
+// driver tests can shrink them; production code never overrides them.
+var (
+	inbandProbeTimeout    = 5 * time.Second
+	inbandReadyTimeout    = 5 * time.Second
+	inbandCompleteTimeout = 30 * time.Second
+)
+
 func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 	return func(req InbandSendRequest) (InbandSendResult, error) {
 		localPath := strings.TrimSpace(req.LocalPath)
@@ -947,7 +1236,7 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 		if err := writeLine(plan.ProbeCommand); err != nil {
 			return InbandSendResult{}, fmt.Errorf("write capability probe: %w", err)
 		}
-		probe, err := waitForInbandOutput(output, 5*time.Second, func(text string) (bool, error) {
+		probe, err := waitForInbandOutput(output, inbandProbeTimeout, func(text string) (bool, error) {
 			switch {
 			case strings.Contains(text, inband.ProbePrefix+" ok"):
 				return true, nil
@@ -967,7 +1256,7 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 		if err := writeLine(plan.ReceiverCommand); err != nil {
 			return InbandSendResult{}, fmt.Errorf("write receiver command: %w", err)
 		}
-		ready, err := waitForInbandOutput(output, 5*time.Second, func(text string) (bool, error) {
+		ready, err := waitForInbandOutput(output, inbandReadyTimeout, func(text string) (bool, error) {
 			return strings.Contains(text, inband.ReadyPrefix), nil
 		})
 		if err != nil {
@@ -997,12 +1286,12 @@ func newInbandSendFunc(ptmxRef *ptmxRef, tap *outputTap) InbandSendFunc {
 			_ = writeLine(plan.ResetCommand)
 			return InbandSendResult{}, fmt.Errorf("flush payload: %w", err)
 		}
-		done, err := waitForInbandOutput(output, 30*time.Second, func(text string) (bool, error) {
+		done, err := waitForInbandOutput(output, inbandCompleteTimeout, func(text string) (bool, error) {
 			ok, parseErr := inband.ParseCompletion(text, plan.SHA256)
 			if parseErr == nil && ok {
 				return true, nil
 			}
-			if parseErr != nil && !strings.Contains(parseErr.Error(), "completion sentinel not found") {
+			if parseErr != nil && !errors.Is(parseErr, inband.ErrNoCompletion) {
 				return false, parseErr
 			}
 			return false, nil
@@ -1138,7 +1427,7 @@ func drawBottomFrame(w io.Writer, stdin *os.File, lines []string) overlayFrame {
 
 func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID string, overlay OverlayOptions, theme termstyle.Theme, recorder *sessionRecorder) overlayFrame {
 	width, height, terminalOutput := overlaySize(stdin)
-	actions := []string{fmt.Sprintf("%s/q/Esc close", OverlayHotkeyName), "r refresh"}
+	actions := []string{fmt.Sprintf("%s/q/Esc close", overlay.hotkeyName()), "r refresh"}
 	if recorder != nil {
 		actions = append(actions, recorder.HelpAction())
 	}
@@ -1148,7 +1437,7 @@ func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID 
 	if overlay.Receive != nil {
 		actions = append(actions, "v receive")
 	}
-	actions = append(actions, "X escape rope", fmt.Sprintf("%sx3 panic", OverlayHotkeyName), "local only")
+	actions = append(actions, "X escape rope", fmt.Sprintf("%sx3 panic", overlay.hotkeyName()), "local only")
 	help := strings.Join(actions, "   ")
 	lines := sessionOverlayLines(stateDir, currentID, theme, width, height, help)
 
@@ -1374,6 +1663,9 @@ type latencyWatchdogConfig struct {
 	Stderr   io.Writer
 	Process  *os.Process
 	Now      func() time.Time
+	// OnPanic receives panics from the watchdog goroutine (see
+	// recoverSupervisorPanic); nil re-raises them.
+	OnPanic func(string, any)
 }
 
 func startLatencyWatchdog(cfg latencyWatchdogConfig) func() {
@@ -1393,6 +1685,7 @@ func startLatencyWatchdog(cfg latencyWatchdogConfig) func() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer recoverSupervisorPanic("latency watchdog", cfg.OnPanic)
 		runLatencyWatchdog(ctx, cfg)
 	}()
 	return func() {
@@ -1572,13 +1865,14 @@ func truncateOverlayLine(value string, width int) string {
 	return string(runes[:width-1]) + "~"
 }
 
-func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd, pullRope func()) func() {
+func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd, pullRope func(), onPanic func(string, any)) func() {
 	resizePTY(stdin, ptmx)
 
 	sigCh := make(chan os.Signal, 8)
 	signal.Notify(sigCh, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	done := make(chan struct{})
 	go func() {
+		defer recoverSupervisorPanic("signal forwarder", onPanic)
 		for {
 			select {
 			case sig := <-sigCh:
@@ -1755,6 +2049,10 @@ type attemptContext struct {
 	// so the retry loop's ropePulled check trips and the daemon
 	// doesn't immediately respawn ssh after the kill.
 	pullRope func()
+	// onPanic, if non-nil, receives panics recovered in the attempt's
+	// child goroutines (output loop, watchdog, signal forwarder). The
+	// supervisor wires its failSupervisor here.
+	onPanic func(string, any)
 }
 
 type sessionRecorderOptions struct {
@@ -1768,11 +2066,21 @@ type sessionRecorderOptions struct {
 	Now      func() time.Time
 }
 
+// transcriptWriter is the subset of *transcript.Writer the recorder
+// drives; tests substitute a close-failing implementation to pin the
+// persist-before-propagate contract of sessionRecorder.Close.
+type transcriptWriter interface {
+	WriteOutput(at time.Time, data []byte)
+	WriteMarker(at time.Time, message string)
+	Close(ended time.Time) (state.TranscriptSpec, error)
+	StopReason() string
+}
+
 type sessionRecorder struct {
 	mu       sync.Mutex
 	disabled bool
 	active   bool
-	writer   *transcript.Writer
+	writer   transcriptWriter
 	stateDir string
 	command  sshcmd.Command
 	env      []string
@@ -1874,11 +2182,15 @@ func (r *sessionRecorder) Close(ended time.Time) error {
 		return nil
 	}
 	spec, err := writer.Close(ended)
-	if err != nil {
-		return err
-	}
+	// Persist why recording stopped early (size limit, write error) so
+	// the record explains a transcript that ends before the session
+	// did — and persist before propagating any close error: a failing
+	// disk is exactly the scenario in which stop_reason and ended_at
+	// must not be lost (Close still returns a usable snapshot alongside
+	// its error).
+	spec.StopReason = writer.StopReason()
 	r.updateRecord(spec)
-	return nil
+	return err
 }
 
 func (r *sessionRecorder) startLocked() (string, error) {
@@ -1909,10 +2221,22 @@ func (r *sessionRecorder) updateRecord(spec state.TranscriptSpec) {
 	if r.record == nil || r.recordMu == nil {
 		return
 	}
-	r.recordMu.Lock()
-	r.record.Transcript = &spec
-	_ = state.WriteRecord(r.stateDir, *r.record)
-	r.recordMu.Unlock()
+	withLock(r.recordMu, func() {
+		r.record.Transcript = &spec
+		_ = state.WriteRecord(r.stateDir, *r.record)
+	})
+}
+
+// withLock runs fn while holding mu, releasing it via defer. Using a
+// deferred unlock (rather than an inline Lock/.../Unlock) means a panic
+// inside fn releases the lock during unwind, so the deferred
+// recorder.Close and the top-level panic recovery — which both need
+// this same mutex to finalize the record — cannot deadlock the
+// terminal-restore path.
+func withLock(mu *sync.Mutex, fn func()) {
+	mu.Lock()
+	defer mu.Unlock()
+	fn()
 }
 
 // attemptOnce spawns the SSH process once under a fresh PTY, swaps the
@@ -1934,6 +2258,11 @@ func attemptOnce(ac attemptContext) error {
 		}
 		return err
 	}
+	// Close the PTY master on every exit path. The fast path below used
+	// to return without closing — one leaked master fd per reconnect
+	// attempt (regression from a112f3b). Double-close on the drain path
+	// is harmless (ErrClosed, ignored).
+	defer func() { _ = ptmx.Close() }()
 	ac.ptmxRef.set(ptmx)
 	ac.procRef.set(proc.Process)
 	defer func() {
@@ -1952,7 +2281,6 @@ func attemptOnce(ac attemptContext) error {
 	if writeErr != nil {
 		_ = proc.Process.Kill()
 		_ = proc.Wait()
-		_ = ptmx.Close()
 		return fmt.Errorf("write session record: %w", writeErr)
 	}
 	emitSessionTelemetry(ac.output, recordForTelemetry, ac.env)
@@ -1963,8 +2291,9 @@ func attemptOnce(ac attemptContext) error {
 
 	outputDone := make(chan struct{})
 	go func() {
+		defer close(outputDone)
+		defer recoverSupervisorPanic("session output loop", ac.onPanic)
 		copyOutput(ac, ptmx)
-		close(outputDone)
 	}()
 
 	stopWatchdog := startLatencyWatchdog(latencyWatchdogConfig{
@@ -1975,8 +2304,9 @@ func attemptOnce(ac attemptContext) error {
 		Stderr:   ac.stderr,
 		Process:  proc.Process,
 		Now:      ac.now,
+		OnPanic:  ac.onPanic,
 	})
-	stopSignals := forwardSignals(ac.stdin, ptmx, proc, ac.pullRope)
+	stopSignals := forwardSignals(ac.stdin, ptmx, proc, ac.pullRope, ac.onPanic)
 
 	waitErr := proc.Wait()
 	stopWatchdog()
@@ -2079,13 +2409,50 @@ func sessionEnvValue(env []string, key string) string {
 	return ""
 }
 
+// nestedMetadataBlockedEvent tags the once-per-session event recorded
+// when a remote descendant reports itself with no parent id — positive
+// proof the remote sshd stripped the SSHERPA_* lineage variables.
+const nestedMetadataBlockedEvent = "nested_metadata_blocked"
+
 func mirrorRemoteSessionRecord(ac attemptContext, record state.SessionRecord) {
+	ac.recordMu.Lock()
 	parent := *ac.record
-	record, ok := remoteMirrorRecord(parent, record)
+	ac.recordMu.Unlock()
+	record, backfilled, ok := remoteMirrorRecord(parent, record)
 	if !ok {
 		return
 	}
 	_ = state.WriteRecord(ac.stateDir, record)
+	if backfilled {
+		noteNestedMetadataBlocked(ac)
+	}
+}
+
+// noteNestedMetadataBlocked records, once per session, that nested
+// metadata never arrived on the remote side: the telemetry-backfill
+// branch firing with an empty parent_id means the remote sshd rejected
+// the SSHERPA_* environment (stock AcceptEnv allows none of it), so
+// lineage under this session is reconstructed from telemetry instead
+// of inherited env (§15.5). Surfacing it on the parent record lets the
+// session map explain why remote-side lineage is flat.
+func noteNestedMetadataBlocked(ac attemptContext) {
+	now := ac.now
+	if now == nil {
+		now = time.Now
+	}
+	ac.recordMu.Lock()
+	defer ac.recordMu.Unlock()
+	for _, event := range ac.record.Events {
+		if event.Type == nestedMetadataBlockedEvent {
+			return
+		}
+	}
+	ac.record.Events = append(ac.record.Events, state.SessionEvent{
+		Time:    now().UTC(),
+		Type:    nestedMetadataBlockedEvent,
+		Message: "nested metadata blocked: remote sshd lacks AcceptEnv SSHERPA_*",
+	})
+	_ = state.WriteRecord(ac.stateDir, *ac.record)
 }
 
 func finalizeRemoteMirrors(stateDir string, parent state.SessionRecord, endedAt time.Time, exitCode int) {
@@ -2120,17 +2487,24 @@ func finalizeRemoteMirrors(stateDir string, parent state.SessionRecord, endedAt 
 	}
 }
 
-func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (state.SessionRecord, bool) {
+// remoteMirrorRecord adapts a telemetry-reported descendant record for
+// the local state dir. The second return reports whether the child
+// arrived with no parent id and had its lineage backfilled from the
+// parent — the detection signal that the remote sshd stripped the
+// SSHERPA_* environment.
+func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (state.SessionRecord, bool, bool) {
 	if child.ID == "" || child.ID == parent.ID || child.RemoteMirror {
-		return state.SessionRecord{}, false
+		return state.SessionRecord{}, false, false
 	}
+	backfilled := false
 	if child.ParentID == "" {
+		backfilled = true
 		child.ParentID = parent.ID
 		child.Depth = parent.Depth + 1
 		child.OriginHost = firstNonEmpty(parent.OriginHost, child.OriginHost)
 		child.Route = appendRoute(parent.Route, child.Route, child.TargetAlias)
 	} else if !isDescendantTelemetry(parent, child) {
-		return state.SessionRecord{}, false
+		return state.SessionRecord{}, false, false
 	}
 	child.RemoteMirror = true
 	child.Inherited = false
@@ -2139,7 +2513,7 @@ func remoteMirrorRecord(parent state.SessionRecord, child state.SessionRecord) (
 	if child.StateVersion == 0 {
 		child.StateVersion = state.StateVersion
 	}
-	return child, true
+	return child, backfilled, true
 }
 
 func isDescendantTelemetry(parent state.SessionRecord, child state.SessionRecord) bool {

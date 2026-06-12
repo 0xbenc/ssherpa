@@ -350,7 +350,7 @@ func (m themeEditorModel) renderPreviewLines(width int, theme pickerTheme) []str
 		theme.groupHeader("Overlay", width),
 		theme.logo("ssherpa session map"),
 		m.currentTheme().Style(termstyle.RoleSuccess, "+- prod [active] current"),
-		theme.muted("Ctrl-]/q/Esc close   r refresh"),
+		theme.muted("Ctrl-^/q/Esc close   r refresh"),
 		"",
 	}
 	lines = append(lines, m.renderPaletteLines(width, theme)...)

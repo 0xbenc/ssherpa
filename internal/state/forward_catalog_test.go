@@ -3,7 +3,9 @@ package state
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,6 +140,74 @@ func TestReadForwardCorrupt(t *testing.T) {
 	}
 	if _, err := ReadForward(dir, "bad"); err == nil {
 		t.Fatalf("expected error on corrupt JSON")
+	}
+}
+
+func TestListForwardsSkipsCorruptAndFutureFiles(t *testing.T) {
+	dir := t.TempDir()
+	good := StoredForward{Name: "good", SSHAlias: "box", LocalPort: 1, RemoteHost: "h", RemotePort: 2}
+	if err := WriteForward(dir, good); err != nil {
+		t.Fatalf("WriteForward: %v", err)
+	}
+	corrupt := ForwardPath(dir, "corrupt")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	future := ForwardPath(dir, "future")
+	if err := os.WriteFile(future, []byte(`{"name":"future","ssh_alias":"x","local_port":1,"remote_host":"h","remote_port":2,"state_version":2}`), 0o600); err != nil {
+		t.Fatalf("write future: %v", err)
+	}
+
+	specs, skipped, err := ListForwardsDetailed(dir)
+	if err != nil {
+		t.Fatalf("ListForwardsDetailed: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Name != "good" {
+		t.Fatalf("specs = %#v, want only good", specs)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped = %#v, want corrupt and future", skipped)
+	}
+	paths := map[string]string{}
+	for _, skip := range skipped {
+		paths[skip.Path] = skip.Reason
+	}
+	if paths[corrupt] == "" {
+		t.Fatalf("corrupt file not surfaced: %#v", skipped)
+	}
+	if !strings.Contains(paths[future], "state_version 2") {
+		t.Fatalf("future file reason = %q, want state_version mention", paths[future])
+	}
+
+	plain, err := ListForwards(dir)
+	if err != nil {
+		t.Fatalf("ListForwards with corrupt sibling: %v", err)
+	}
+	if len(plain) != 1 || plain[0].Name != "good" {
+		t.Fatalf("ListForwards = %#v, want only good", plain)
+	}
+}
+
+func TestForwardFutureStateVersionReadAndWriteGate(t *testing.T) {
+	dir := t.TempDir()
+	future := ForwardPath(dir, "future")
+	body := `{"name":"future","ssh_alias":"x","local_port":1,"remote_host":"h","remote_port":2,"state_version":2}`
+	if err := os.MkdirAll(filepath.Dir(future), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(future, []byte(body), 0o600); err != nil {
+		t.Fatalf("write future: %v", err)
+	}
+	if _, err := ReadForward(dir, "future"); !errors.Is(err, ErrFutureStateVersion) {
+		t.Fatalf("ReadForward(future) = %v, want ErrFutureStateVersion", err)
+	}
+	err := WriteForward(dir, StoredForward{Name: "future", SSHAlias: "y", LocalPort: 3, RemoteHost: "h2", RemotePort: 4})
+	if !errors.Is(err, ErrFutureStateVersion) {
+		t.Fatalf("WriteForward over future file = %v, want ErrFutureStateVersion", err)
+	}
+	data, readErr := os.ReadFile(future)
+	if readErr != nil || string(data) != body {
+		t.Fatalf("future file changed: %q %v", data, readErr)
 	}
 }
 

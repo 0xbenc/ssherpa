@@ -1,6 +1,8 @@
 package session
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/0xbenc/ssherpa/internal/state"
@@ -124,6 +126,121 @@ func TestOSCTrackerStripsFramedSessionTelemetry(t *testing.T) {
 
 func buildRecordWithRemoteState(host string, cwd string, prompt string) state.SessionRecord {
 	return state.SessionRecord{RemoteHost: host, RemoteCWD: cwd, RemotePrompt: prompt}
+}
+
+// TestParseOSC7SanitizesControlCharacters: url.Parse percent-decodes
+// the OSC 7 path, so a remote could smuggle raw ESC/BEL into
+// RemoteCWD/RemoteHost and replay them inside the trusted overlay.
+// Control characters must be stripped at parse time.
+func TestParseOSC7SanitizesControlCharacters(t *testing.T) {
+	tracker := newOSCTracker()
+	observed, changed := tracker.Observe([]byte("\x1b]7;file://evil.example/%1b%5b31mowned%07/home\x07"))
+	if !changed {
+		t.Fatalf("Observe did not report a change")
+	}
+	if observed.CWD != "/[31mowned/home" {
+		t.Fatalf("CWD = %q, want control characters stripped", observed.CWD)
+	}
+	if strings.ContainsAny(observed.CWD+observed.Host, "\x1b\x07") {
+		t.Fatalf("remote state contains control bytes: cwd=%q host=%q", observed.CWD, observed.Host)
+	}
+}
+
+func TestTelemetryMirrorSanitizesAndClampsForgedRecords(t *testing.T) {
+	longRoute := make([]string, 40)
+	for i := range longRoute {
+		longRoute[i] = fmt.Sprintf("hop-%d", i)
+	}
+	events := make([]state.SessionEvent, 70)
+	for i := range events {
+		events[i] = state.SessionEvent{Type: "x", Message: "m"}
+	}
+	forged := state.SessionRecord{
+		ID:               "child",
+		ParentID:         "parent",
+		Depth:            1 << 20,
+		TargetAlias:      "prod\x1b]0;owned\x07",
+		OriginHost:       "laptop\u009b31m",
+		RemoteCWD:        "/home\x1b[2J",
+		DisconnectReason: "bye\x07bel",
+		Route:            longRoute,
+		Events:           events,
+		ControlPath:      "/tmp/evil.sock",
+		Transcript:       &state.TranscriptSpec{Path: "/etc/passwd", Format: "asciicast"},
+		StartedAt:        fixedClock()(),
+	}
+	// The RS-framed variant allows the larger payload needed to carry
+	// the oversized lists (the OSC variant caps at oscMaxPayload).
+	payload, ok := sessionTelemetryFrame(forged)
+	if !ok {
+		t.Fatalf("sessionTelemetryFrame returned !ok")
+	}
+
+	observed := newOSCTracker().ObserveAll(payload)
+	if len(observed.Mirrors) != 1 {
+		t.Fatalf("mirrors = %#v, want one", observed.Mirrors)
+	}
+	got := observed.Mirrors[0]
+	if got.TargetAlias != "prod]0;owned" {
+		t.Fatalf("TargetAlias = %q, want control characters stripped", got.TargetAlias)
+	}
+	if got.OriginHost != "laptop31m" {
+		t.Fatalf("OriginHost = %q, want C1 control stripped", got.OriginHost)
+	}
+	if strings.ContainsAny(got.RemoteCWD+got.DisconnectReason, "\x1b\x07") {
+		t.Fatalf("mirror retains control bytes: %#v", got)
+	}
+	if len(got.Route) != 32 {
+		t.Fatalf("Route entries = %d, want clamped to 32", len(got.Route))
+	}
+	if len(got.Events) != 64 {
+		t.Fatalf("Events = %d, want clamped to 64", len(got.Events))
+	}
+	if got.Depth != 64 {
+		t.Fatalf("Depth = %d, want clamped to 64", got.Depth)
+	}
+	if got.ControlPath != "" || got.Transcript != nil {
+		t.Fatalf("machine-local references survived: ControlPath=%q Transcript=%#v", got.ControlPath, got.Transcript)
+	}
+}
+
+func TestTelemetryMirrorClampsOverlongStringsAndNegativeDepth(t *testing.T) {
+	forged := state.SessionRecord{
+		ID:          "child",
+		ParentID:    "parent",
+		Depth:       -3,
+		TargetAlias: strings.Repeat("a", 4096),
+		StartedAt:   fixedClock()(),
+	}
+	payload, ok := sessionTelemetryFrame(forged)
+	if !ok {
+		t.Fatalf("sessionTelemetryFrame returned !ok")
+	}
+	observed := newOSCTracker().ObserveAll(payload)
+	if len(observed.Mirrors) != 1 {
+		t.Fatalf("mirrors = %#v, want one", observed.Mirrors)
+	}
+	got := observed.Mirrors[0]
+	if len(got.TargetAlias) != 512 {
+		t.Fatalf("TargetAlias length = %d, want clamped to 512", len(got.TargetAlias))
+	}
+	if got.Depth != 0 {
+		t.Fatalf("Depth = %d, want negative depth clamped to 0", got.Depth)
+	}
+}
+
+func TestTelemetryMirrorRejectsUnsafeSessionIDs(t *testing.T) {
+	for _, id := range []string{"../../evil", "a/b", `a\b`, "..", " padded "} {
+		forged := state.SessionRecord{ID: id, ParentID: "parent", StartedAt: fixedClock()()}
+		payload, ok := sessionTelemetryOSC(forged)
+		if !ok {
+			t.Fatalf("sessionTelemetryOSC(%q) returned !ok", id)
+		}
+		observed := newOSCTracker().ObserveAll(payload)
+		if len(observed.Mirrors) != 0 {
+			t.Fatalf("id %q produced a mirror: %#v", id, observed.Mirrors)
+		}
+	}
 }
 
 func TestOSCTrackerIgnoresUnknownAndDuplicateSequences(t *testing.T) {

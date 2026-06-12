@@ -59,11 +59,12 @@ func runProxySavedList(args []string, stdout io.Writer, stderr io.Writer) int {
 	if !ok {
 		return 1
 	}
-	specs, err := state.ListProxies(stateDir)
+	specs, skipped, err := state.ListProxiesDetailed(stateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: list saved proxies: %v\n", err)
 		return 1
 	}
+	warnSkippedFiles(stderr, "saved proxy", skipped)
 	if flags.JSON {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")

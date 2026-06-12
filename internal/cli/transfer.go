@@ -234,8 +234,80 @@ func executeSFTPTransfer(direction sshcmd.SFTPTransferDirection, flags transferF
 	if !proceed {
 		return code, transfer, false
 	}
+	if transfer.Direction == sshcmd.SFTPTransferReceive {
+		return runSFTPReceive(cmd, &transfer, stdout, stderr), transfer, true
+	}
 	transfer.Batch = sshcmd.BuildSFTPBatch(transfer)
 	return runSFTPCommand(cmd, transfer.Batch, stdout, stderr), transfer, true
+}
+
+// runSFTPReceive downloads into a temporary file beside the destination
+// and renames it into place only after sftp exits cleanly. sftp's get
+// truncates its target on open, so writing the final path directly meant
+// an interrupted download destroyed the original file the user had just
+// confirmed overwriting.
+func runSFTPReceive(cmd sshcmd.Command, transfer *sshcmd.SFTPTransfer, stdout io.Writer, stderr io.Writer) int {
+	finalPath := transfer.LocalPath
+	temp, err := os.CreateTemp(filepath.Dir(finalPath), "."+filepath.Base(finalPath)+".ssherpa.*.part")
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: create temporary download file: %v\n", err)
+		return 1
+	}
+	tempPath := temp.Name()
+	_ = temp.Close()
+	staged := *transfer
+	staged.LocalPath = tempPath
+	transfer.Batch = sshcmd.BuildSFTPBatch(staged)
+	code := runSFTPCommand(cmd, transfer.Batch, stdout, stderr)
+	if code != 0 {
+		_ = os.Remove(tempPath)
+		return code
+	}
+	// The rename replaces the destination inode outright: a hardlinked
+	// or symlinked destination is detached rather than written through.
+	// That is intended hardening — a link planted at the destination
+	// cannot redirect the download elsewhere. Because os.CreateTemp
+	// leaves the temp 0600, carry the destination's prior mode across
+	// the overwrite (the user confirmed replacing that file, not
+	// tightening it) or apply the umask-derived default for a fresh
+	// download; on probe failure the temp's restrictive 0600 stands.
+	if mode, err := downloadFileMode(finalPath, tempPath); err == nil {
+		_ = os.Chmod(tempPath, mode)
+	}
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		_ = os.Remove(tempPath)
+		fmt.Fprintf(stderr, "ssherpa: move downloaded file into place: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// downloadFileMode returns the permissions the renamed download should
+// carry: the existing destination's mode when overwriting, otherwise
+// the 0o666-minus-umask default a plain create would have produced. The
+// umask is probed by creating a sibling file rather than via
+// syscall.Umask, which would race other threads by mutating
+// process-global state.
+func downloadFileMode(finalPath string, tempPath string) (os.FileMode, error) {
+	info, err := os.Stat(finalPath)
+	if err == nil {
+		return info.Mode().Perm(), nil
+	}
+	if !os.IsNotExist(err) {
+		return 0, err
+	}
+	probePath := tempPath + ".mode"
+	probe, err := os.OpenFile(probePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	if err != nil {
+		return 0, err
+	}
+	probeInfo, err := probe.Stat()
+	_ = probe.Close()
+	_ = os.Remove(probePath)
+	if err != nil {
+		return 0, err
+	}
+	return probeInfo.Mode().Perm(), nil
 }
 
 func resolveTransferAlias(flags transferFlags, inventory hostlist.Inventory, stderr io.Writer) (hostlist.Alias, bool, int) {
@@ -335,9 +407,9 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 					fmt.Fprintln(stderr, "[skipped] receive cancelled")
 					return sshcmd.SFTPTransfer{}, false, 0
 				}
-				localPath = filepath.Join(dir, remoteBase(remotePath))
+				localPath = filepath.Join(dir, localNameForRemote(remotePath))
 			} else {
-				localPath = remoteBase(remotePath)
+				localPath = localNameForRemote(remotePath)
 			}
 		}
 		expanded, err := expandLocalPath(localPath)
@@ -346,9 +418,9 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 			return sshcmd.SFTPTransfer{}, false, 1
 		}
 		if strings.HasSuffix(localPath, string(os.PathSeparator)) {
-			expanded = filepath.Join(expanded, filepath.Base(remotePath))
+			expanded = filepath.Join(expanded, localNameForRemote(remotePath))
 		} else if info, err := os.Stat(expanded); err == nil && info.IsDir() {
-			expanded = filepath.Join(expanded, filepath.Base(remotePath))
+			expanded = filepath.Join(expanded, localNameForRemote(remotePath))
 		}
 		localPath = expanded
 	default:
@@ -401,6 +473,25 @@ func confirmTransferSafety(flags transferFlags, transfer sshcmd.SFTPTransfer, cm
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: cannot verify remote destination %s:%s: %v\n", transfer.Alias, transfer.RemotePath, err)
 			return false, 1
+		}
+		if info.Exists && info.IsDir {
+			// sftp's put writes <dir>/<basename> when the destination is
+			// a directory, so the overwrite gate must check the real
+			// final file path, not the directory itself.
+			finalPath := remoteJoin(transfer.RemotePath, filepath.Base(transfer.LocalPath))
+			finalInfo, err := remotePathInfo(cmd, finalPath)
+			if err != nil {
+				fmt.Fprintf(stderr, "ssherpa: cannot verify remote destination %s:%s: %v\n", transfer.Alias, finalPath, err)
+				return false, 1
+			}
+			if finalInfo.Exists && finalInfo.IsDir {
+				fmt.Fprintf(stderr, "ssherpa: remote destination %s:%s is a directory\n", transfer.Alias, finalPath)
+				return false, 1
+			}
+			if finalInfo.Exists {
+				return confirmOverwrite(flags, stderr, fmt.Sprintf("Remote destination %s:%s already exists. Overwrite it?", transfer.Alias, finalPath))
+			}
+			return true, 0
 		}
 		if info.Exists {
 			return confirmOverwrite(flags, stderr, fmt.Sprintf("Remote destination %s:%s already exists. Overwrite it?", transfer.Alias, transfer.RemotePath))
@@ -471,7 +562,7 @@ func remotePathInfo(cmd sshcmd.Command, remotePath string) (remotePathStat, erro
 	}
 	parent := remotePathParent(remotePath)
 	base := remoteBase(remotePath)
-	if base == "" || base == "download" {
+	if base == "" {
 		return remotePathStat{}, fmt.Errorf("cannot resolve remote path name")
 	}
 	batch := fmt.Sprintf("cd %s\npwd\nls -la\n", quoteSFTPBatchPath(parent))
@@ -710,17 +801,20 @@ func showTransferComplete(stderr io.Writer, opts transferCompleteOptions) error 
 }
 
 func overlayTransferOptions(options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) session.OverlayOptions {
+	overlay := session.OverlayOptions{
+		Key:     options.OverlayKey,
+		KeyName: options.OverlayKeyName,
+	}
 	if metadata.TargetAlias == "" || metadata.Kind != "" {
-		return session.OverlayOptions{}
+		return overlay
 	}
-	return session.OverlayOptions{
-		Send: func(req session.OverlayTransferRequest) int {
-			return runOverlaySend(options, req, stdout, stderr)
-		},
-		Receive: func(req session.OverlayTransferRequest) int {
-			return runOverlayReceive(options, req, stdout, stderr)
-		},
+	overlay.Send = func(req session.OverlayTransferRequest) int {
+		return runOverlaySend(options, req, stdout, stderr)
 	}
+	overlay.Receive = func(req session.OverlayTransferRequest) int {
+		return runOverlayReceive(options, req, stdout, stderr)
+	}
+	return overlay
 }
 
 func runOverlaySend(options connectOptions, req session.OverlayTransferRequest, stdout io.Writer, stderr io.Writer) int {
@@ -890,7 +984,7 @@ func runOverlayReceive(options connectOptions, req session.OverlayTransferReques
 		return 0
 	}
 	flags.RemotePath = remotePath
-	flags.LocalPath = filepath.Join(dir, remoteBase(remotePath))
+	flags.LocalPath = filepath.Join(dir, localNameForRemote(remotePath))
 	flags.ConfirmOverwrite = true
 	code, transfer, attempted := executeSFTPTransfer(sshcmd.SFTPTransferReceive, flags, hostlist.Alias{Name: alias}, stdout, stderr)
 	if code == 0 && attempted {
@@ -1514,6 +1608,11 @@ func remoteFileDescription(entry remoteEntry) string {
 	return entry.Size + " B"
 }
 
+// remoteBase returns the final path element, or "" when the path has no
+// usable name ("/", ".", ".."). The empty string — not a literal
+// placeholder — signals "unresolvable" so that genuine remote files
+// named like any fallback (a file literally called "download") are never
+// misclassified.
 func remoteBase(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -1521,13 +1620,23 @@ func remoteBase(path string) string {
 	}
 	path = strings.TrimRight(path, "/")
 	if path == "" {
-		return "download"
+		return ""
 	}
 	base := pathpkg.Base(path)
-	if base == "." || base == "/" || base == "" {
-		return "download"
+	if base == "." || base == ".." || base == "/" || base == "" {
+		return ""
 	}
 	return base
+}
+
+// localNameForRemote chooses the default local filename for a received
+// remote path. "download" is only a last-resort display default here; it
+// is no longer an internal sentinel anywhere.
+func localNameForRemote(remotePath string) string {
+	if base := remoteBase(remotePath); base != "" {
+		return base
+	}
+	return "download"
 }
 
 func remoteDirectoryPickerItems(cwd string, dirs []string) []ui.Item {

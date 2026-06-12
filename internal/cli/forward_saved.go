@@ -66,11 +66,12 @@ func runForwardSavedList(args []string, stdout io.Writer, stderr io.Writer) int 
 	if !ok {
 		return 1
 	}
-	specs, err := state.ListForwards(stateDir)
+	specs, skipped, err := state.ListForwardsDetailed(stateDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: list saved forwards: %v\n", err)
 		return 1
 	}
+	warnSkippedFiles(stderr, "saved forward", skipped)
 	if flags.JSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")

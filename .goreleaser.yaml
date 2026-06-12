@@ -5,7 +5,7 @@ project_name: ssherpa
 
 before:
   hooks:
-    - go mod tidy
+    - go mod verify
 
 builds:
   - id: ssherpa
@@ -19,11 +19,14 @@ builds:
     goarch:
       - amd64
       - arm64
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
       - -X main.commit={{.FullCommit}}
-      - -X main.date={{.Date}}
+      - -X main.date={{.CommitDate}}
 
 archives:
   - id: ssherpa
@@ -31,6 +34,8 @@ archives:
       - ssherpa
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
+      - LICENSE
+      - README.md
       - completions/*
       - man/*
 
@@ -47,7 +52,16 @@ nfpms:
     formats:
       - deb
       - rpm
+    overrides:
+      deb:
+        dependencies:
+          - openssh-client
+      rpm:
+        dependencies:
+          - openssh-clients
     contents:
+      - src: LICENSE
+        dst: /usr/share/doc/ssherpa/LICENSE
       - src: completions/ssherpa.bash
         dst: /usr/share/bash-completion/completions/ssherpa
       - src: completions/ssherpa.zsh
@@ -82,6 +96,11 @@ homebrew_casks:
 
 checksum:
   name_template: checksums.txt
+
+# Requires syft on PATH at release time; release.yml installs it via
+# anchore/sbom-action/download-syft before running goreleaser.
+sboms:
+  - artifacts: archive
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

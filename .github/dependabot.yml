@@ -1,0 +1,34 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    # Direct deps only: indirect charm modules must move together with
+    # bubbletea, not independently. The weekly scheduled govulncheck run
+    # in ci.yml is the CVE signal for indirect deps.
+    allow:
+      - dependency-type: direct
+    groups:
+      go-deps:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
+    ignore:
+      # Majors are taken deliberately, never via automation.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+      # The renderer must only move via bubbletea bumps (see
+      # docs/STABILITY_AUDIT.md section 10): bubbletea pins an untagged
+      # ultraviolet pseudo-version, and an independent bump would advance
+      # the renderer past bubbletea's tested commit.
+      - dependency-name: github.com/charmbracelet/ultraviolet
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

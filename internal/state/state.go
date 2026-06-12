@@ -1,3 +1,18 @@
+// Package state persists ssherpa runtime state — session records,
+// saved forwards, saved proxies, and the machine identity — as one
+// JSON file per entity under the resolved state directory.
+//
+// Concurrency model: there is NO cross-process file locking. Each
+// individual write is atomic at the byte level (temp file + fsync +
+// rename via fsutil.AtomicWriteFile), but a read-modify-write cycle
+// performed by two processes is last-writer-wins: the slower writer's
+// snapshot replaces whatever fields — including Events appended in
+// between — the faster writer persisted. The one targeted protection
+// is in WriteRecord: a record that has already been finalized on disk
+// (EndedAt set) is never silently resurrected by a stale writer; its
+// EndedAt/ExitCode/DisconnectReason are preserved unless the incoming
+// write sets them explicitly. Callers that need stronger guarantees
+// must serialize externally.
 package state
 
 import (
@@ -23,6 +38,22 @@ const (
 	IdentitySchemaVersion = 1
 	DefaultPrune          = 7 * 24 * time.Hour
 
+	// MaxSupportedStateVersion is the newest state_version this binary
+	// will read or overwrite. Files stamped with a higher version were
+	// written by a newer ssherpa: readers skip them (with a warning via
+	// the SkippedFile surfacing) and writers refuse to clobber them, so
+	// a v1 binary can never silently rewrite a future-format file. A
+	// missing or zero state_version reads as version 1 — every file
+	// written before the field existed is a v1 file.
+	MaxSupportedStateVersion = StateVersion
+
+	// StaleLocalSessionTTL is how old a local (non-mirror) session
+	// record must be before cleanup finalizes it when its recorded
+	// PIDs are no longer alive. The TTL keeps a cleanup pass that
+	// races a just-started session (record written, process probe
+	// momentarily wrong) from closing a healthy record.
+	StaleLocalSessionTTL = time.Hour
+
 	// KindInteractive marks a normal interactive SSH session. It is the
 	// implicit kind for any record without a Kind field set, so existing
 	// records on disk continue to read correctly.
@@ -42,6 +73,22 @@ const (
 	RemotePromptRunning     = "running"
 	RemotePromptPromptStart = "prompt_start"
 )
+
+// ErrFutureStateVersion marks a state file whose state_version is
+// newer than MaxSupportedStateVersion. Single-file readers return it
+// (check with errors.Is); directory listings surface the file as
+// skipped instead.
+var ErrFutureStateVersion = errors.New("state file was written by a newer ssherpa")
+
+// SkippedFile describes a state file a listing read past without
+// using: unreadable, unparseable, badly named, or written by a newer
+// ssherpa (state_version > MaxSupportedStateVersion). The *Detailed
+// listing variants return these so callers can warn instead of either
+// hard-failing the whole listing or hiding the problem.
+type SkippedFile struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
 
 type SessionRecord struct {
 	ID               string           `json:"id"`
@@ -125,6 +172,11 @@ type TranscriptSpec struct {
 	MaxBytes  int64      `json:"max_bytes,omitempty"`
 	Truncated bool       `json:"truncated,omitempty"`
 	Input     bool       `json:"input,omitempty"`
+	// StopReason records why the transcript writer stopped early
+	// ("size limit reached", "write error: ..."); empty when the
+	// recording ran to a clean close. Mirrors
+	// transcript.Writer.StopReason().
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 type RecordingOrigin struct {
@@ -164,6 +216,11 @@ func (r SessionRecord) Status() string {
 // performs an existence check without delivering a signal; it
 // returns nil iff the process exists and the caller can signal it.
 // Records with EndedAt set or LocalPID == 0 always return false.
+//
+// Caveat: kill-0 checks PID existence, not identity — after a reboot
+// or long crash window an unrelated process can recycle the PID and
+// this reports a dead session as alive (see staleLocalSession for the
+// documented residual risk).
 func ProcessAlive(record SessionRecord) bool {
 	if record.RemoteMirror {
 		return false
@@ -174,7 +231,7 @@ func ProcessAlive(record SessionRecord) bool {
 	if record.LocalPID <= 0 {
 		return false
 	}
-	return syscall.Kill(record.LocalPID, syscall.Signal(0)) == nil
+	return pidAlive(record.LocalPID)
 }
 
 type SessionEvent struct {
@@ -215,9 +272,39 @@ func ResolveDir(override string) (string, error) {
 	return expandPath(path)
 }
 
+// WriteRecord persists the record to <dir>/sessions/<id>.json. Two
+// guards run against the current on-disk version of the same id:
+//
+//   - A file with state_version > MaxSupportedStateVersion is never
+//     overwritten (ErrFutureStateVersion) — a v1 binary must not
+//     clobber a future-format file.
+//   - A record that is finalized on disk (EndedAt set) is not
+//     resurrected by a writer holding a stale open snapshot: the
+//     on-disk EndedAt is preserved, and ExitCode/DisconnectReason are
+//     preserved unless the incoming write sets them explicitly.
+//
+// Beyond that the layer is documented last-writer-wins (see the
+// package comment): there is no lock between the read below and the
+// atomic write, so concurrent writers can still drop each other's
+// field updates — just not a record's finalization.
 func WriteRecord(dir string, record SessionRecord) error {
 	if err := validateID(record.ID); err != nil {
 		return err
+	}
+	existing, err := ReadRecord(dir, record.ID)
+	switch {
+	case err == nil:
+		if record.EndedAt == nil && existing.EndedAt != nil {
+			record.EndedAt = existing.EndedAt
+			if record.ExitCode == nil {
+				record.ExitCode = existing.ExitCode
+			}
+			if record.DisconnectReason == "" {
+				record.DisconnectReason = existing.DisconnectReason
+			}
+		}
+	case errors.Is(err, ErrFutureStateVersion):
+		return fmt.Errorf("refusing to overwrite session record %s: %w", record.ID, err)
 	}
 	record.StateVersion = StateVersion
 	data, err := json.MarshalIndent(record, "", "  ")
@@ -245,43 +332,101 @@ func ReadRecord(dir string, id string) (SessionRecord, error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return SessionRecord{}, fmt.Errorf("parse session record %s: %w", id, err)
 	}
+	if record.StateVersion > MaxSupportedStateVersion {
+		return SessionRecord{}, fmt.Errorf("session record %s has state_version %d (this ssherpa supports up to %d): %w",
+			id, record.StateVersion, MaxSupportedStateVersion, ErrFutureStateVersion)
+	}
 	return record, nil
 }
 
+// ListRecords returns every readable session record, newest first.
+// Unreadable, unparseable, or future-format files are skipped rather
+// than failing the whole listing (one corrupt record used to take
+// down list, prune, and cleanup); use ListRecordsDetailed to see what
+// was skipped.
 func ListRecords(dir string) ([]SessionRecord, error) {
-	entries, err := os.ReadDir(SessionsDir(dir))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []SessionRecord{}, nil
-		}
-		return nil, fmt.Errorf("read sessions directory: %w", err)
-	}
+	records, _, err := ListRecordsDetailed(dir)
+	return records, err
+}
 
-	records := []SessionRecord{}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		record, err := ReadRecord(dir, id)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
+// ListRecordsDetailed is ListRecords plus the files the listing
+// skipped (corrupt JSON, bad name, unreadable, or state_version newer
+// than this binary supports). Callers should surface skipped entries
+// as warnings — they are never an error for the listing itself.
+func ListRecordsDetailed(dir string) ([]SessionRecord, []SkippedFile, error) {
+	files, skipped, err := listRecordFiles(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	records := make([]SessionRecord, 0, len(files))
+	for _, file := range files {
+		records = append(records, file.record)
 	}
 	sort.Slice(records, func(i int, j int) bool {
 		return records[i].StartedAt.After(records[j].StartedAt)
 	})
-	return records, nil
+	return records, skipped, nil
+}
+
+// recordFile pairs a parsed session record with the on-disk base name
+// (filename without .json) it was read from. Destructive operations
+// (PruneRecords) must key on the base name, never on the JSON-internal
+// record.ID — a tampered or imported record whose id contains path
+// separators would otherwise point deletions outside sessions/.
+type recordFile struct {
+	base   string
+	record SessionRecord
+}
+
+func listRecordFiles(dir string) ([]recordFile, []SkippedFile, error) {
+	entries, err := os.ReadDir(SessionsDir(dir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("read sessions directory: %w", err)
+	}
+
+	files := []recordFile{}
+	skipped := []SkippedFile{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		base := strings.TrimSuffix(entry.Name(), ".json")
+		record, err := ReadRecord(dir, base)
+		if err != nil {
+			skipped = append(skipped, SkippedFile{
+				Path:   filepath.Join(SessionsDir(dir), entry.Name()),
+				Reason: err.Error(),
+			})
+			continue
+		}
+		files = append(files, recordFile{base: base, record: record})
+	}
+	return files, skipped, nil
 }
 
 type PruneResult struct {
 	Records []SessionRecord `json:"records"`
 	DryRun  bool            `json:"dry_run"`
+	// Artifacts lists the transcript/log sibling files (<base>.cast,
+	// <base>.log next to each pruned <base>.json) that were removed —
+	// or, on a dry run, would be removed — alongside the records.
+	Artifacts []string `json:"artifacts,omitempty"`
 }
 
 type CleanupResult struct {
 	RemoteMirrors []SessionRecord `json:"remote_mirrors"`
+	// LocalSessions lists local (non-mirror) records the cleanup
+	// finalized because their recorded processes were gone and the
+	// record was older than StaleLocalSessionTTL — crashed sessions
+	// whose supervisor never wrote EndedAt.
+	LocalSessions []SessionRecord `json:"local_sessions,omitempty"`
+	// Skipped lists record files the cleanup could not read
+	// (unparseable, unreadable, or future-format) and therefore left
+	// untouched.
+	Skipped []SkippedFile `json:"skipped,omitempty"`
 }
 
 type SessionNode struct {
@@ -289,22 +434,42 @@ type SessionNode struct {
 	Children []SessionNode `json:"children,omitempty"`
 }
 
+// CleanupStaleRemoteMirrors finalizes session records whose liveness
+// claim is no longer true. Despite the historical name it makes two
+// passes (existing callers get both for free):
+//
+//  1. Remote mirrors whose local parent chain is gone — the original
+//     behavior.
+//  2. Local non-mirror records whose recorded LocalPID (and SSHPID,
+//     when set) no longer name live processes and whose StartedAt is
+//     older than StaleLocalSessionTTL — crashed sessions that would
+//     otherwise read as "active" forever, or worse, report a recycled
+//     PID as alive.
+//
+// Finalized local records get DisconnectReason
+// "stale_local_session_cleanup" and no fabricated ExitCode (the real
+// exit status is unknowable after a crash).
 func CleanupStaleRemoteMirrors(dir string, now time.Time) (CleanupResult, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	records, err := ListRecords(dir)
+	// Iterate the on-disk files (not just parsed records) so each
+	// finalization writes back to the exact file it was read from — a
+	// record whose JSON-internal id disagrees with its filename must
+	// not spawn a second file or dodge the write.
+	files, skipped, err := listRecordFiles(dir)
 	if err != nil {
 		return CleanupResult{}, err
 	}
 	byID := map[string]SessionRecord{}
-	for _, record := range records {
-		if record.ID != "" {
-			byID[record.ID] = record
+	for _, file := range files {
+		if file.record.ID != "" {
+			byID[file.record.ID] = file.record
 		}
 	}
-	result := CleanupResult{}
-	for _, record := range records {
+	result := CleanupResult{Skipped: skipped}
+	for i := range files {
+		record := files[i].record
 		if !staleRemoteMirror(record, byID) {
 			continue
 		}
@@ -318,13 +483,92 @@ func CleanupStaleRemoteMirrors(dir string, now time.Time) (CleanupResult, error)
 			Type:    "stale_remote_mirror_cleanup",
 			Message: "remote mirror was closed because its local parent session is no longer active",
 		})
-		if err := WriteRecord(dir, record); err != nil {
+		if err := writeRecordFile(dir, files[i].base, record); err != nil {
 			return result, err
 		}
+		files[i].record = record
 		result.RemoteMirrors = append(result.RemoteMirrors, record)
 		byID[record.ID] = record
 	}
+	for i := range files {
+		record := files[i].record
+		if !staleLocalSession(record, now) {
+			continue
+		}
+		endedAt := now.UTC()
+		record.EndedAt = &endedAt
+		record.DisconnectReason = "stale_local_session_cleanup"
+		record.Events = append(record.Events, SessionEvent{
+			Time:    endedAt,
+			Type:    "stale_local_session_cleanup",
+			Message: "session was closed because its recorded local process is no longer running",
+		})
+		if err := writeRecordFile(dir, files[i].base, record); err != nil {
+			return result, err
+		}
+		files[i].record = record
+		result.LocalSessions = append(result.LocalSessions, record)
+		byID[record.ID] = record
+	}
 	return result, nil
+}
+
+// writeRecordFile persists a record to an exact sessions/ directory
+// entry. Unlike WriteRecord it does not derive the path from the
+// record's JSON-internal id, so callers that read a file keep writing
+// to that same file even when the id and filename disagree.
+func writeRecordFile(dir string, base string, record SessionRecord) error {
+	record.StateVersion = StateVersion
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal session record: %w", err)
+	}
+	data = append(data, '\n')
+	_, err = fsutil.AtomicWriteFile(filepath.Join(SessionsDir(dir), base+".json"), data, fsutil.WriteOptions{Mode: 0o600})
+	if err != nil {
+		return fmt.Errorf("write session record %s: %w", base, err)
+	}
+	return nil
+}
+
+// staleLocalSession reports whether a local (non-mirror) record claims
+// to be active while its recorded processes are demonstrably gone.
+// Imported and inherited records are excluded — their PIDs belong to
+// another machine or to a synthetic display row, so a local kill-0
+// probe says nothing about them.
+//
+// Residual PID-reuse risk (documented, not solved): kill(pid, 0)
+// cannot distinguish the original process from an unrelated one that
+// recycled its PID after a crash or reboot, so a record whose PID was
+// recycled still reads as alive and is NOT reaped here. Closing that
+// gap portably needs a process-identity check (start-time via
+// /proc/<pid>/stat on Linux, sysctl KERN_PROC on darwin) that the
+// stdlib does not expose uniformly; the TTL only bounds how young a
+// record must be before a dead-PID verdict is trusted.
+func staleLocalSession(record SessionRecord, now time.Time) bool {
+	if record.RemoteMirror || record.Inherited || record.Import != nil {
+		return false
+	}
+	if record.EndedAt != nil {
+		return false
+	}
+	if record.LocalPID <= 0 {
+		return false
+	}
+	if record.StartedAt.IsZero() || now.Sub(record.StartedAt) < StaleLocalSessionTTL {
+		return false
+	}
+	if pidAlive(record.LocalPID) {
+		return false
+	}
+	if record.SSHPID > 0 && pidAlive(record.SSHPID) {
+		return false
+	}
+	return true
+}
+
+func pidAlive(pid int) bool {
+	return syscall.Kill(pid, syscall.Signal(0)) == nil
 }
 
 func staleRemoteMirror(record SessionRecord, byID map[string]SessionRecord) bool {
@@ -358,27 +602,92 @@ func staleRemoteMirrorSeen(record SessionRecord, byID map[string]SessionRecord, 
 	return !ProcessAlive(parent)
 }
 
+// PruneRecords removes session records that ended before the cutoff,
+// together with their transcript artifacts (<base>.cast, <base>.log).
+// Deletion is keyed on the on-disk filename the record was read from
+// — never on the JSON-internal record.ID, which a tampered or
+// imported record could point outside sessions/ via path separators.
+// Files the listing skipped (corrupt, future-format) are never
+// touched.
 func PruneRecords(dir string, olderThan time.Duration, now time.Time, dryRun bool) (PruneResult, error) {
 	if olderThan <= 0 {
 		return PruneResult{}, errors.New("older-than duration must be positive")
 	}
-	records, err := ListRecords(dir)
+	files, _, err := listRecordFiles(dir)
 	if err != nil {
 		return PruneResult{}, err
 	}
+	sort.Slice(files, func(i int, j int) bool {
+		return files[i].record.StartedAt.After(files[j].record.StartedAt)
+	})
 
+	sessions := SessionsDir(dir)
 	cutoff := now.Add(-olderThan)
 	result := PruneResult{DryRun: dryRun}
-	for _, record := range records {
+	for _, file := range files {
+		record := file.record
 		if record.EndedAt == nil || record.EndedAt.After(cutoff) {
 			continue
 		}
 		result.Records = append(result.Records, record)
+		// file.base is a direct directory-entry name (no separators),
+		// so these joins cannot leave sessions/.
+		artifacts := []string{}
+		for _, ext := range []string{".cast", ".log"} {
+			artifact := filepath.Join(sessions, file.base+ext)
+			if _, err := os.Lstat(artifact); err == nil {
+				artifacts = append(artifacts, artifact)
+			}
+		}
+		result.Artifacts = append(result.Artifacts, artifacts...)
 		if dryRun {
 			continue
 		}
-		if err := os.Remove(RecordPath(dir, record.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return result, fmt.Errorf("remove session record %s: %w", record.ID, err)
+		if err := os.Remove(filepath.Join(sessions, file.base+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return result, fmt.Errorf("remove session record %s: %w", file.base, err)
+		}
+		for _, artifact := range artifacts {
+			if err := os.Remove(artifact); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return result, fmt.Errorf("remove session artifact %s: %w", artifact, err)
+			}
+		}
+	}
+
+	// Second pass: .cast/.log files whose .json sibling no longer
+	// exists at all (prune historically removed only the record, so
+	// installs in the wild have orphaned transcripts). Age them by
+	// file mtime against the same cutoff.
+	entries, err := os.ReadDir(sessions)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return result, nil
+		}
+		return result, fmt.Errorf("scan session artifacts: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		ext := filepath.Ext(name)
+		if ext != ".cast" && ext != ".log" {
+			continue
+		}
+		base := strings.TrimSuffix(name, ext)
+		if _, err := os.Lstat(filepath.Join(sessions, base+".json")); err == nil {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		orphan := filepath.Join(sessions, name)
+		result.Artifacts = append(result.Artifacts, orphan)
+		if dryRun {
+			continue
+		}
+		if err := os.Remove(orphan); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return result, fmt.Errorf("remove orphaned session artifact %s: %w", orphan, err)
 		}
 	}
 	return result, nil

@@ -447,7 +447,7 @@ Host pgbox
 		t.Fatalf("Run returned %d, want 0; stderr=%q", code, stderr.String())
 	}
 	got := strings.TrimSpace(readFile(t, logPath))
-	want := "-o SendEnv=SSHERPA_* -L 127.0.0.1:5433:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox"
+	want := "-o SendEnv=SSHERPA_SESSION_ID SSHERPA_PARENT_SESSION_ID SSHERPA_DEPTH SSHERPA_ROUTE SSHERPA_ORIGIN_HOST -L 127.0.0.1:5433:127.0.0.1:5432 -N -o ExitOnForwardFailure=yes pgbox"
 	if got != want {
 		t.Fatalf("fake-ssh argv = %q, want %q", got, want)
 	}
@@ -461,6 +461,48 @@ Host pgbox
 	}
 	if records[0].Forward == nil || records[0].Forward.SavedAlias != "pngwin-pg-tunnel" {
 		t.Fatalf("record.Forward.SavedAlias = %v, want pngwin-pg-tunnel", records[0].Forward)
+	}
+}
+
+// TestRunForwardRejectsDashAliasFromCatalog is the WP1 regression for the
+// saved-forward launch path: the catalog JSON lives on disk and could be
+// tampered with, so a StoredForward whose SSHAlias begins with "-" must fail
+// destination validation (exit 1) before any ssh argv is built or spawned.
+func TestRunForwardRejectsDashAliasFromCatalog(t *testing.T) {
+	stateDir := t.TempDir()
+	config := writeConfig(t, `
+Host pgbox
+  HostName pgbox.example.com
+`)
+	fakeSSH, logPath := writeFakeSSH(t, 0)
+
+	saved := state.StoredForward{
+		Name:       "tampered",
+		SSHAlias:   "-oProxyCommand=touch /tmp/pwned",
+		LocalBind:  "127.0.0.1",
+		LocalPort:  5433,
+		RemoteHost: "127.0.0.1",
+		RemotePort: 5432,
+	}
+	if err := state.WriteForward(stateDir, saved); err != nil {
+		t.Fatalf("seed forward: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"forward",
+		"--state-dir", stateDir,
+		"--select", "tampered",
+		"--config", config,
+		"--ssh-binary", fakeSSH,
+	}, &stdout, &stderr, BuildInfo{})
+
+	if code != 1 {
+		t.Fatalf("Run returned %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	assertContains(t, stderr.String(), "would be parsed as an ssh option")
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatalf("fake ssh was spawned for a tampered catalog alias: %s", readFile(t, logPath))
 	}
 }
 

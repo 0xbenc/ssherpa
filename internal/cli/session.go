@@ -37,12 +37,177 @@ const sessionUsage = `Usage:
 `
 
 type sessionMapOutput struct {
-	StateDir string              `json:"state_dir"`
-	Scope    string              `json:"scope"`
-	Total    int                 `json:"total"`
-	Active   int                 `json:"active"`
-	Recorded int                 `json:"recorded"`
-	Roots    []state.SessionNode `json:"roots"`
+	SchemaVersion int               `json:"schema_version"`
+	StateDir      string            `json:"state_dir"`
+	Scope         string            `json:"scope"`
+	Total         int               `json:"total"`
+	Active        int               `json:"active"`
+	Recorded      int               `json:"recorded"`
+	Roots         []sessionNodeJSON `json:"roots"`
+}
+
+// sessionNodeJSON mirrors state.SessionNode with the public record
+// projection, so `session map --json` cannot leak the internal fields
+// the list/show projections deliberately drop.
+type sessionNodeJSON struct {
+	Session  sessionJSON       `json:"session"`
+	Children []sessionNodeJSON `json:"children,omitempty"`
+}
+
+func sessionNodeProjections(nodes []state.SessionNode) []sessionNodeJSON {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]sessionNodeJSON, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, sessionNodeJSON{
+			Session:  sessionProjection(node.Record),
+			Children: sessionNodeProjections(node.Children),
+		})
+	}
+	return out
+}
+
+type sessionPruneJSON struct {
+	SchemaVersion int           `json:"schema_version"`
+	DryRun        bool          `json:"dry_run"`
+	Sessions      []sessionJSON `json:"sessions"`
+	Artifacts     []string      `json:"artifacts,omitempty"`
+}
+
+type bundleImportJSON struct {
+	SchemaVersion  int                       `json:"schema_version"`
+	Session        sessionJSON               `json:"session"`
+	Manifest       transcript.BundleManifest `json:"manifest"`
+	OriginClass    string                    `json:"origin_class"`
+	BundleSHA256   string                    `json:"bundle_sha256"`
+	TranscriptPath string                    `json:"transcript_path"`
+	Warning        string                    `json:"warning,omitempty"`
+}
+
+// sessionJSONSchemaVersion versions the public JSON projections below.
+// Bump it whenever a field is removed or its meaning changes.
+const sessionJSONSchemaVersion = 1
+
+// sessionJSON is the public projection of a state.SessionRecord emitted by
+// `session list --json` and `session show --json`. Internal operational
+// fields (ssh_argv, control_path, raw events) are deliberately not part of
+// the stable contract.
+type sessionJSON struct {
+	ID               string             `json:"id"`
+	ParentID         string             `json:"parent_id,omitempty"`
+	Depth            int                `json:"depth"`
+	Route            []string           `json:"route,omitempty"`
+	TargetAlias      string             `json:"target_alias,omitempty"`
+	Kind             string             `json:"kind,omitempty"`
+	RunnerMode       string             `json:"runner_mode"`
+	StartedAt        time.Time          `json:"started_at"`
+	EndedAt          *time.Time         `json:"ended_at,omitempty"`
+	ExitCode         *int               `json:"exit_code,omitempty"`
+	DisconnectReason string             `json:"disconnect_reason,omitempty"`
+	LocalPID         int                `json:"local_pid,omitempty"`
+	SSHPID           int                `json:"ssh_pid,omitempty"`
+	Origin           string             `json:"origin"`
+	Transcript       *transcriptJSON    `json:"transcript,omitempty"`
+	RecordedBy       *recordedByJSON    `json:"recorded_by,omitempty"`
+	Import           *sessionImportJSON `json:"import,omitempty"`
+}
+
+type transcriptJSON struct {
+	Path      string `json:"path,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Bytes     int64  `json:"bytes"`
+	Frames    int64  `json:"frames"`
+	Truncated bool   `json:"truncated,omitempty"`
+	// StopReason reports why recording stopped early ("size limit
+	// reached", "write error: ..."); empty when the recording ran to a
+	// clean close. Mirrors state.TranscriptSpec.StopReason.
+	StopReason string `json:"stop_reason,omitempty"`
+}
+
+type recordedByJSON struct {
+	MachineID string `json:"machine_id,omitempty"`
+	Version   string `json:"version,omitempty"`
+}
+
+type sessionImportJSON struct {
+	ImportedAt      time.Time `json:"imported_at"`
+	OriginClass     string    `json:"origin_class"`
+	SourceSessionID string    `json:"source_session_id,omitempty"`
+	SourceMachineID string    `json:"source_machine_id,omitempty"`
+}
+
+type sessionListJSON struct {
+	SchemaVersion int           `json:"schema_version"`
+	StateDir      string        `json:"state_dir"`
+	Sessions      []sessionJSON `json:"sessions"`
+}
+
+type sessionShowJSON struct {
+	SchemaVersion int         `json:"schema_version"`
+	Session       sessionJSON `json:"session"`
+}
+
+func sessionProjections(records []state.SessionRecord) []sessionJSON {
+	out := make([]sessionJSON, 0, len(records))
+	for _, record := range records {
+		out = append(out, sessionProjection(record))
+	}
+	return out
+}
+
+func sessionProjection(record state.SessionRecord) sessionJSON {
+	out := sessionJSON{
+		ID:               record.ID,
+		ParentID:         record.ParentID,
+		Depth:            record.Depth,
+		Route:            append([]string(nil), record.Route...),
+		TargetAlias:      record.TargetAlias,
+		Kind:             record.Kind,
+		RunnerMode:       record.RunnerMode,
+		StartedAt:        record.StartedAt,
+		EndedAt:          record.EndedAt,
+		ExitCode:         record.ExitCode,
+		DisconnectReason: record.DisconnectReason,
+		LocalPID:         record.LocalPID,
+		SSHPID:           record.SSHPID,
+		Origin:           sessionOriginJSON(record),
+	}
+	if record.Transcript != nil {
+		out.Transcript = &transcriptJSON{
+			Path:       record.Transcript.Path,
+			Format:     record.Transcript.Format,
+			Bytes:      record.Transcript.Bytes,
+			Frames:     record.Transcript.Frames,
+			Truncated:  record.Transcript.Truncated,
+			StopReason: record.Transcript.StopReason,
+		}
+	}
+	if record.RecordedBy != nil {
+		out.RecordedBy = &recordedByJSON{
+			MachineID: record.RecordedBy.MachineID,
+			Version:   record.RecordedBy.SSHerpaVersion,
+		}
+	}
+	if record.Import != nil {
+		out.Import = &sessionImportJSON{
+			ImportedAt:      record.Import.ImportedAt,
+			OriginClass:     record.Import.OriginClass,
+			SourceSessionID: record.Import.SourceSessionID,
+			SourceMachineID: record.Import.SourceMachineID,
+		}
+	}
+	return out
+}
+
+func sessionOriginJSON(record state.SessionRecord) string {
+	if record.Import == nil {
+		return "local"
+	}
+	if strings.TrimSpace(record.Import.OriginClass) == "" {
+		return "imported_unknown"
+	}
+	return record.Import.OriginClass
 }
 
 type sessionFlags struct {
@@ -137,6 +302,9 @@ func runSessionLog(args []string, stdout io.Writer, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
+	if flags.Raw && !confirmImportedRawEmit(record, "session log --raw", stderr) {
+		return 1
+	}
 	text := transcript.Text(rec, transcript.TextOptions{Raw: flags.Raw, Tail: flags.Tail})
 	fmt.Fprint(stdout, text)
 	if flags.Follow {
@@ -154,15 +322,46 @@ func runSessionReplay(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ssherpa: session replay requires exactly one session id")
 		return 1
 	}
-	_, _, rec, ok := loadTranscript(flags.StateDir, flags.Rest[0], stderr)
+	_, record, rec, ok := loadTranscript(flags.StateDir, flags.Rest[0], stderr)
 	if !ok {
 		return 2
+	}
+	if !confirmImportedRawEmit(record, "session replay", stderr) {
+		return 1
 	}
 	if err := transcript.Replay(stdout, rec, flags.Speed, flags.NoDelay); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: replay transcript: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// confirmImportedRawEmit gates raw byte emission of an IMPORTED transcript
+// behind the same default-No danger confirm the TUI uses: another machine's
+// recording can carry arbitrary terminal escape sequences. Local recordings
+// pass through untouched. Without an interactive terminal the guard fails
+// closed.
+func confirmImportedRawEmit(record state.SessionRecord, command string, stderr io.Writer) bool {
+	if record.Import == nil {
+		return true
+	}
+	fmt.Fprintf(stderr, "ssherpa: %s emits unfiltered terminal bytes from an imported recording\n", command)
+	if !term.IsTerminal(os.Stdin.Fd()) {
+		fmt.Fprintln(stderr, "ssherpa: refusing imported raw output without an interactive confirmation")
+		return false
+	}
+	confirmed, answered, err := ui.ConfirmDelete(context.Background(), ui.ConfirmOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Emit imported raw transcript",
+		Message:     "Raw output can contain terminal escape sequences from another machine's recording. Continue?",
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: raw output confirmation failed: %v\n", err)
+		return false
+	}
+	return answered && confirmed
 }
 
 func runSessionGrep(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -180,8 +379,10 @@ func runSessionGrep(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	matches, err := transcript.Grep(rec, flags.Rest[1], flags.IgnoreCase)
 	if err != nil {
+		// grep(1) convention: 0 = match, 1 = no match, 2 = error. An
+		// invalid pattern must not be confusable with "no match".
 		fmt.Fprintf(stderr, "ssherpa: grep transcript: %v\n", err)
-		return 1
+		return 2
 	}
 	if flags.JSON {
 		writeJSON(stdout, matches)
@@ -288,9 +489,12 @@ func runSessionBundleExport(args []string, stdout io.Writer, stderr io.Writer, b
 		writeJSON(stdout, result)
 		return 0
 	}
+	if result.Warning != "" {
+		fmt.Fprintf(stderr, "ssherpa: warning: %s\n", termstyle.Sanitize(result.Warning))
+	}
 	fmt.Fprintf(stdout, "exported session bundle to %s\n", result.Path)
-	fmt.Fprintf(stdout, "source session: %s\n", result.Manifest.SourceSessionID)
-	fmt.Fprintf(stdout, "source machine: %s\n", defaultString(result.Manifest.SourceMachineID, "unknown"))
+	fmt.Fprintf(stdout, "source session: %s\n", termstyle.Sanitize(result.Manifest.SourceSessionID))
+	fmt.Fprintf(stdout, "source machine: %s\n", termstyle.Sanitize(defaultString(result.Manifest.SourceMachineID, "unknown")))
 	fmt.Fprintf(stdout, "transcript sha256: %s\n", result.Manifest.TranscriptSHA256)
 	return 0
 }
@@ -320,13 +524,24 @@ func runSessionBundleImport(args []string, stdout io.Writer, stderr io.Writer, b
 		return 1
 	}
 	if flags.JSON {
-		writeJSON(stdout, result)
+		writeJSON(stdout, bundleImportJSON{
+			SchemaVersion:  sessionJSONSchemaVersion,
+			Session:        sessionProjection(result.Record),
+			Manifest:       result.Manifest,
+			OriginClass:    result.OriginClass,
+			BundleSHA256:   result.BundleSHA256,
+			TranscriptPath: result.TranscriptPath,
+			Warning:        result.Warning,
+		})
 		return 0
+	}
+	if result.Warning != "" {
+		fmt.Fprintf(stderr, "ssherpa: warning: %s\n", termstyle.Sanitize(result.Warning))
 	}
 	fmt.Fprintf(stdout, "imported session bundle as %s\n", result.Record.ID)
 	fmt.Fprintf(stdout, "origin: %s\n", result.OriginClass)
-	fmt.Fprintf(stdout, "source session: %s\n", result.Manifest.SourceSessionID)
-	fmt.Fprintf(stdout, "source machine: %s\n", defaultString(result.Manifest.SourceMachineID, "unknown"))
+	fmt.Fprintf(stdout, "source session: %s\n", termstyle.Sanitize(result.Manifest.SourceSessionID))
+	fmt.Fprintf(stdout, "source machine: %s\n", termstyle.Sanitize(defaultString(result.Manifest.SourceMachineID, "unknown")))
 	fmt.Fprintf(stdout, "transcript: %s\n", result.TranscriptPath)
 	return 0
 }
@@ -380,7 +595,7 @@ func runSessionBrowse(args []string, stdout io.Writer, stderr io.Writer) int {
 		if !cleanupStaleSessionState(stateDir, stderr) {
 			return 1
 		}
-		records, err := state.ListRecords(stateDir)
+		records, err := listRecordsWarnSkipped(stateDir, stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
 			return 1
@@ -465,10 +680,10 @@ func transcriptBrowserDetail(record state.SessionRecord, path string) string {
 		parts = append(parts, fmt.Sprintf("exit %d", *record.ExitCode))
 	}
 	if record.Import != nil {
-		parts = append(parts, "source session "+defaultString(record.Import.SourceSessionID, "unknown"))
+		parts = append(parts, "source session "+termstyle.Sanitize(defaultString(record.Import.SourceSessionID, "unknown")))
 		parts = append(parts, "source machine "+shortMachineID(record.Import.SourceMachineID))
 	}
-	parts = append(parts, path)
+	parts = append(parts, termstyle.Sanitize(path))
 	return strings.Join(parts, " · ")
 }
 
@@ -512,7 +727,7 @@ func runTranscriptActionMenu(stateDir string, record state.SessionRecord, stdout
 		return 0, true
 	case "replay-raw":
 		if record.Import != nil {
-			ok, answered, err := ui.Confirm(context.Background(), ui.ConfirmOptions{
+			ok, answered, err := ui.ConfirmDelete(context.Background(), ui.ConfirmOptions{
 				Input:       os.Stdin,
 				Output:      stderr,
 				NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
@@ -583,7 +798,7 @@ func transcriptActionItems(record state.SessionRecord) []ui.ManagementItem {
 	return append(items[:3], append([]ui.ManagementItem{remove}, items[3:]...)...)
 }
 
-const replayOverlayHotkey = byte(0x1d)
+const replayOverlayHotkey = byte(0x1e)
 
 type replayCommand int
 
@@ -734,15 +949,26 @@ func replayOutputFrames(rec transcript.Recording) []transcript.Frame {
 	return frames
 }
 
+// maxReplayFrameDelay mirrors the cap transcript.Replay applies: frame
+// offsets come from potentially imported (untrusted) casts, so an absurd
+// offset must not stall the controlled replay indefinitely.
+const maxReplayFrameDelay = 10 * time.Second
+
 func replayFrameDelay(frame transcript.Frame, previous float64, speed float64, noDelay bool) time.Duration {
 	if noDelay {
 		return 0
 	}
 	delay := frame.Offset - previous
-	if delay <= 0 {
+	// The negated comparisons keep NaN offsets (and non-positive speeds)
+	// at zero delay instead of poisoning the duration math.
+	if !(delay > 0) || !(speed > 0) {
 		return 0
 	}
-	return time.Duration(delay / speed * float64(time.Second))
+	seconds := delay / speed
+	if seconds >= maxReplayFrameDelay.Seconds() {
+		return maxReplayFrameDelay
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func replayWait(remaining time.Duration, sleep func(time.Duration), keys replayKeyReader, showOverlay func(replayProgress) replayCommand, progress replayProgress) (replayCommand, time.Duration, error) {
@@ -850,7 +1076,7 @@ func drawReplayOverlay(output io.Writer, stdin *os.File, theme termstyle.Theme, 
 	if !ok {
 		fmt.Fprintln(output)
 		for _, line := range lines {
-			fmt.Fprintln(output, termstyle.Strip(line))
+			fmt.Fprintln(output, termstyle.Sanitize(line))
 		}
 		return replayOverlayFrame{}
 	}
@@ -893,7 +1119,7 @@ func replayTruncateLine(value string, width int) string {
 	if termstyle.VisibleWidth(value) <= width {
 		return value
 	}
-	plain := termstyle.Strip(value)
+	plain := termstyle.Sanitize(value)
 	if len(plain) <= width {
 		return plain
 	}
@@ -968,6 +1194,9 @@ func runTranscriptBundleExportTUI(stateDir string, record state.SessionRecord, s
 		fmt.Fprintf(stderr, "ssherpa: export bundle: %v\n", err)
 		return 1
 	}
+	if result.Warning != "" {
+		fmt.Fprintf(stderr, "ssherpa: warning: %s\n", termstyle.Sanitize(result.Warning))
+	}
 	fmt.Fprintf(stdout, "exported session bundle to %s\n", result.Path)
 	return 0
 }
@@ -1023,10 +1252,10 @@ func runBundleImportTUI(flags connectFlags, stdout io.Writer, stderr io.Writer, 
 	message := fmt.Sprintf("Import %s from %s?\n\nTarget: %s\nRoute: %s\nSource session: %s\nSource machine: %s\nOrigin: %s\nBundle SHA256: %s",
 		filepath.Base(path),
 		humanBytesCLI(preview.Bytes),
-		defaultString(preview.Manifest.Target, "-"),
+		termstyle.Sanitize(defaultString(preview.Manifest.Target, "-")),
 		sessionview.FormatRoute(preview.Manifest.Route),
-		defaultString(preview.Manifest.SourceSessionID, "unknown"),
-		defaultString(preview.Manifest.SourceMachineID, "unknown"),
+		termstyle.Sanitize(defaultString(preview.Manifest.SourceSessionID, "unknown")),
+		termstyle.Sanitize(defaultString(preview.Manifest.SourceMachineID, "unknown")),
 		origin,
 		preview.BundleSHA256,
 	)
@@ -1051,6 +1280,9 @@ func runBundleImportTUI(flags connectFlags, stdout io.Writer, stderr io.Writer, 
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: import bundle: %v\n", err)
 		return 1, false
+	}
+	if result.Warning != "" {
+		fmt.Fprintf(stderr, "ssherpa: warning: %s\n", termstyle.Sanitize(result.Warning))
 	}
 	fmt.Fprintf(stdout, "imported session bundle as %s (%s)\n", result.Record.ID, result.OriginClass)
 	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{
@@ -1108,6 +1340,30 @@ func removeImportedTranscriptTUI(stateDir string, record state.SessionRecord, st
 	return 0
 }
 
+// listRecordsWarnSkipped lists session records, warning once per file
+// the tolerant listing skipped (corrupt, unreadable, or future-format)
+// so operators can see why sessions are missing. Path and reason can
+// embed bytes from a tampered file; both are sanitized like every
+// other render sink.
+func listRecordsWarnSkipped(stateDir string, stderr io.Writer) ([]state.SessionRecord, error) {
+	records, skipped, err := state.ListRecordsDetailed(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	warnSkippedFiles(stderr, "session record", skipped)
+	return records, nil
+}
+
+// warnSkippedFiles prints one stderr line per file a tolerant listing
+// skipped, so silently dropping a corrupt or future-format catalog
+// entry never looks like the entry does not exist. Path and reason can
+// carry bytes from a tampered file, so both are sanitized.
+func warnSkippedFiles(stderr io.Writer, kind string, skipped []state.SkippedFile) {
+	for _, skip := range skipped {
+		fmt.Fprintf(stderr, "ssherpa: skipping unreadable %s %s: %s\n", kind, termstyle.Sanitize(skip.Path), termstyle.Sanitize(skip.Reason))
+	}
+}
+
 func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags, ok := parseSessionFlags(args, stderr, false, false)
 	if !ok {
@@ -1126,14 +1382,18 @@ func runSessionList(args []string, stdout io.Writer, stderr io.Writer) int {
 	if !cleanupStaleSessionState(stateDir, stderr) {
 		return 1
 	}
-	records, err := state.ListRecords(stateDir)
+	records, err := listRecordsWarnSkipped(stateDir, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
 		return 1
 	}
 
 	if flags.JSON {
-		writeJSON(stdout, records)
+		writeJSON(stdout, sessionListJSON{
+			SchemaVersion: sessionJSONSchemaVersion,
+			StateDir:      stateDir,
+			Sessions:      sessionProjections(records),
+		})
 		return 0
 	}
 	sessionview.WriteList(stdout, stateDir, records)
@@ -1155,7 +1415,10 @@ func runSessionStopAll(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: resolve state directory: %v\n", err)
 		return 1
 	}
-	records, err := state.ListRecords(stateDir)
+	// Use the warning variant: a live tunnel/proxy whose record is
+	// corrupt or future-format would otherwise be skipped silently and
+	// left running while stop-all reported success.
+	records, err := listRecordsWarnSkipped(stateDir, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: list sessions: %v\n", err)
 		return 1
@@ -1174,8 +1437,8 @@ func runSessionStopAll(args []string, stdout io.Writer, stderr io.Writer) int {
 		result.Signaled, result.Stopped, result.Pending, result.Errors)
 	for _, rec := range result.Records {
 		label := defaultString(rec.Kind, state.KindInteractive)
-		target := defaultString(rec.Target, "-")
-		line := fmt.Sprintf("%s\t%s\t%s\tpid=%d\t%s", rec.ID, label, target, rec.PID, rec.Status)
+		target := termstyle.Sanitize(defaultString(rec.Target, "-"))
+		line := fmt.Sprintf("%s\t%s\t%s\tpid=%d\t%s", termstyle.Sanitize(rec.ID), label, target, rec.PID, rec.Status)
 		if rec.Error != "" {
 			line += "\t" + rec.Error
 		}
@@ -1276,7 +1539,7 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 	if !cleanupStaleSessionState(stateDir, stderr) {
 		return 1
 	}
-	records, err := state.ListRecords(stateDir)
+	records, err := listRecordsWarnSkipped(stateDir, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: map sessions: %v\n", err)
 		return 1
@@ -1293,12 +1556,13 @@ func runSessionMap(args []string, stdout io.Writer, stderr io.Writer) int {
 	active, _ := sessionview.CountStatuses(records)
 	if flags.JSON {
 		writeJSON(stdout, sessionMapOutput{
-			StateDir: stateDir,
-			Scope:    scope,
-			Total:    len(visible),
-			Active:   active,
-			Recorded: len(records),
-			Roots:    roots,
+			SchemaVersion: sessionJSONSchemaVersion,
+			StateDir:      stateDir,
+			Scope:         scope,
+			Total:         len(visible),
+			Active:        active,
+			Recorded:      len(records),
+			Roots:         sessionNodeProjections(roots),
 		})
 		return 0
 	}
@@ -1400,6 +1664,12 @@ func cleanupStaleSessionState(stateDir string, stderr io.Writer) bool {
 	}
 	if len(result.RemoteMirrors) > 0 {
 		fmt.Fprintf(stderr, "ssherpa: cleaned up %d stale remote session mirror(s)\n", len(result.RemoteMirrors))
+	}
+	if len(result.LocalSessions) > 0 {
+		fmt.Fprintf(stderr, "ssherpa: finalized %d stale local session record(s)\n", len(result.LocalSessions))
+	}
+	if len(result.Skipped) > 0 {
+		fmt.Fprintf(stderr, "ssherpa: left %d unreadable session record file(s) untouched\n", len(result.Skipped))
 	}
 	return true
 }
@@ -1561,7 +1831,10 @@ func runSessionShow(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if flags.JSON {
-		writeJSON(stdout, record)
+		writeJSON(stdout, sessionShowJSON{
+			SchemaVersion: sessionJSONSchemaVersion,
+			Session:       sessionProjection(record),
+		})
 		return 0
 	}
 	printSessionRecord(stdout, record)
@@ -1593,7 +1866,12 @@ func runSessionPrune(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if flags.JSON {
-		writeJSON(stdout, result)
+		writeJSON(stdout, sessionPruneJSON{
+			SchemaVersion: sessionJSONSchemaVersion,
+			DryRun:        result.DryRun,
+			Sessions:      sessionProjections(result.Records),
+			Artifacts:     result.Artifacts,
+		})
 		return 0
 	}
 	prefix := "removed"
@@ -1603,10 +1881,16 @@ func runSessionPrune(args []string, stdout io.Writer, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "%s %d session record(s)\n", prefix, len(result.Records))
 	for _, record := range result.Records {
 		fmt.Fprintf(stdout, "%s\tended=%s\ttarget=%s\n",
-			record.ID,
+			termstyle.Sanitize(record.ID),
 			formatOptionalTime(record.EndedAt),
-			defaultString(record.TargetAlias, "-"),
+			termstyle.Sanitize(defaultString(record.TargetAlias, "-")),
 		)
+	}
+	if len(result.Artifacts) > 0 {
+		fmt.Fprintf(stdout, "%s %d transcript artifact(s)\n", prefix, len(result.Artifacts))
+		for _, artifact := range result.Artifacts {
+			fmt.Fprintln(stdout, termstyle.Sanitize(artifact))
+		}
 	}
 	return 0
 }
@@ -1770,8 +2054,14 @@ func loadTranscript(stateDirOverride string, id string, stderr io.Writer) (strin
 	path := transcriptPathForRecord(stateDir, record)
 	rec, err := transcript.Read(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: read transcript for %s: %v\n", id, err)
-		return "", state.SessionRecord{}, transcript.Recording{}, false
+		if !errors.Is(err, transcript.ErrTornTail) {
+			fmt.Fprintf(stderr, "ssherpa: read transcript for %s: %v\n", id, err)
+			return "", state.SessionRecord{}, transcript.Recording{}, false
+		}
+		fmt.Fprintf(stderr, "ssherpa: transcript tail is incomplete; showing %d frame(s)\n", len(rec.Frames))
+	}
+	if rec.SkippedLines > 0 {
+		fmt.Fprintf(stderr, "ssherpa: skipped %d unparseable transcript line(s)\n", rec.SkippedLines)
 	}
 	return stateDir, record, rec, true
 }
@@ -1783,19 +2073,36 @@ func transcriptPathForRecord(stateDir string, record state.SessionRecord) string
 	return filepath.Join(state.SessionsDir(stateDir), record.ID+".cast")
 }
 
+// followTranscriptMaxFailures is how many consecutive failed reads the
+// follow loop tolerates before giving up. The follower races the live
+// writer, so a single torn or half-written read must not abort the tail.
+const followTranscriptMaxFailures = 5
+
 func followTranscript(stdout io.Writer, stderr io.Writer, stateDir string, record state.SessionRecord, raw bool) int {
+	return followTranscriptLoop(stdout, stderr, stateDir, record, raw, func() { time.Sleep(500 * time.Millisecond) })
+}
+
+func followTranscriptLoop(stdout io.Writer, stderr io.Writer, stateDir string, record state.SessionRecord, raw bool, wait func()) int {
 	path := transcriptPathForRecord(stateDir, record)
 	lastText := ""
-	if rec, err := transcript.Read(path); err == nil {
+	if rec, err := transcript.Read(path); err == nil || errors.Is(err, transcript.ErrTornTail) {
 		lastText = transcript.Text(rec, transcript.TextOptions{Raw: raw})
 	}
+	failures := 0
 	for {
-		time.Sleep(500 * time.Millisecond)
+		wait()
 		rec, err := transcript.Read(path)
-		if err != nil {
-			fmt.Fprintf(stderr, "ssherpa: follow transcript: %v\n", err)
-			return 1
+		if err != nil && !errors.Is(err, transcript.ErrTornTail) {
+			// Transient: the live writer may be mid-append or rotating.
+			// Retry on the next tick; only give up after repeated failures.
+			failures++
+			if failures >= followTranscriptMaxFailures {
+				fmt.Fprintf(stderr, "ssherpa: follow transcript: %v\n", err)
+				return 1
+			}
+			continue
 		}
+		failures = 0
 		text := transcript.Text(rec, transcript.TextOptions{Raw: raw})
 		if len(text) > len(lastText) {
 			fmt.Fprint(stdout, text[len(lastText):])
@@ -1822,10 +2129,15 @@ func formatTranscriptOffset(offset float64) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
+// printSessionRecord renders a session record for a human terminal. Every
+// string a remote (telemetry mirror) or an imported bundle controls passes
+// through termstyle.Strip at this render boundary, regardless of any
+// parse-time cleaning upstream — terminal escape injection via record
+// metadata must die here.
 func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
-	fmt.Fprintf(stdout, "id:\t%s\n", record.ID)
+	fmt.Fprintf(stdout, "id:\t%s\n", termstyle.Sanitize(record.ID))
 	fmt.Fprintf(stdout, "status:\t%s\n", record.Status())
-	fmt.Fprintf(stdout, "target:\t%s\n", defaultString(record.TargetAlias, "-"))
+	fmt.Fprintf(stdout, "target:\t%s\n", termstyle.Sanitize(defaultString(record.TargetAlias, "-")))
 	fmt.Fprintf(stdout, "depth:\t%d\n", record.Depth)
 	fmt.Fprintf(stdout, "route:\t%s\n", sessionview.FormatDisplayRoute(record.Route))
 	fmt.Fprintf(stdout, "hops:\t%s\n", sessionview.FormatRoute(record.Hops))
@@ -1841,37 +2153,40 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 		fmt.Fprintf(stdout, "exit_code:\t%d\n", *record.ExitCode)
 	}
 	if record.Transcript != nil {
-		fmt.Fprintf(stdout, "transcript:\t%s\n", record.Transcript.Path)
-		fmt.Fprintf(stdout, "transcript_format:\t%s\n", record.Transcript.Format)
+		fmt.Fprintf(stdout, "transcript:\t%s\n", termstyle.Sanitize(record.Transcript.Path))
+		fmt.Fprintf(stdout, "transcript_format:\t%s\n", termstyle.Sanitize(record.Transcript.Format))
 		fmt.Fprintf(stdout, "transcript_bytes:\t%d\n", record.Transcript.Bytes)
 		fmt.Fprintf(stdout, "transcript_frames:\t%d\n", record.Transcript.Frames)
 		if record.Transcript.Truncated {
 			fmt.Fprintln(stdout, "transcript_truncated:\tyes")
 		}
+		if record.Transcript.StopReason != "" {
+			fmt.Fprintf(stdout, "transcript_stop_reason:\t%s\n", termstyle.Sanitize(record.Transcript.StopReason))
+		}
 	}
 	if record.RecordedBy != nil {
-		fmt.Fprintf(stdout, "recorded_by_machine:\t%s\n", record.RecordedBy.MachineID)
+		fmt.Fprintf(stdout, "recorded_by_machine:\t%s\n", termstyle.Sanitize(record.RecordedBy.MachineID))
 		fmt.Fprintf(stdout, "recorded_by_schema:\t%d\n", record.RecordedBy.IdentitySchema)
-		fmt.Fprintf(stdout, "recorded_by_version:\t%s\n", defaultString(record.RecordedBy.SSHerpaVersion, "unknown"))
+		fmt.Fprintf(stdout, "recorded_by_version:\t%s\n", termstyle.Sanitize(defaultString(record.RecordedBy.SSHerpaVersion, "unknown")))
 	}
 	if record.Import != nil {
 		fmt.Fprintf(stdout, "imported_at:\t%s\n", record.Import.ImportedAt.Local().Format(time.RFC3339))
-		fmt.Fprintf(stdout, "import_origin:\t%s\n", record.Import.OriginClass)
-		fmt.Fprintf(stdout, "source_session:\t%s\n", defaultString(record.Import.SourceSessionID, "unknown"))
-		fmt.Fprintf(stdout, "source_machine:\t%s\n", defaultString(record.Import.SourceMachineID, "unknown"))
-		fmt.Fprintf(stdout, "bundle_sha256:\t%s\n", record.Import.BundleSHA256)
+		fmt.Fprintf(stdout, "import_origin:\t%s\n", termstyle.Sanitize(record.Import.OriginClass))
+		fmt.Fprintf(stdout, "source_session:\t%s\n", termstyle.Sanitize(defaultString(record.Import.SourceSessionID, "unknown")))
+		fmt.Fprintf(stdout, "source_machine:\t%s\n", termstyle.Sanitize(defaultString(record.Import.SourceMachineID, "unknown")))
+		fmt.Fprintf(stdout, "bundle_sha256:\t%s\n", termstyle.Sanitize(record.Import.BundleSHA256))
 	}
 	if record.DisconnectReason != "" {
-		fmt.Fprintf(stdout, "disconnect_reason:\t%s\n", record.DisconnectReason)
+		fmt.Fprintf(stdout, "disconnect_reason:\t%s\n", termstyle.Sanitize(record.DisconnectReason))
 	}
 	fmt.Fprintf(stdout, "local_pid:\t%d\n", record.LocalPID)
 	fmt.Fprintf(stdout, "ssh_pid:\t%d\n", record.SSHPID)
-	fmt.Fprintf(stdout, "runner:\t%s\n", record.RunnerMode)
-	fmt.Fprintf(stdout, "argv:\t%s\n", strings.Join(record.SSHArgv, " "))
+	fmt.Fprintf(stdout, "runner:\t%s\n", termstyle.Sanitize(record.RunnerMode))
+	fmt.Fprintf(stdout, "argv:\t%s\n", termstyle.Sanitize(strings.Join(record.SSHArgv, " ")))
 	if len(record.Events) > 0 {
 		fmt.Fprintln(stdout, "events:")
 		for _, event := range record.Events {
-			fmt.Fprintf(stdout, "- %s\t%s", event.Time.Local().Format(time.RFC3339), event.Type)
+			fmt.Fprintf(stdout, "- %s\t%s", event.Time.Local().Format(time.RFC3339), termstyle.Sanitize(event.Type))
 			if event.LatencyMillis > 0 {
 				fmt.Fprintf(stdout, "\tlatency=%dms", event.LatencyMillis)
 			}
@@ -1879,7 +2194,7 @@ func printSessionRecord(stdout io.Writer, record state.SessionRecord) {
 				fmt.Fprintf(stdout, "\tthreshold=%dms", event.ThresholdMillis)
 			}
 			if event.Message != "" {
-				fmt.Fprintf(stdout, "\t%s", event.Message)
+				fmt.Fprintf(stdout, "\t%s", termstyle.Sanitize(event.Message))
 			}
 			fmt.Fprintln(stdout)
 		}
@@ -1954,7 +2269,7 @@ func originLabel(record state.SessionRecord) string {
 }
 
 func shortMachineID(id string) string {
-	id = strings.TrimSpace(id)
+	id = strings.TrimSpace(termstyle.Sanitize(id))
 	if id == "" {
 		return "unknown"
 	}

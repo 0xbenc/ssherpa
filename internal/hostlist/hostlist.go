@@ -42,11 +42,30 @@ func Build(graph *sshconfig.Graph, opts Options) Inventory {
 
 	aliases := make([]Alias, 0, len(graph.Blocks))
 	byName := map[string]int{}
+	diagnostics := append([]sshconfig.Diagnostic(nil), graph.Diagnostics...)
 
 	for _, block := range graph.Blocks {
 		for _, pattern := range block.Patterns {
 			pattern = strings.TrimSpace(pattern)
 			if pattern == "" {
+				continue
+			}
+
+			if strings.HasPrefix(pattern, "-") {
+				// A name beginning with "-" can never be used as an SSH
+				// destination — OpenSSH would parse it as an option (the
+				// argument-injection vector from the stability audit) —
+				// so it is dropped from the inventory entirely rather
+				// than offered in pickers or matched by --select.
+				diagnostics = append(diagnostics, sshconfig.Diagnostic{
+					Severity: sshconfig.SeverityWarning,
+					Path:     block.SourcePath,
+					Line:     block.SourceLine,
+					Message: fmt.Sprintf(
+						"skipping host alias %q: a name beginning with \"-\" would be parsed as an ssh option",
+						pattern,
+					),
+				})
 				continue
 			}
 
@@ -88,7 +107,7 @@ func Build(graph *sshconfig.Graph, opts Options) Inventory {
 
 	return Inventory{
 		Aliases:     filtered,
-		Diagnostics: append([]sshconfig.Diagnostic(nil), graph.Diagnostics...),
+		Diagnostics: diagnostics,
 	}
 }
 

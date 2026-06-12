@@ -136,6 +136,11 @@ func loadThemeConfig(path string) (termstyle.ThemeConfig, string, error) {
 	if err != nil {
 		return termstyle.ThemeConfig{}, "existing theme config did not parse; saving will replace it", nil
 	}
+	if len(cfg.Warnings) > 0 {
+		// Unknown keys (likely written by a newer ssherpa) are kept out
+		// of the editor and dropped on save; tell the user up front.
+		return cfg, "ignored: " + strings.Join(cfg.Warnings, "; "), nil
+	}
 	return cfg, "", nil
 }
 

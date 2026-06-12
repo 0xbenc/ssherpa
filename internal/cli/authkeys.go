@@ -24,6 +24,7 @@ type authkeysFlags struct {
 	KeyFile       string
 	FromDir       string
 	Fingerprints  []string
+	AllMatching   bool
 	SSHKeygenPath string
 }
 
@@ -237,7 +238,9 @@ func runAuthkeysReplace(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printAuthkeysDiagnostics(stderr, plan.Diagnostics)
 	if !flags.DryRun && !flags.Yes && plan.Changed {
-		ok, err := confirmActionChoice(stderr, "Replace authorized_keys", fmt.Sprintf("%s with %d key(s)", path, len(plan.Keys)))
+		// Replace can remove every existing authorized key (lockout), so use
+		// the default-No danger confirm.
+		ok, err := confirmDeleteChoice(stderr, "Replace authorized_keys", fmt.Sprintf("%s with %d key(s)", path, len(plan.Keys)))
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: replace confirmation failed: %v\n", err)
 			return 1
@@ -274,8 +277,22 @@ func runAuthkeysDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 	for _, fp := range plan.NotFound {
 		fmt.Fprintf(stderr, "Warning: fingerprint not found: %s\n", fp)
 	}
+	if flags.Yes && !flags.AllMatching && !flags.DryRun {
+		// A fingerprint is computed from the key blob alone, so distinct
+		// grants (same key, different options/comments) share it. Refuse to
+		// silently collapse them without an interactive confirm.
+		if groups := authkeysDuplicateDeleteGroups(plan.Keys); len(groups) > 0 {
+			for _, group := range groups {
+				fmt.Fprintf(stderr, "ssherpa: fingerprint %s matches %d authorized_keys entries in %s; pass --all-matching to delete every matching entry:\n", group.Fingerprint, len(group.Keys), path)
+				for _, key := range group.Keys {
+					fmt.Fprintf(stderr, "  %s\n", authkeysEntrySummary(key))
+				}
+			}
+			return 1
+		}
+	}
 	if !flags.DryRun && !flags.Yes && plan.Changed {
-		ok, err := confirmDeleteChoice(stderr, "Delete authorized_keys entries", fmt.Sprintf("%d key(s) from %s", plan.Stats.Deleted, path))
+		ok, err := confirmDeleteChoice(stderr, "Delete authorized_keys entries", authkeysDeleteDescription(plan, path))
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: delete confirmation failed: %v\n", err)
 			return 1
@@ -286,6 +303,62 @@ func runAuthkeysDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	}
 	return applyAuthkeysPlan(plan, flags, stdout, stderr)
+}
+
+type authkeysDuplicateGroup struct {
+	Fingerprint string
+	Keys        []authkeys.AuthorizedKey
+}
+
+// authkeysDuplicateDeleteGroups groups the entries a delete plan would remove
+// by fingerprint and returns the groups that cover more than one line.
+func authkeysDuplicateDeleteGroups(keys []authkeys.AuthorizedKey) []authkeysDuplicateGroup {
+	grouped := map[string][]authkeys.AuthorizedKey{}
+	var order []string
+	for _, key := range keys {
+		fp, err := key.SHA256Fingerprint()
+		if err != nil {
+			continue
+		}
+		if _, ok := grouped[fp]; !ok {
+			order = append(order, fp)
+		}
+		grouped[fp] = append(grouped[fp], key)
+	}
+	var groups []authkeysDuplicateGroup
+	for _, fp := range order {
+		if len(grouped[fp]) > 1 {
+			groups = append(groups, authkeysDuplicateGroup{Fingerprint: fp, Keys: grouped[fp]})
+		}
+	}
+	return groups
+}
+
+// authkeysDeleteDescription lists every entry the plan removes so the
+// interactive confirm shows exactly which lines are going away.
+func authkeysDeleteDescription(plan authkeys.Plan, path string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d key(s) from %s", plan.Stats.Deleted, path)
+	for _, key := range plan.Keys {
+		b.WriteString("\n- ")
+		b.WriteString(authkeysEntrySummary(key))
+	}
+	return b.String()
+}
+
+func authkeysEntrySummary(key authkeys.AuthorizedKey) string {
+	var parts []string
+	if key.Line > 0 {
+		parts = append(parts, fmt.Sprintf("line %d:", key.Line))
+	}
+	parts = append(parts, key.Type)
+	if key.Options != "" {
+		parts = append(parts, "options="+key.Options)
+	}
+	if key.Comment != "" {
+		parts = append(parts, "comment="+key.Comment)
+	}
+	return strings.Join(parts, " ")
 }
 
 func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Writer) int {
@@ -856,6 +929,8 @@ func parseAuthkeysDeleteFlags(args []string, stderr io.Writer) (authkeysFlags, b
 			flags.Fingerprints = append(flags.Fingerprints, value)
 		case strings.HasPrefix(arg, "--fingerprint="):
 			flags.Fingerprints = append(flags.Fingerprints, strings.TrimPrefix(arg, "--fingerprint="))
+		case arg == "--all-matching":
+			flags.AllMatching = true
 		case !strings.HasPrefix(arg, "-"):
 			flags.Fingerprints = append(flags.Fingerprints, arg)
 		default:

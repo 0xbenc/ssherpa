@@ -3,12 +3,16 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -372,7 +376,7 @@ func TestRemoteMirrorRecordRejectsUnrelatedTelemetry(t *testing.T) {
 		Route:      []string{"unrelated", "prod"},
 	}
 
-	if got, ok := remoteMirrorRecord(parent, child); ok {
+	if got, _, ok := remoteMirrorRecord(parent, child); ok {
 		t.Fatalf("remoteMirrorRecord = %#v, true; want rejected unrelated telemetry", got)
 	}
 }
@@ -392,9 +396,12 @@ func TestRemoteMirrorRecordUsesParentOriginForParentlessTelemetry(t *testing.T) 
 		Route:       []string{"mdw0-vms-tailscale"},
 	}
 
-	got, ok := remoteMirrorRecord(parent, child)
+	got, backfilled, ok := remoteMirrorRecord(parent, child)
 	if !ok {
 		t.Fatalf("remoteMirrorRecord rejected parentless telemetry")
+	}
+	if !backfilled {
+		t.Fatalf("remoteMirrorRecord did not report the parentless child as backfilled")
 	}
 	if got.OriginHost != "Bens-Mac-mini" {
 		t.Fatalf("OriginHost = %q, want parent origin", got.OriginHost)
@@ -511,7 +518,7 @@ func TestForwardSignalsCallsPullRopeOnExternalTerminate(t *testing.T) {
 		}
 	}
 
-	stop := forwardSignals(nil, nil, cmd, pullRope)
+	stop := forwardSignals(nil, nil, cmd, pullRope, nil)
 	defer stop()
 
 	// Send SIGHUP to our own pid; signal.Notify subscribed in
@@ -696,6 +703,56 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ssherpa session map") {
 		t.Fatalf("stdout = %q, want local overlay", stdout.String())
+	}
+}
+
+func TestRunSupervisedCustomOverlayKeyOpensOverlayAndFreesDefault(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stateDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "remote-input")
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	// With the overlay rebound to Ctrl-] (0x1d), the default Ctrl-^ (0x1e)
+	// must pass through to the remote and 0x1d must open the overlay.
+	input := []byte{'a', OverlayHotkey, byte(0x1d), 'q', 'b'}
+	if err := os.WriteFile(stdinPath, input, 0o600); err != nil {
+		t.Fatalf("write stdin fixture: %v", err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatalf("open stdin fixture: %v", err)
+	}
+	defer stdin.Close()
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo; dd bs=1 count=3 of="$OUT" 2>/dev/null`}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outPath},
+			Now:      fixedClock(),
+			Overlay:  OverlayOptions{Key: 0x1d, KeyName: "Ctrl-]"},
+		},
+	)
+
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read remote input fixture: %v", err)
+	}
+	if string(got) != "a"+string(OverlayHotkey)+"b" {
+		t.Fatalf("remote input = %q, want default hotkey to pass through", string(got))
+	}
+	if !strings.Contains(stdout.String(), "ssherpa session map") {
+		t.Fatalf("stdout = %q, want local overlay", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Ctrl-]/q/Esc close") {
+		t.Fatalf("stdout = %q, want overlay help to show custom key name", stdout.String())
 	}
 }
 
@@ -1479,6 +1536,501 @@ func TestRunSupervisedRejectsBadStateDir(t *testing.T) {
 	}
 }
 
+// panicWriter panics on first write; used to drive a panic through the
+// supervisor's own goroutine (telemetry emit) or a child goroutine
+// (output copy), depending on where the first write lands.
+type panicWriter struct{}
+
+func (panicWriter) Write([]byte) (int, error) {
+	panic("writer exploded")
+}
+
+// TestRunSupervisedPanicFinalizesRecordAndRepanics drives a panic
+// through RunSupervised's own goroutine: SSHERPA_SESSION_ID marks the
+// session as nested, so the supervisor emits telemetry to stdout from
+// its own call stack at attempt start, and a panicking stdout writer
+// unwinds the supervisor itself. The top-level recover must finalize
+// the record with a panic disconnect reason and then re-panic so the
+// bug stays visible.
+func TestRunSupervisedPanicFinalizesRecordAndRepanics(t *testing.T) {
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("RunSupervised swallowed the panic instead of re-panicking")
+		}
+		records, err := state.ListRecords(stateDir)
+		if err != nil {
+			t.Fatalf("ListRecords returned error: %v", err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("records = %#v, want one", records)
+		}
+		record := records[0]
+		if record.DisconnectReason != "panic" {
+			t.Fatalf("DisconnectReason = %q, want panic", record.DisconnectReason)
+		}
+		if record.EndedAt == nil {
+			t.Fatalf("record not finalized after panic: %#v", record)
+		}
+		if !strings.Contains(strings.Join(sessionEventTypes(record), ","), "panic") {
+			t.Fatalf("events = %#v, want panic event", record.Events)
+		}
+	}()
+
+	RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", "exit 0"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   panicWriter{},
+			Stderr:   io.Discard,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "SSHERPA_SESSION_ID=parent-id", "SSHERPA_DEPTH=0"},
+			Now:      fixedClock(),
+		},
+	)
+	t.Fatalf("RunSupervised returned instead of re-panicking")
+}
+
+// TestRunSupervisedChildGoroutinePanicFinalizesInsteadOfCrashing
+// panics inside the latency watchdog goroutine. Before the recover
+// wrappers this crashed the whole process with the terminal still in
+// raw mode; now the supervisor must tear the session down, finalize
+// the record with the panic reason, and return an error exit.
+func TestRunSupervisedChildGoroutinePanicFinalizesInsteadOfCrashing(t *testing.T) {
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+	stderr := newNotifyingBuffer("panicked")
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"sh", "-c", "sleep 5"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   io.Discard,
+			Stderr:   stderr,
+			Env:      []string{"PATH=" + os.Getenv("PATH")},
+			Now:      fixedClock(),
+			Watchdog: WatchdogOptions{
+				WarnThreshold: time.Millisecond,
+				Interval:      time.Hour,
+				ProbeCommand:  sshcmd.Command{Argv: []string{"probe"}},
+				RunProbe: func(context.Context, sshcmd.Command) ProbeResult {
+					panic("probe exploded")
+				},
+			},
+		},
+	)
+
+	if code != 1 {
+		t.Fatalf("RunSupervised returned %d, want 1 after child-goroutine panic; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "latency watchdog panicked") {
+		t.Fatalf("stderr = %q, want panic report", stderr.String())
+	}
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.DisconnectReason != "panic" || record.EndedAt == nil {
+		t.Fatalf("record = %#v, want finalized with panic reason", record)
+	}
+}
+
+// TestRunSupervisedSignalDuringBackoffFinalizesRecord covers the
+// reconnect backoff window: forwardSignals is only installed while an
+// attempt's ssh process is alive, so a SIGTERM during the inter-attempt
+// sleep used to kill the supervisor with no finalization (`forward
+// stop` reported success and left a permanent orphan record).
+func TestRunSupervisedSignalDuringBackoffFinalizesRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+	stderr := newNotifyingBuffer("retrying in")
+
+	codeCh := make(chan int, 1)
+	go func() {
+		codeCh <- RunSupervised(
+			sshcmd.Command{Argv: []string{"sh", "-c", "exit 255"}},
+			Metadata{TargetAlias: "tun", Kind: state.KindTunnel},
+			Options{
+				StateDir: stateDir,
+				Stdin:    stdin,
+				Stdout:   io.Discard,
+				Stderr:   stderr,
+				Env:      []string{"PATH=" + os.Getenv("PATH")},
+				Now:      fixedClock(),
+				Detached: true,
+				Reconnect: ReconnectOptions{
+					Enabled:        true,
+					MaxAttempts:    5,
+					InitialBackoff: 30 * time.Second,
+					MaxBackoff:     30 * time.Second,
+				},
+			},
+		)
+	}()
+
+	waitForBufferContains(t, stderr, "retrying in", 5*time.Second, nil)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("self SIGTERM: %v", err)
+	}
+
+	select {
+	case code := <-codeCh:
+		if code != EscapeRopeExitCode {
+			t.Fatalf("RunSupervised returned %d, want %d; stderr=%q", code, EscapeRopeExitCode, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("supervisor did not exit within 5s after SIGTERM during backoff")
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		t.Fatalf("ListRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.EndedAt == nil || record.ExitCode == nil || *record.ExitCode != EscapeRopeExitCode {
+		t.Fatalf("record = %#v, want finalized with escape-rope exit", record)
+	}
+	if record.DisconnectReason != EscapeRopeReason {
+		t.Fatalf("DisconnectReason = %q, want %q", record.DisconnectReason, EscapeRopeReason)
+	}
+}
+
+// TestRunSupervisedControlMasterTeardownIssuesControlExit checks that
+// session teardown asks the multiplexing master to exit (ssh -O exit)
+// before unlinking the socket. Unlinking a live socket orphans the
+// authenticated master — and its held forward ports — for the full
+// ControlPersist window.
+func TestRunSupervisedControlMasterTeardownIssuesControlExit(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "control-exit-args")
+	script := `#!/bin/sh
+if [ "$1" = "-O" ]; then
+  printf '%s\n' "$*" > "$SSHERPA_TEST_CM_MARKER"
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+    ControlPath=*) : > "${arg#ControlPath=}" ;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(binDir, "ssh"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+	t.Setenv("SSHERPA_TEST_CM_MARKER", marker)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+	var stdout bytes.Buffer
+	var stderrBuf bytes.Buffer
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{"ssh", "prod"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderrBuf,
+			Env:      []string{"PATH=" + os.Getenv("PATH"), "SSHERPA_TEST_CM_MARKER=" + marker},
+			Now:      fixedClock(),
+		},
+	)
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderrBuf.String())
+	}
+
+	records, err := state.ListRecords(stateDir)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records = %#v err=%v, want one", records, err)
+	}
+	controlPath := records[0].ControlPath
+	if controlPath == "" {
+		t.Fatalf("record has no ControlPath: %#v", records[0])
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("ssh -O exit was not invoked before socket removal: %v", err)
+	}
+	args := strings.TrimSpace(string(data))
+	if !strings.Contains(args, "-O exit") || !strings.Contains(args, "ControlPath="+controlPath) || !strings.HasSuffix(args, "prod") {
+		t.Fatalf("ssh -O exit args = %q, want -O exit with ControlPath and destination", args)
+	}
+	if _, err := os.Stat(controlPath); !os.IsNotExist(err) {
+		t.Fatalf("control socket stat err = %v, want removed", err)
+	}
+}
+
+func TestRunSupervisedControlMasterTeardownUsesResolvedBinary(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	// The custom ssh binary is a full path NOT on PATH, and its basename
+	// must be "ssh" so WithControlMaster injects the multiplexing options.
+	// A hardcoded bare "ssh" teardown could not find it.
+	binDir := t.TempDir()
+	customSSH := filepath.Join(binDir, "ssh")
+	marker := filepath.Join(t.TempDir(), "control-exit-args")
+	script := `#!/bin/sh
+if [ "$1" = "-O" ]; then
+  printf '%s\n' "$*" > "$SSHERPA_TEST_CM_MARKER"
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+    ControlPath=*) : > "${arg#ControlPath=}" ;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(customSSH, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+	t.Setenv("SSHERPA_TEST_CM_MARKER", marker)
+	// Deliberately do NOT add binDir to PATH: a bare "ssh" must not
+	// resolve to this binary, so only a teardown using the resolved
+	// full path can reach the master.
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open dev null: %v", err)
+	}
+	defer stdin.Close()
+	var stdout, stderrBuf bytes.Buffer
+
+	code := RunSupervised(
+		sshcmd.Command{Argv: []string{customSSH, "prod"}},
+		Metadata{TargetAlias: "prod"},
+		Options{
+			StateDir: stateDir,
+			Stdin:    stdin,
+			Stdout:   &stdout,
+			Stderr:   &stderrBuf,
+			Env:      []string{"PATH=/nonexistent", "SSHERPA_TEST_CM_MARKER=" + marker},
+			Now:      fixedClock(),
+		},
+	)
+	if code != 0 {
+		t.Fatalf("RunSupervised returned %d, want 0; stderr=%q", code, stderrBuf.String())
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("ssh -O exit was not invoked via the resolved binary: %v", err)
+	}
+	if !strings.Contains(string(data), "-O exit") {
+		t.Fatalf("ssh -O exit args = %q", strings.TrimSpace(string(data)))
+	}
+}
+
+func TestPrepareControlMasterPrefersXDGRuntimeDir(t *testing.T) {
+	runtimeDir := t.TempDir()
+	path, ok, err := prepareControlMaster("/state", "rec-1", Metadata{}, []string{"XDG_RUNTIME_DIR=" + runtimeDir})
+	if err != nil || !ok {
+		t.Fatalf("prepareControlMaster = %q ok=%v err=%v, want socket path", path, ok, err)
+	}
+	wantDir := filepath.Join(runtimeDir, "ssherpa", "cm")
+	if filepath.Dir(path) != wantDir {
+		t.Fatalf("socket dir = %q, want %q", filepath.Dir(path), wantDir)
+	}
+	info, err := os.Stat(wantDir)
+	if err != nil {
+		t.Fatalf("stat socket dir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("socket dir perm = %o, want 0700", perm)
+	}
+}
+
+func TestPrepareControlMasterTmpFallbackRefusesSymlinkedDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	base := filepath.Join(tmp, fmt.Sprintf("ssherpa-%d", os.Getuid()))
+	if err := os.Symlink(t.TempDir(), base); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, _, err := prepareControlMaster("/state", "rec-1", Metadata{}, []string{"PATH=/usr/bin"})
+	if err == nil {
+		t.Fatalf("prepareControlMaster accepted a symlinked socket dir")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("error = %v, want symlink refusal", err)
+	}
+}
+
+func TestPrepareControlMasterTmpFallbackTightensLoosePermissions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	base := filepath.Join(tmp, fmt.Sprintf("ssherpa-%d", os.Getuid()))
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	if _, _, err := prepareControlMaster("/state", "rec-1", Metadata{}, []string{"PATH=/usr/bin"}); err != nil {
+		t.Fatalf("prepareControlMaster returned error: %v", err)
+	}
+	info, err := os.Stat(base)
+	if err != nil {
+		t.Fatalf("stat base dir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("base dir perm = %o, want tightened to 0700", perm)
+	}
+}
+
+// TestMirrorRemoteSessionRecordNotesAcceptEnvDegradationOnce: the
+// telemetry-backfill branch firing with an empty parent_id is positive
+// proof the remote sshd stripped SSHERPA_*; the parent record gets one
+// (and only one) explanatory event.
+func TestMirrorRemoteSessionRecordNotesAcceptEnvDegradationOnce(t *testing.T) {
+	stateDir := t.TempDir()
+	now := fixedClock()
+	parent := state.SessionRecord{
+		ID:           "parent",
+		TargetAlias:  "prod",
+		Route:        []string{"prod"},
+		OriginHost:   "laptop",
+		StartedAt:    now().UTC(),
+		LocalPID:     os.Getpid(),
+		RunnerMode:   RunnerModeSupervised,
+		StateVersion: state.StateVersion,
+	}
+	var recordMu sync.Mutex
+	ac := attemptContext{stateDir: stateDir, record: &parent, recordMu: &recordMu, now: now}
+
+	mirrorRemoteSessionRecord(ac, state.SessionRecord{ID: "child-1", TargetAlias: "inner", StartedAt: now().UTC()})
+	mirrorRemoteSessionRecord(ac, state.SessionRecord{ID: "child-2", TargetAlias: "inner-2", StartedAt: now().UTC()})
+
+	count := 0
+	for _, event := range parent.Events {
+		if event.Type == "nested_metadata_blocked" {
+			count++
+			if !strings.Contains(event.Message, "AcceptEnv SSHERPA_*") {
+				t.Fatalf("event message = %q, want AcceptEnv hint", event.Message)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("nested_metadata_blocked events = %d, want exactly one; events=%#v", count, parent.Events)
+	}
+	persisted, err := state.ReadRecord(stateDir, "parent")
+	if err != nil {
+		t.Fatalf("ReadRecord(parent) returned error: %v", err)
+	}
+	if !strings.Contains(strings.Join(sessionEventTypes(persisted), ","), "nested_metadata_blocked") {
+		t.Fatalf("persisted parent events = %#v, want nested_metadata_blocked", persisted.Events)
+	}
+
+	// A descendant that did arrive with lineage intact must not trigger
+	// the degradation note.
+	otherDir := t.TempDir()
+	healthyParent := state.SessionRecord{ID: "parent", StartedAt: now().UTC(), StateVersion: state.StateVersion}
+	var otherMu sync.Mutex
+	healthyAC := attemptContext{stateDir: otherDir, record: &healthyParent, recordMu: &otherMu, now: now}
+	mirrorRemoteSessionRecord(healthyAC, state.SessionRecord{ID: "child", ParentID: "parent", StartedAt: now().UTC()})
+	if len(healthyParent.Events) != 0 {
+		t.Fatalf("healthy lineage produced events: %#v", healthyParent.Events)
+	}
+}
+
+func TestSessionRecorderPersistsStopReason(t *testing.T) {
+	stateDir := t.TempDir()
+	now := fixedClock()
+	record := state.SessionRecord{
+		ID:           "stop-reason",
+		StartedAt:    now().UTC(),
+		LocalPID:     os.Getpid(),
+		RunnerMode:   RunnerModeSupervised,
+		StateVersion: state.StateVersion,
+	}
+	var recordMu sync.Mutex
+	recorder := newSessionRecorder(sessionRecorderOptions{
+		StateDir: stateDir,
+		Command:  sshcmd.Command{Argv: []string{"ssh", "prod"}},
+		MaxBytes: 256,
+		Record:   &record,
+		RecordMu: &recordMu,
+		Now:      now,
+	})
+
+	if _, err := recorder.Toggle(); err != nil {
+		t.Fatalf("Toggle returned error: %v", err)
+	}
+	recorder.WriteOutput(now().UTC(), bytes.Repeat([]byte("x"), 4096))
+	if err := recorder.Close(now().UTC()); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	persisted, err := state.ReadRecord(stateDir, "stop-reason")
+	if err != nil {
+		t.Fatalf("ReadRecord returned error: %v", err)
+	}
+	if persisted.Transcript == nil {
+		t.Fatalf("record.Transcript = nil, want spec with stop reason")
+	}
+	if persisted.Transcript.StopReason != "size limit reached" {
+		t.Fatalf("Transcript.StopReason = %q, want size limit reached", persisted.Transcript.StopReason)
+	}
+}
+
+func TestTerminalGuardRestoreRunsOncePerArmAcrossGoroutines(t *testing.T) {
+	var calls atomic.Int32
+	guard := newTerminalGuard()
+	guard.arm(func() { calls.Add(1) })
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			guard.restore()
+		}()
+	}
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("restore ran %d times, want once", got)
+	}
+
+	guard.arm(func() { calls.Add(1) })
+	guard.restore()
+	guard.restore()
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("restore after re-arm ran %d total times, want 2", got)
+	}
+}
+
 func waitForSessionRecordCount(t *testing.T, stateDir string, want int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -1540,9 +2092,15 @@ func waitForBufferContains(t *testing.T, b *notifyingBuffer, needle string, time
 	t.Fatalf("buffer did not contain %q within %s%s; stdout=%q", needle, timeout, extra, b.String())
 }
 
+// fixedClock returns a deterministic test clock. Options.Now is called
+// from several supervisor goroutines (watchdog, signal handlers), so
+// the closure must be safe for concurrent use.
 func fixedClock() func() time.Time {
+	var mu sync.Mutex
 	current := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
 	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
 		current = current.Add(time.Second)
 		return current
 	}
@@ -1554,6 +2112,72 @@ func sessionEventTypes(record state.SessionRecord) []string {
 		types = append(types, event.Type)
 	}
 	return types
+}
+
+// failingTranscriptWriter is a transcriptWriter whose Close fails the
+// way a dying disk would, after having recorded a stop reason.
+type failingTranscriptWriter struct {
+	spec state.TranscriptSpec
+	err  error
+}
+
+func (w *failingTranscriptWriter) WriteOutput(time.Time, []byte) {}
+func (w *failingTranscriptWriter) WriteMarker(time.Time, string) {}
+func (w *failingTranscriptWriter) StopReason() string            { return "write error: disk full" }
+func (w *failingTranscriptWriter) Close(ended time.Time) (state.TranscriptSpec, error) {
+	spec := w.spec
+	endedUTC := ended.UTC()
+	spec.EndedAt = &endedUTC
+	return spec, w.err
+}
+
+// TestSessionRecorderClosePersistsRecordWhenWriterCloseFails pins the
+// persist-before-propagate contract of sessionRecorder.Close: a close
+// error (failing disk) is exactly the scenario in which stop_reason and
+// ended_at must still reach the session record, and the error must
+// still surface to the caller.
+func TestSessionRecorderClosePersistsRecordWhenWriterCloseFails(t *testing.T) {
+	stateDir := t.TempDir()
+	record := state.SessionRecord{ID: "rec-close", TargetAlias: "prod", StartedAt: time.Now().UTC()}
+	if err := state.WriteRecord(stateDir, record); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	closeErr := errors.New("close transcript: disk full")
+	recorder := &sessionRecorder{
+		stateDir: stateDir,
+		record:   &record,
+		recordMu: &sync.Mutex{},
+		now:      time.Now,
+		active:   true,
+		writer: &failingTranscriptWriter{
+			spec: state.TranscriptSpec{
+				Path:      transcript.Path(stateDir, record.ID),
+				Format:    transcript.FormatAsciicast,
+				StartedAt: record.StartedAt,
+			},
+			err: closeErr,
+		},
+	}
+	ended := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
+
+	err := recorder.Close(ended)
+
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Close error = %v, want propagated %v", err, closeErr)
+	}
+	stored, readErr := state.ReadRecord(stateDir, record.ID)
+	if readErr != nil {
+		t.Fatalf("read record: %v", readErr)
+	}
+	if stored.Transcript == nil {
+		t.Fatalf("record.Transcript is nil after failing close, want persisted spec")
+	}
+	if stored.Transcript.StopReason != "write error: disk full" {
+		t.Fatalf("StopReason = %q, want writer's stop reason persisted", stored.Transcript.StopReason)
+	}
+	if stored.Transcript.EndedAt == nil || !stored.Transcript.EndedAt.Equal(ended) {
+		t.Fatalf("EndedAt = %v, want %v persisted despite the close error", stored.Transcript.EndedAt, ended)
+	}
 }
 
 func transcriptOutput(recording transcript.Recording) string {

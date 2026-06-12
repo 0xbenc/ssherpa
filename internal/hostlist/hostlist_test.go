@@ -1,7 +1,9 @@
 package hostlist
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
@@ -49,6 +51,53 @@ func TestBuildAllIncludesPatternsAndGitUsers(t *testing.T) {
 	for _, name := range []string{"gitbox", "*", "*.example.com", "!blocked.example.com"} {
 		if !contains(names, name) {
 			t.Fatalf("aliases = %#v, want %q", names, name)
+		}
+	}
+}
+
+// TestBuildSkipsDashAliasesWithWarning is the inventory half of the WP1
+// argument-injection fix: a Host pattern beginning with "-" (which OpenSSH
+// would parse as an option, not a hostname) must never become a selectable
+// alias — not even with --all — and the skip must surface as a warning
+// diagnostic so `list --json` explains why the entry is missing.
+func TestBuildSkipsDashAliasesWithWarning(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "config")
+	contents := "Host -oProxyCommand=evil\n" +
+		"  HostName attacker.example.com\n" +
+		"\n" +
+		"Host prod\n" +
+		"  HostName prod.example.com\n"
+	if err := os.WriteFile(root, []byte(contents), 0o600); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+	graph, err := sshconfig.Load(sshconfig.LoadOptions{RootPath: root, HomeDir: dir})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	for _, opts := range []Options{{}, {All: true}} {
+		inventory := Build(graph, opts)
+
+		names := aliasNames(inventory.Aliases)
+		if contains(names, "-oProxyCommand=evil") {
+			t.Fatalf("aliases = %#v, dash alias must be skipped (opts %+v)", names, opts)
+		}
+		if !contains(names, "prod") {
+			t.Fatalf("aliases = %#v, want prod (opts %+v)", names, opts)
+		}
+
+		found := false
+		for _, diag := range inventory.Diagnostics {
+			if diag.Severity == sshconfig.SeverityWarning && strings.Contains(diag.Message, `"-oProxyCommand=evil"`) {
+				if !strings.Contains(diag.Message, "ssh option") {
+					t.Fatalf("diagnostic %q does not mention the ssh option rationale", diag.Message)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("Diagnostics = %#v, want warning about the skipped dash alias", inventory.Diagnostics)
 		}
 	}
 }

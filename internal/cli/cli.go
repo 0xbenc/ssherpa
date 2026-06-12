@@ -32,19 +32,31 @@ Available Commands:
   proxy      Start a local SOCKS proxy through an SSH alias
   forward    Open a local TCP port-forward (-L) tunnel through an SSH alias
   send       Send a local file to an SSH alias with SFTP
-  receive    Receive a remote file from an SSH alias with SFTP
+  receive    Receive a remote file from an SSH alias with SFTP (alias: recv)
   check      Test SSH aliases and saved forwards
   incoming   Inspect and mark incoming SSH sessions
   authkeys   Manage local authorized_keys or seed keys to SSH aliases
   theme      Build and save the terminal UI color schema
-  session    Inspect supervised session records
+  session    Inspect supervised session records and transcripts
   list       List SSH aliases from OpenSSH config
   show       Show one SSH alias from OpenSSH config
   version    Print build version information
-  help       Show this help
+  help       Show help for ssherpa or for one command
+
+Run "ssherpa help COMMAND" or "ssherpa COMMAND --help" for command usage.
+Run ssherpa with no command to open the interactive picker; run
+"ssherpa help connect" for connect-mode and supervised-session flags.
+`
+
+const connectUsage = `Usage:
+  ssherpa [connect-flags] [-- ssh-args...]
+  ssherpa --select ALIAS [connect-flags] [-- ssh-args...]
+
+Without --select, ssherpa opens the interactive picker. Everything after
+"--" is passed to ssh unchanged.
 
 Inventory Flags:
-  --json             Emit JSON output
+  --json             Emit JSON output; connect mode supports it with --print
   --all              Include wildcard and negated Host patterns
   --filter SUBSTR    Filter aliases by substring
   --user USER        Filter aliases by parsed user
@@ -65,6 +77,7 @@ Connect Flags:
   --composer-key KEY
                      Open local queued-input composer with KEY; default ctrl-g
   --no-composer      Disable local queued-input composer
+  --overlay-key KEY  Open session-map overlay with KEY; default ctrl-^
   --no-record        Disable output transcript recording for this supervised session
   --record-max-bytes BYTES
                      Cap transcript size; default 50MB
@@ -72,16 +85,46 @@ Connect Flags:
   --no-color         Disable color styling
   --theme-file PATH  Load UI theme config from PATH
 
-Mutation Commands:
+In supervised sessions, the overlay key (default Ctrl-^) opens the local
+session map. Inside the overlay: T toggles recording, S sends a file,
+V receives a file, and X then X pulls the escape rope. Mashing the
+overlay key three times quickly pulls the panic rope without confirmation.
+Ctrl-G (rebindable with --composer-key) opens the local input composer.
+`
+
+const addUsage = `Usage:
+  ssherpa add --alias NAME --host HOST [--user USER] [--port PORT]
+              [--identity PATH] [--identities-only]
+              [--config PATH] [--dry-run] [--yes]
+
+Add or update an SSH alias with previewable, backed-up config writes.
+Run "ssherpa add" without flags for the interactive form.
+
+Examples:
   ssherpa add --alias NAME --host HOST [--user USER] [--port PORT] [--yes]
   ssherpa add --alias NAME --host HOST --dry-run
+`
+
+const editUsage = `Usage:
   ssherpa edit set ALIAS [--host HOST] [--user USER] [--port PORT] [--yes]
   ssherpa edit delete ALIAS [--all-sources] [--state-dir PATH] [--yes]
   ssherpa edit delete-all [--state-dir PATH] --dry-run
   ssherpa edit delete-all --confirm "delete N aliases"
 
-Route Commands:
+Edit or delete SSH aliases with previewable, backed-up config writes.
+Run "ssherpa edit" without arguments for the interactive editor.
+"ssherpa edit remove" is an alias for "ssherpa edit delete".
+`
+
+const jumpUsage = `Usage:
   ssherpa jump --dest DEST --hop HOP [--hop HOP] [--print] [--direct]
+  ssherpa jump DEST HOP [HOP...] [connect-flags] [-- ssh-args...]
+
+Connect to DEST through one or more ProxyJump hops. Also accepts
+connect flags such as --print, --direct, --state-dir, and -- ssh-args.
+`
+
+const proxyUsage = `Usage:
   ssherpa proxy --select ALIAS_OR_SAVED [--bind ADDR] [--port PORT] [--background] [--print] [--direct]
   ssherpa proxy list [--json] [--state-dir PATH]
   ssherpa proxy status SESSION_ID_OR_NAME [--json] [--state-dir PATH]
@@ -92,6 +135,12 @@ Route Commands:
   ssherpa proxy saved edit NAME [--select ALIAS] [--port PORT] [--bind ADDR] [--description TEXT|--clear-description]
   ssherpa proxy saved delete NAME [--yes]
   ssherpa proxy saved rename OLD NEW [--yes]
+
+Start, inspect, and stop local SOCKS proxies through an SSH alias, and
+manage the saved proxy catalog. Default bind is 127.0.0.1:1080.
+`
+
+const forwardUsage = `Usage:
   ssherpa forward --select ALIAS --local [BIND:]PORT --remote HOST:PORT [--through HOP] [--print] [--direct] [--background] [--reconnect-max N] [--no-reconnect]
   ssherpa forward list [--json] [--state-dir PATH]
   ssherpa forward status SESSION_ID_OR_NAME [--json] [--state-dir PATH]
@@ -102,24 +151,43 @@ Route Commands:
   ssherpa forward saved edit NAME [--select ALIAS] [--local ...] [--remote ...] [--through HOP|--clear-through] [--description TEXT|--clear-description]
   ssherpa forward saved delete NAME [--yes]
   ssherpa forward saved rename OLD NEW [--yes]
-  ssherpa send LOCAL_FILE --select ALIAS [--remote REMOTE_PATH] [--force] [--print]
-  ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--force] [--print]
 
-Check Commands:
+Open, inspect, and stop local TCP port-forward (-L) tunnels through an
+SSH alias, and manage the saved forward catalog. Reconnect reacts to
+ssh exiting, not to a silently dead link; pair with ServerAliveInterval
+in your ssh config (see docs/non-interactive.md).
+`
+
+const sendUsage = `Usage:
+  ssherpa send LOCAL_FILE --select ALIAS [--remote REMOTE_PATH] [--force] [--print]
+  ssherpa send LOCAL_FILE ALIAS [...]
+
+Send one local file to an SSH alias with OpenSSH SFTP. Existing remote
+destinations are not overwritten unless --force is set.
+`
+
+const receiveUsage = `Usage:
+  ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--force] [--print]
+  ssherpa receive REMOTE_PATH ALIAS [...]
+
+Receive one remote file from an SSH alias with OpenSSH SFTP. Existing
+local destinations are not overwritten unless --force is set.
+"ssherpa recv" is an alias for "ssherpa receive".
+`
+
+const checkUsage = `Usage:
   ssherpa check ALIAS... [--json] [--timeout 5s] [--icmp-timeout 2s] [--no-icmp]
-  ssherpa check --filter SUBSTR [--json]
+  ssherpa check --filter SUBSTR [--user USER] [--all] [--json]
   ssherpa check --saved-forward NAME [--json]
   ssherpa check --saved-forwards [--json]
 
-Incoming Commands:
-  ssherpa incoming list [--json]
-  ssherpa incoming mark [--watch-parent PID] [--quiet]
-  ssherpa incoming hook [--shell sh|bash|zsh|fish]
+Test SSH aliases and saved forwards with a BatchMode SSH probe and a
+best-effort ICMP latency probe. Also accepts --config PATH,
+--state-dir PATH, and --ssh-binary PATH. Exits 0 when every check
+passed and 2 when any check failed or no checks matched the selector.
+`
 
-Theme Commands:
-  ssherpa theme [--theme-file PATH]
-
-Authorized Keys Commands:
+const authkeysUsage = `Usage:
   ssherpa authkeys list [--json]
   ssherpa authkeys add --key "ssh-ed25519 ..." [--yes]
   ssherpa authkeys add --key-file ~/.ssh/id_ed25519.pub [--yes]
@@ -127,26 +195,38 @@ Authorized Keys Commands:
   ssherpa authkeys seed --key-file ~/.ssh/id_ed25519.pub --target ALIAS [--hop ALIAS=HOP[,HOP...]] [--yes]
   ssherpa authkeys revoke --key-file ~/.ssh/id_ed25519.pub --target ALIAS [--hop ALIAS=HOP[,HOP...]] [--yes]
   ssherpa authkeys replace --from-dir ./keys [--yes]
-  ssherpa authkeys delete --fingerprint SHA256:... [--yes]
+  ssherpa authkeys delete --fingerprint SHA256:... [--all-matching] [--yes]
 
-Session Commands:
-  ssherpa session list [--json] [--state-dir PATH]
-  ssherpa session map [--json] [--all] [--state-dir PATH]
-  ssherpa session show SESSION_ID [--json] [--state-dir PATH]
-  ssherpa session stop-all [--json] [--state-dir PATH]
-  ssherpa session prune [--older-than 168h] [--dry-run] [--state-dir PATH]
+Manage authorized_keys on this device with validated, previewable,
+backed-up writes. Run "ssherpa authkeys" without a subcommand for the
+interactive manager. "delete" requires --all-matching to remove more
+than one entry sharing a fingerprint non-interactively.
+`
 
-Phase 10:
-  SSH config inventory, picker, supervised SSH execution, and safe SSH config
-  add/edit/delete mutations are available. Jump/proxy and authorized_keys
-  management are available. Connection checks and saved forward/proxy catalog
-  management are available. Supervised PTY sessions, session maps, and
-  upgraded picker UX are available. The TUI defaults to the terminal
-  palette, supports theme role overrides, includes a live theme editor,
-  and still honors --no-color. In supervised sessions, Ctrl-] opens
-  the local active-session map overlay and Ctrl-G opens the local input
-  composer. Opt-in sidecar latency warnings and explicit latency
-  disconnects are available with supervised sessions.
+const listUsage = `Usage:
+  ssherpa list [--json] [--all] [--filter SUBSTR] [--user USER] [--config PATH]
+
+List SSH aliases parsed from OpenSSH config, including Include files.
+Hosts whose parsed User is "git" are hidden by default; set
+SSHERPA_IGNORE_USER_GIT=0 to show them.
+`
+
+const showUsage = `Usage:
+  ssherpa show ALIAS [--json] [--config PATH]
+
+Show one parsed SSH alias. Exits 2 when the alias is not found.
+`
+
+const versionUsage = `Usage:
+  ssherpa version
+
+Print build version information.
+`
+
+const helpUsage = `Usage:
+  ssherpa help [COMMAND]
+
+Show the command overview, or usage for one command.
 `
 
 type BuildInfo struct {
@@ -176,6 +256,17 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 
 	if len(args) == 0 {
 		return runConnect(args, stdout, stderr, build)
+	}
+
+	// Per-command --help: print the command's own usage block instead
+	// of the global overview. hasHelpFlag ignores anything after "--",
+	// so ssh passthrough args like `ssherpa prod -- --help` still reach
+	// ssh unchanged.
+	if len(args) > 1 && hasHelpFlag(args[1:]) {
+		if topicUsage, ok := helpTopicUsage(args[0]); ok {
+			fmt.Fprint(stdout, topicUsage)
+			return 0
+		}
 	}
 
 	switch args[0] {
@@ -215,12 +306,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		printVersion(stdout, build)
 		return 0
 	case "help", "--help", "-h":
-		if len(args) > 1 {
-			fmt.Fprintf(stderr, "ssherpa: help does not accept arguments: %s\n", strings.Join(args[1:], " "))
-			return 1
-		}
-		printUsage(stdout)
-		return 0
+		return runHelp(args[1:], stdout, stderr)
 	default:
 		return runConnect(args, stdout, stderr, build)
 	}
@@ -238,6 +324,8 @@ type connectFlags struct {
 	ComposerKey       byte
 	ComposerKeyName   string
 	NoComposer        bool
+	OverlayKey        byte
+	OverlayKeyName    string
 	NoRecord          bool
 	RecordMaxBytes    int64
 	NoKitty           bool
@@ -250,7 +338,7 @@ type connectFlags struct {
 
 func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int {
 	if hasHelpFlag(args) {
-		printUsage(stdout)
+		fmt.Fprint(stdout, connectUsage)
 		return 0
 	}
 
@@ -271,6 +359,7 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		fmt.Fprintln(stderr, "ssherpa: --json is only supported with --print for connect mode")
 		return 1
 	}
+	reportThemeWarnings(flags.ThemeFile, stderr)
 
 	for {
 		graph, inventory, err := loadInventory(flags.inventoryFlags)
@@ -558,6 +647,24 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -641,7 +748,45 @@ func validateComposerFlags(flags connectFlags, stderr io.Writer) bool {
 		fmt.Fprintln(stderr, "ssherpa: composer flags require supervised mode; remove --direct")
 		return false
 	}
+	if flags.Direct && flags.OverlayKey != 0 {
+		fmt.Fprintln(stderr, "ssherpa: --overlay-key requires supervised mode; remove --direct")
+		return false
+	}
+	overlayKey, overlayName := session.OverlayHotkey, session.OverlayHotkeyName
+	if flags.OverlayKey != 0 {
+		overlayKey, overlayName = flags.OverlayKey, flags.OverlayKeyName
+	}
+	composerKey, composerName := session.ComposerHotkey, session.ComposerHotkeyName
+	if flags.ComposerKey != 0 {
+		composerKey, composerName = flags.ComposerKey, flags.ComposerKeyName
+	}
+	if !flags.NoComposer && overlayKey == composerKey {
+		fmt.Fprintf(stderr, "ssherpa: overlay key %s conflicts with composer key %s; change one of them\n", overlayName, composerName)
+		return false
+	}
 	return true
+}
+
+// reportThemeWarnings surfaces non-fatal theme-config diagnostics
+// (unknown role keys, most likely written by a newer ssherpa) once at
+// startup. The theme still loads — known roles apply — but the
+// operator should hear that part of the config was ignored.
+func reportThemeWarnings(themeFile string, stderr io.Writer) {
+	path, err := termstyle.ThemeConfigPath(themeFile, nil)
+	if err != nil || path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	cfg, err := termstyle.ParseThemeConfig(data)
+	if err != nil {
+		return
+	}
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintf(stderr, "ssherpa: theme config %s: %s\n", path, warning)
+	}
 }
 
 func validateThemeFlags(flags connectFlags, stderr io.Writer) bool {
@@ -700,7 +845,7 @@ func parseControlKey(value string, stderr io.Writer, flag string) (byte, string,
 		key = normalized[0] - 'a' + 1
 		label = "Ctrl-" + strings.ToUpper(normalized)
 	}
-	if key == 0x00 || key == 0x03 || key == 0x04 || key == 0x0d || key == 0x0a || key == 0x1b || key == 0x7f || key == session.OverlayHotkey {
+	if key == 0x00 || key == 0x03 || key == 0x04 || key == 0x0d || key == 0x0a || key == 0x1b || key == 0x7f {
 		fmt.Fprintf(stderr, "ssherpa: %s cannot use reserved key %s\n", flag, label)
 		return 0, "", false
 	}
@@ -829,6 +974,9 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		scope = append(scope, "composer=off")
 	} else if flags.ComposerKeyName != "" {
 		scope = append(scope, "composer="+flags.ComposerKeyName)
+	}
+	if flags.OverlayKeyName != "" {
+		scope = append(scope, "overlay="+flags.OverlayKeyName)
 	}
 	if flags.NoRecord {
 		scope = append(scope, "recording=off")
@@ -1205,21 +1353,28 @@ type graphSummary struct {
 	Includes []sshconfig.IncludeEdge `json:"includes,omitempty"`
 }
 
+// jsonSchemaVersion is stamped into top-level --json envelopes so
+// scripts can detect future shape changes. Changes within 1.x are
+// additive only; the number moves when a field changes meaning.
+const jsonSchemaVersion = 1
+
 type listOutput struct {
-	Config      graphSummary           `json:"config"`
-	Aliases     []hostlist.Alias       `json:"aliases"`
-	Diagnostics []sshconfig.Diagnostic `json:"diagnostics,omitempty"`
+	SchemaVersion int                    `json:"schema_version"`
+	Config        graphSummary           `json:"config"`
+	Aliases       []hostlist.Alias       `json:"aliases"`
+	Diagnostics   []sshconfig.Diagnostic `json:"diagnostics,omitempty"`
 }
 
 type showOutput struct {
-	Config      graphSummary           `json:"config"`
-	Alias       *hostlist.Alias        `json:"alias"`
-	Diagnostics []sshconfig.Diagnostic `json:"diagnostics,omitempty"`
+	SchemaVersion int                    `json:"schema_version"`
+	Config        graphSummary           `json:"config"`
+	Alias         *hostlist.Alias        `json:"alias"`
+	Diagnostics   []sshconfig.Diagnostic `json:"diagnostics,omitempty"`
 }
 
 func runList(args []string, stdout io.Writer, stderr io.Writer) int {
 	if hasHelpFlag(args) {
-		printUsage(stdout)
+		fmt.Fprint(stdout, listUsage)
 		return 0
 	}
 
@@ -1240,10 +1395,28 @@ func runList(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	if flags.JSON {
 		writeJSON(stdout, listOutput{
-			Config:      summarizeGraph(graph),
-			Aliases:     inventory.Aliases,
-			Diagnostics: inventory.Diagnostics,
+			SchemaVersion: jsonSchemaVersion,
+			Config:        summarizeGraph(graph),
+			Aliases:       inventory.Aliases,
+			Diagnostics:   inventory.Diagnostics,
 		})
+		return 0
+	}
+
+	if len(inventory.Aliases) == 0 {
+		// A missing or unreadable config degrades to diagnostics and an
+		// empty inventory; bare exit 0 with no output reads as a hang or
+		// a bug. Keep the exit code (scripts depend on it) but say what
+		// happened and what to do next.
+		if flags.Filter != "" || flags.User != "" {
+			fmt.Fprintln(stderr, "ssherpa: no hosts matched the current filter")
+		} else {
+			// Hosts with User git (github.com et al.) are hidden by
+			// default, so "no hosts" can mean "only git hosts" — point
+			// at the toggle rather than telling that user to add hosts
+			// they already have.
+			fmt.Fprintf(stderr, "ssherpa: no hosts found in %s; run \"ssherpa add\" to create one (hosts with User git are hidden by default; set SSHERPA_IGNORE_USER_GIT=0 to show them)\n", graph.RootPath)
+		}
 		return 0
 	}
 
@@ -1255,7 +1428,7 @@ func runList(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func runShow(args []string, stdout io.Writer, stderr io.Writer) int {
 	if hasHelpFlag(args) {
-		printUsage(stdout)
+		fmt.Fprint(stdout, showUsage)
 		return 0
 	}
 
@@ -1279,9 +1452,10 @@ func runShow(args []string, stdout io.Writer, stderr io.Writer) int {
 	alias := findAlias(inventory.Aliases, aliasName)
 	if flags.JSON {
 		writeJSON(stdout, showOutput{
-			Config:      summarizeGraph(graph),
-			Alias:       alias,
-			Diagnostics: inventory.Diagnostics,
+			SchemaVersion: jsonSchemaVersion,
+			Config:        summarizeGraph(graph),
+			Alias:         alias,
+			Diagnostics:   inventory.Diagnostics,
 		})
 		if alias == nil {
 			return 2
@@ -1515,6 +1689,76 @@ func printVersion(w io.Writer, build BuildInfo) {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, usage)
+}
+
+// runHelp implements `ssherpa help [COMMAND]`. With no topic it prints
+// the global overview; with one topic it prints that command's usage
+// block — the same text `ssherpa COMMAND --help` prints.
+func runHelp(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) == 0 {
+		printUsage(stdout)
+		return 0
+	}
+	if len(args) > 1 {
+		fmt.Fprintf(stderr, "ssherpa: help accepts at most one command: %s\n", strings.Join(args, " "))
+		return 1
+	}
+	topic := args[0]
+	if topic == "--help" || topic == "-h" {
+		fmt.Fprint(stdout, helpUsage)
+		return 0
+	}
+	topicUsage, ok := helpTopicUsage(topic)
+	if !ok {
+		fmt.Fprintf(stderr, "ssherpa: unknown help topic %q; run \"ssherpa help\" for the command list\n", topic)
+		return 1
+	}
+	fmt.Fprint(stdout, topicUsage)
+	return 0
+}
+
+// helpTopicUsage maps a dispatched command name (or alias) to its
+// usage block. Every command in the Run switch has an entry, plus
+// "connect" for the no-command picker/ssh mode.
+func helpTopicUsage(name string) (string, bool) {
+	switch name {
+	case "connect":
+		return connectUsage, true
+	case "add":
+		return addUsage, true
+	case "edit":
+		return editUsage, true
+	case "jump":
+		return jumpUsage, true
+	case "proxy":
+		return proxyUsage, true
+	case "forward":
+		return forwardUsage, true
+	case "send":
+		return sendUsage, true
+	case "receive", "recv":
+		return receiveUsage, true
+	case "check":
+		return checkUsage, true
+	case "incoming":
+		return incomingUsage, true
+	case "list":
+		return listUsage, true
+	case "show":
+		return showUsage, true
+	case "authkeys":
+		return authkeysUsage, true
+	case "theme":
+		return themeUsage, true
+	case "session":
+		return sessionUsage, true
+	case "version":
+		return versionUsage, true
+	case "help":
+		return helpUsage, true
+	default:
+		return "", false
+	}
 }
 
 func defaultString(value string, fallback string) string {

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,17 +124,92 @@ func TestDocsArtifactByTokenAndPrintInfo(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	printArtifactInfo(&out, "man")
-	text := out.String()
-	for _, want := range []string{"man/ssherpa.1", "view with: man ./man/ssherpa.1"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("artifact output missing %q:\n%s", want, text)
-		}
-	}
-
-	out.Reset()
 	printArtifactInfo(&out, "missing")
 	if out.Len() != 0 {
 		t.Fatalf("missing artifact output = %q, want empty", out.String())
+	}
+}
+
+// TestPrintArtifactInfoInRepoPrintsExistingPath covers the source
+// checkout / extracted archive layout: the repo-relative file exists,
+// so its real absolute path is printed.
+func TestPrintArtifactInfoInRepoPrintsExistingPath(t *testing.T) {
+	t.Chdir("../..")
+
+	var out bytes.Buffer
+	printArtifactInfo(&out, "man")
+	text := out.String()
+
+	lines := strings.SplitN(text, "\n", 2)
+	if len(lines) < 2 {
+		t.Fatalf("artifact output = %q, want path line plus hint", text)
+	}
+	path := lines[0]
+	if !filepath.IsAbs(path) || !strings.HasSuffix(path, filepath.Join("man", "ssherpa.1")) {
+		t.Fatalf("path line = %q, want absolute man/ssherpa.1 path", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("printed path does not exist: %v", err)
+	}
+	if !strings.Contains(text, "view with: man") {
+		t.Fatalf("artifact output missing hint:\n%s", text)
+	}
+}
+
+// TestPrintArtifactInfoInstalledFallsBackToInstallPaths covers the
+// installed-binary case (audit: the picker printed cwd-relative paths
+// that do not exist for brew/deb/rpm installs). With no repo-relative
+// file present, the package install locations are printed instead.
+func TestPrintArtifactInfoInstalledFallsBackToInstallPaths(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	cases := []struct {
+		token string
+		want  []string
+	}{
+		{"bash", []string{
+			"completions/ssherpa.bash is not present next to this binary",
+			"/usr/share/bash-completion/completions/ssherpa (deb/rpm)",
+			"$(brew --prefix)/etc/bash_completion.d/ssherpa (Homebrew)",
+		}},
+		{"man", []string{
+			"man/ssherpa.1 is not present next to this binary",
+			"/usr/share/man/man1/ssherpa.1 (deb/rpm)",
+			"$(brew --prefix)/share/man/man1/ssherpa.1 (Homebrew)",
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.token, func(t *testing.T) {
+			var out bytes.Buffer
+			printArtifactInfo(&out, c.token)
+			for _, want := range c.want {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("artifact output missing %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestLocateRepoArtifact(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "completions"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "completions", "ssherpa.bash"), []byte("# completion"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile: %v", err)
+	}
+	t.Chdir(dir)
+
+	path, ok := locateRepoArtifact("completions/ssherpa.bash")
+	if !ok {
+		t.Fatalf("locateRepoArtifact returned !ok for existing file")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("returned path does not exist: %v", err)
+	}
+
+	if _, ok := locateRepoArtifact("completions/ssherpa.zsh"); ok {
+		t.Fatalf("locateRepoArtifact returned ok for missing file")
 	}
 }

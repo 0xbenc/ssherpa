@@ -593,3 +593,167 @@ func assertNotContainsText(t *testing.T, got string, want string) {
 		t.Fatalf("text unexpectedly contains %q:\n%s", want, got)
 	}
 }
+
+// escapeInjectedRecord builds a session record whose remote- or
+// import-controlled fields all carry terminal escape sequences, pinning the
+// render-boundary sanitization (audit WP2: metadata escape injection).
+func escapeInjectedRecord() state.SessionRecord {
+	ended := time.Unix(1700000900, 0)
+	exitCode := 1
+	return state.SessionRecord{
+		ID:          "20260604T120000.000000000Z-evil\x1b[2J",
+		TargetAlias: "prod\x1b]0;owned\x07\u009b31mEVIL\rSPOOF",
+		Route:       []string{"bastion\x1b[2J", "prod\x1b[31m\nNEWLINE"},
+		Hops:        []string{"bastion\x1bc\u009d0;x\a"},
+		SSHArgv:     []string{"ssh", "-o", "Proxy\x1b[9999;9999H"},
+		RemoteHost:  "db\x1b[5m",
+		RemoteCWD:   "/srv\x1b]52;c;ZXZpbA==\x07",
+		StartedAt:   time.Unix(1700000000, 0),
+		EndedAt:     &ended,
+		ExitCode:    &exitCode,
+		LocalPID:    0,
+		RunnerMode:  "supervised\x1b[1m",
+		Kind:        state.KindTunnel,
+		Forward: &state.ForwardSpec{
+			LocalBind:  "127.0.0.1\x1b[2J",
+			LocalPort:  8080,
+			RemoteHost: "db\x1b[31m",
+			RemotePort: 5432,
+			SavedAlias: "tun\x1b[0m",
+		},
+		Transcript: &state.TranscriptSpec{
+			Path:   "/tmp/evil\x1b[2J.cast",
+			Format: "asciicast-v2\x1b[7m",
+			Bytes:  2048,
+			Frames: 3,
+		},
+		RecordedBy: &state.RecordingOrigin{
+			MachineID:      "machine\x1b[2J-1234567890",
+			SSHerpaVersion: "v1\x1b[31m",
+		},
+		Import: &state.ImportSpec{
+			ImportedAt:      time.Unix(1700000100, 0),
+			OriginClass:     "imported_other\x1b[2J",
+			SourceSessionID: "src\x1b]0;t\x07-session",
+			SourceMachineID: "feed\x1b[2Jface-1234567890",
+			BundleSHA256:    "abc\x1b[31m123",
+		},
+		DisconnectReason: "latency\x1b[2J timeout",
+		Events: []state.SessionEvent{
+			{Time: time.Unix(1700000200, 0), Type: "latency_warning\x1b[2J", Message: "probe\x1b]0;x\x07 slow"},
+		},
+	}
+}
+
+func TestMetadataLinesStripEscapeInjectedFields(t *testing.T) {
+	record := escapeInjectedRecord()
+	theme := termstyle.TerminalTheme().WithNoColor(true)
+	lines := metadataLines(record, theme, 200)
+	joined := strings.Join(lines, "\n")
+	assertNotContainsText(t, joined, "\x1b")
+	for _, want := range []string{"prod", "bastion", "latency", "probe", "supervised", "imported_other"} {
+		assertContainsText(t, joined, want)
+	}
+	// Raw C0/C1 controls are as dangerous as ESC sequences: U+009B is
+	// CSI to xterm-class terminals, and \r/\n spoof fields in
+	// line-oriented output. metadataLines joins per-line, so no line
+	// may contain its own embedded line break or any other control.
+	for _, line := range lines {
+		for _, r := range line {
+			if r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
+				t.Fatalf("metadata line contains raw control %U: %q", r, line)
+			}
+		}
+	}
+	assertNotContainsText(t, joined, "\u009b")
+	assertNotContainsText(t, joined, "SPOOF\r")
+}
+
+func TestWriteListStripsEscapeInjectedFields(t *testing.T) {
+	var out strings.Builder
+	WriteList(&out, "/tmp/ssherpa-state", []state.SessionRecord{escapeInjectedRecord()})
+	assertNotContainsText(t, out.String(), "\x1b")
+	assertContainsText(t, out.String(), "prod")
+}
+
+func TestMapViewStripsEscapeInjectedFields(t *testing.T) {
+	record := escapeInjectedRecord()
+	record.EndedAt = nil
+	record.RemoteMirror = true
+	view := MapView(ViewOptions{
+		Title:    "ssherpa session map",
+		StateDir: "/tmp/ssherpa-state",
+		Records:  []state.SessionRecord{record},
+		Map:      MapOptions{IncludeExited: true},
+		Theme:    termstyle.TerminalTheme().WithNoColor(true),
+		Width:    120,
+		Height:   40,
+	})
+	assertNotContainsText(t, view.Content, "\x1b")
+	assertContainsText(t, view.Content, "prod")
+}
+
+func TestSessionListDetailLinesStripEscapeInjectedFields(t *testing.T) {
+	theme := termstyle.TerminalTheme().WithNoColor(true)
+	lines := sessionListDetailLines(escapeInjectedRecord(), theme, 200, 40)
+	joined := strings.Join(lines, "\n")
+	assertNotContainsText(t, joined, "\x1b")
+	assertContainsText(t, joined, "prod")
+}
+
+func TestTranscriptReloadSalvagesTornTail(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/torn.cast"
+	torn := `{"version":2,"width":80,"height":24}` + "\n" +
+		`[0.1,"o","salvaged output\r\n"]` + "\n" +
+		`[0.2,"o","torn fra`
+	if err := os.WriteFile(path, []byte(torn), 0o600); err != nil {
+		t.Fatalf("write torn cast: %v", err)
+	}
+	model := transcriptModel{
+		noAltScreen: true,
+		stateDir:    stateDir,
+		record: state.SessionRecord{
+			ID:         "torn",
+			Transcript: &state.TranscriptSpec{Path: path},
+		},
+		theme:  termstyle.TerminalTheme().WithNoColor(true),
+		width:  100,
+		height: 28,
+	}
+	model.reload()
+	if model.errText != "" {
+		t.Fatalf("reload errText = %q, want salvage instead of failure", model.errText)
+	}
+	assertContainsText(t, model.warnText, "transcript tail is incomplete")
+	assertContainsText(t, strings.Join(model.lines, "\n"), "salvaged output")
+	assertContainsText(t, model.View().Content, "transcript tail is incomplete")
+}
+
+func TestTranscriptReloadSurfacesSkippedLines(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/skipped.cast"
+	content := `{"version":2,"width":80,"height":24}` + "\n" +
+		`not json at all` + "\n" +
+		`[0.2,"o","good frame\r\n"]` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write cast: %v", err)
+	}
+	model := transcriptModel{
+		noAltScreen: true,
+		stateDir:    stateDir,
+		record: state.SessionRecord{
+			ID:         "skipped",
+			Transcript: &state.TranscriptSpec{Path: path},
+		},
+		theme:  termstyle.TerminalTheme().WithNoColor(true),
+		width:  100,
+		height: 28,
+	}
+	model.reload()
+	if model.errText != "" {
+		t.Fatalf("reload errText = %q, want tolerant read", model.errText)
+	}
+	assertContainsText(t, model.warnText, "1 unparseable line(s) skipped")
+	assertContainsText(t, strings.Join(model.lines, "\n"), "good frame")
+}

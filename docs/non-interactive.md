@@ -27,7 +27,8 @@ For interactive use, run `ssherpa`, `ssherpa edit`, `ssherpa authkeys`, or
 | SFTP binary | `sftp` |
 | Linux state dir | `~/.local/state/ssherpa` |
 | macOS state dir | `~/Library/Application Support/ssherpa` |
-| Theme file | `~/.config/ssherpa/theme.conf` |
+| Theme file (Linux) | `~/.config/ssherpa/theme.conf` |
+| Theme file (macOS) | `~/Library/Application Support/ssherpa/theme.conf` |
 | Authorized keys | `~/.ssh/authorized_keys` |
 | Proxy bind | `127.0.0.1` |
 | Proxy port | `1080` |
@@ -41,19 +42,45 @@ For interactive use, run `ssherpa`, `ssherpa edit`, `ssherpa authkeys`, or
 | Variable | Effect |
 | --- | --- |
 | `SSHERPA_SSH_BINARY` | Default SSH binary when `--ssh-binary` is not set. |
+| `SSHERPA_SFTP_BINARY` | Default SFTP binary when `--sftp-binary` is not set. |
 | `SSHERPA_STATE_DIR` | Default state directory when `--state-dir` is not set. |
 | `SSHERPA_INCOMING_DIR` | Incoming SSH marker runtime directory. |
 | `SSHERPA_AUTHORIZED_KEYS_PATH` | Default authorized_keys path when `--path` is not set. |
 | `SSHERPA_THEME_FILE` | Default theme config path when `--theme-file` is not set. |
+| `SSHERPA_IGNORE_USER_GIT` | Defaults to on: hosts whose parsed `User` is `git` (github.com, gitlab.com remotes) are hidden from `list` and the picker. Set to `0`, `false`, `no`, or `off` to show them. |
+| `SSHERPA_HOST_LABEL` | Label this machine advertises as its origin host in session metadata, instead of its hostname. Ignored when an origin is inherited from a parent session. |
 | `SSHERPA_NO_COLOR` | Disable color styling. |
 | `NO_COLOR` | Disable color styling. |
 | `SSHERPA_NO_KITTY` | Disable Kitty SSH detection. |
 | `SSHERPA_NO_ALT_SCREEN` | Disable alternate-screen UI behavior for prompts/pickers. |
 | `SSHERPA_TRANSFER_TRANSPORT` | Internal/testing transfer transport override. |
 
-Supervised SSH commands also send `SSHERPA_*` metadata through OpenSSH
-`SendEnv`. Remote display of inherited lineage requires server-side
-`AcceptEnv SSHERPA_*`.
+Supervised SSH commands forward session lineage metadata to the remote
+host with one OpenSSH `SendEnv` option covering exactly these variables
+(and no other `SSHERPA_*` configuration variables):
+
+- `SSHERPA_SESSION_ID`
+- `SSHERPA_PARENT_SESSION_ID`
+- `SSHERPA_DEPTH`
+- `SSHERPA_ROUTE`
+- `SSHERPA_ORIGIN_HOST`
+
+Stock sshd rejects all of them (`AcceptEnv` defaults allow none of
+these). Remote display of inherited lineage — nested maps deeper than
+one level, incoming-session labels, transcript route metadata exported
+on the remote side — requires server-side `AcceptEnv SSHERPA_*`. The
+local session map, escape rope, and incoming presence detection work
+without it. See the README's "Server-side setup (optional)" section.
+
+### Internal IPC arguments
+
+`ssherpa --__supervisor [--__detached-id ID] [--__detached-state-dir
+DIR] [--__detached-log-path PATH] ...` is the internal re-exec protocol
+between a foreground ssherpa and the background daemon it spawns for
+`forward --background` and `proxy --background`. It is not part of the
+stable CLI contract: the argv shape may change between versions without
+notice, and it is only guaranteed to work when parent and child run the
+same ssherpa build. Do not invoke it directly or script against it.
 
 ## Exit Codes
 
@@ -63,11 +90,19 @@ Exit codes are intentionally simple in the current implementation:
 | --- | --- |
 | `0` | Success, no-op, cancelled interactive selection, or clean skip. |
 | `1` | Usage error, validation error, failed write, failed process start, or generic failure. |
-| `2` | Not found or failed check result for selected commands. |
-| `3` | Config/inventory load failure for `check`. |
+| `2` | Not found, failed check result, empty check selection, or config/inventory load failure for selected commands. |
 | `120` | Escape rope pulled from a supervised session. |
 
-When ssherpa directly runs `ssh` or `sftp`, the child exit code may be returned.
+`session grep` follows the grep(1) convention: `0` when at least one
+line matched, `1` when nothing matched, and `2` for errors (missing
+session, unreadable transcript, invalid pattern).
+
+When ssherpa directly runs `ssh` or `sftp`, the child's exit code is
+returned unchanged. Child codes can collide with the table above —
+OpenSSH itself uses `255` for connection errors, and a remote command's
+exit status passes through as-is — so scripts that need to distinguish
+ssherpa failures from remote failures should prefer `--print` plus
+their own `ssh` invocation.
 
 ## Global Help and Version
 
@@ -84,9 +119,12 @@ ssherpa -v
 
 ```text
 ssherpa VERSION
-commit COMMIT
-built  DATE
+commit: COMMIT
+built: DATE
 ```
+
+`help` accepts an optional command topic: `ssherpa help check` prints
+the same usage block as `ssherpa check --help`.
 
 ## Inventory Commands
 
@@ -156,6 +194,7 @@ Connect flags:
 | `--latency-disconnect DURATION` | Disconnect after sustained unhealthy probes. Requires `--latency-warn`. |
 | `--composer-key KEY` | Change queued-input composer control key. Example: `ctrl-r`. |
 | `--no-composer` | Disable the queued-input composer. |
+| `--overlay-key KEY` | Change the session-map overlay (and escape rope) control key; default `ctrl-^`. |
 | `--no-record` | Disable overlay-controlled transcript recording for this supervised session. |
 | `--record-max-bytes BYTES` | Cap the transcript file size once recording is started. Accepts suffixes like `50MB` or `100MiB`; default `50MB`. |
 | `--no-kitty` | Disable Kitty SSH command detection. |
@@ -180,14 +219,25 @@ Supervised-session keys:
 
 | Key | Action |
 | --- | --- |
-| `Ctrl-]` | Open or close the local session-map overlay. |
-| `Ctrl-]`, `T` | Start transcript recording. Press `T` again in the overlay to pause or resume. |
-| `Ctrl-]`, `X`, `X` | Pull the escape rope after confirmation. |
-| `Ctrl-]` three times quickly | Panic escape rope, no confirmation. |
+| `Ctrl-^` | Open or close the local session-map overlay. |
+| `Ctrl-^`, `T` | Start transcript recording. Press `T` again in the overlay to pause or resume. |
+| `Ctrl-^`, `S` | Send a file to the session host from the overlay. |
+| `Ctrl-^`, `V` | Receive a file from the session host from the overlay. |
+| `Ctrl-^`, `R` | Refresh the overlay's session map. |
+| `Ctrl-^`, `X`, `X` | Pull the escape rope after confirmation. |
+| `Ctrl-^` three times quickly | Panic escape rope, no confirmation. |
 | `Ctrl-G` | Open queued-input composer by default. |
 
+`Ctrl-^` is `Ctrl-Shift-6` on US layouts; most terminals also send the same
+byte for plain `Ctrl-6`. The key was chosen because almost nothing else uses
+it (mosh picked the same byte for its escape character for the same reason).
+If it collides with something you need — vim's alternate-file toggle, or mosh
+running inside a supervised session — rebind it with `--overlay-key KEY`, for
+example `--overlay-key 'ctrl-]'`. Versions before 1.8 used `Ctrl-]`, which
+conflicted with telnet's escape character and vim's jump-to-tag.
+
 Supervised sessions do not record immediately. Open the local session-map
-overlay with `Ctrl-]` and press `T` to start, pause, or resume visible terminal
+overlay with `Ctrl-^` and press `T` to start, pause, or resume visible terminal
 output recording. Recording writes to `STATE_DIR/sessions/SESSION_ID.cast` in an
 asciinema-v2-compatible JSONL format with `0600` permissions. Local input is not
 recorded. `--no-record` removes this opt-in recording path for the session.
@@ -426,6 +476,22 @@ ssherpa forward --select pgbox --local 127.0.0.1:5433 --remote db.internal:5432 
 ssherpa forward --select pg --background --reconnect-max 10
 ```
 
+**Reconnect reacts to ssh exiting — not to a silently dead link.** If the
+connection dies without the ssh process noticing (NAT mapping timeout,
+laptop sleep/resume, network change), nothing triggers a reconnect because
+ssherpa does not inject keepalives or override your OpenSSH settings. To
+make ssh itself detect dead links and exit (which then triggers ssherpa's
+reconnect), set keepalives in your `~/.ssh/config` for the relevant hosts:
+
+```
+Host pgbox
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+```
+
+For interactive sessions, `--latency-warn` / `--latency-disconnect` provide
+an opt-in sidecar health probe with the same goal.
+
 ### Management
 
 ```sh
@@ -492,6 +558,8 @@ ssherpa receive REMOTE_PATH --select ALIAS [--local LOCAL_PATH] [--force] [--pri
 ssherpa recv REMOTE_PATH --select ALIAS [...]
 ssherpa receive REMOTE_PATH ALIAS [...]
 ```
+
+`recv` is a stable alias for `receive`; the two are interchangeable.
 
 Flags:
 
@@ -684,10 +752,17 @@ identity is absent.
 ### delete
 
 ```sh
-ssherpa authkeys delete --fingerprint SHA256:... [--fingerprint SHA256:...] [shared flags]
+ssherpa authkeys delete --fingerprint SHA256:... [--fingerprint SHA256:...] [--all-matching] [shared flags]
 ssherpa authkeys delete SHA256:... [SHA256:...] [shared flags]
 ssherpa authkeys remove ...
 ```
+
+A fingerprint identifies the key blob, so two entries granting the same key
+with different options (for example different `from=` restrictions) share one
+fingerprint. When a fingerprint matches more than one entry, `delete --yes`
+refuses with exit `1` and lists every matching entry; pass `--all-matching`
+to delete them all non-interactively. Interactive deletes list every entry in
+the confirmation. `--dry-run` previews the full removal either way.
 
 Examples:
 
@@ -717,7 +792,7 @@ ssherpa session export SESSION_ID [--format text|asciicast] [--output PATH] [--s
 ssherpa session bundle export SESSION_ID --output PATH [--json] [--state-dir PATH]
 ssherpa session bundle import PATH [--json] [--state-dir PATH]
 ssherpa session identity [--json] [--state-dir PATH]
-ssherpa session browse [--state-dir PATH]
+ssherpa session browse [--state-dir PATH]          # alias: session transcripts
 ssherpa session stop-all [--json] [--state-dir PATH]
 ssherpa session prune [--older-than DURATION] [--dry-run] [--json] [--state-dir PATH]
 ```
@@ -731,12 +806,12 @@ Subcommands:
 | `show` | One session record. |
 | `log` | Print a readable cleaned transcript, or raw terminal output with `--raw`. |
 | `replay` | Replay recorded terminal output with original timing. |
-| `grep` | Search cleaned transcript output and print timestamped matches. |
+| `grep` | Search cleaned transcript output and print timestamped matches. Exit codes follow grep(1): `0` match, `1` no match, `2` error. |
 | `export` | Export transcript text or the original asciicast stream. |
 | `bundle export` | Export a portable `.ssherpa-session` bundle containing manifest, session metadata, and transcript. |
 | `bundle import` | Import a portable bundle as a new local session record. |
 | `identity` | Show or create this machine's local ssherpa recording identity. |
-| `browse` | Open the TUI transcript browser and viewer. |
+| `browse` | Open the TUI transcript browser and viewer. `transcripts` is a stable alias. |
 | `stop-all` | Signal every active tracked session. |
 | `prune` | Remove ended records older than a duration. |
 
@@ -791,8 +866,8 @@ metadata in the transcript viewer. It also includes a confirmed
 delete-all-local-data action, available from the Sessions menu and from the
 route map with `D`; this removes ssherpa state data but does not remove SSH
 config. Recording itself is started, paused, and resumed from the in-session
-`Ctrl-]` map overlay. Raw replay of imported recordings is treated as untrusted
-terminal output. During interactive raw replay, press `Ctrl-]` to pause playback
+`Ctrl-^` map overlay. Raw replay of imported recordings is treated as untrusted
+terminal output. During interactive raw replay, press `Ctrl-^` to pause playback
 and open local replay controls: `space` or `q` resumes, `r` restarts from the
 beginning, and `m` returns to the ssherpa menus. `Ctrl-C` also stops playback and
 returns to the menus.
@@ -815,7 +890,29 @@ Flags:
 
 The resulting config is written atomically with a backup.
 
+Theme configs are forward compatible: role keys this binary does not
+recognize (for example, keys written by a newer ssherpa) are ignored
+with a warning instead of failing the load. Known roles still apply.
+Saving from the theme editor drops unknown keys.
+
 ## JSON-Capable Commands
+
+The top-level JSON envelopes of `list`, `show`, `check`, `session list`,
+`session show`, `session map`, `session prune`, and `session bundle
+import` carry a `"schema_version": 1` field. Changes within 1.x are
+additive only; the number moves when a field changes meaning.
+
+`session list --json` and `session show --json` emit a public projection
+of each session record, not the raw internal struct:
+`{"schema_version": 1, "state_dir": ..., "sessions": [...]}` and
+`{"schema_version": 1, "session": {...}}` respectively. The projection
+carries `id`, `parent_id`, `depth`, `route`, `target_alias`, `kind`,
+`runner_mode`, `started_at`, `ended_at`, `exit_code`,
+`disconnect_reason`, `local_pid`, `ssh_pid`, `origin`, and `transcript`,
+`recorded_by`, and `import` summaries. Internal operational fields
+(`ssh_argv`, `control_path`, raw `events`, `state_version`) are
+deliberately not part of the stable contract; `session map --json` and
+`session prune --json` use the same projection.
 
 Commands supporting `--json`:
 

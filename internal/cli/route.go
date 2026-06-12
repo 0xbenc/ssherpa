@@ -83,6 +83,8 @@ type connectOptions struct {
 	SSHBinary      string
 	Watchdog       session.WatchdogOptions
 	Composer       session.ComposerOptions
+	OverlayKey     byte
+	OverlayKeyName string
 	Reconnect      session.ReconnectOptions
 	NoColor        bool
 	ThemeName      string
@@ -113,6 +115,8 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 			Hotkey:     flags.ComposerKey,
 			HotkeyName: flags.ComposerKeyName,
 		},
+		OverlayKey:     flags.OverlayKey,
+		OverlayKeyName: flags.OverlayKeyName,
 		NoColor:        flags.NoColor,
 		ThemeName:      flags.ThemeName,
 		ThemeFile:      flags.ThemeFile,
@@ -217,6 +221,16 @@ func runProxyWith(args []string, detached bool, recordID string, stdout io.Write
 				flags.savedFromCatalog = saved.Name
 				touchProxyLastLaunched(stateDir, saved)
 			}
+		}
+	}
+	// Security gate: by now flags.Select is the destination handed to the
+	// argv builder — either typed on the CLI or loaded from a saved-proxy
+	// catalog entry (whose JSON could have been tampered with). A
+	// dash-prefixed name would be parsed by OpenSSH as an option.
+	if flags.Select != "" {
+		if err := sshcmd.ValidateDestination(flags.Select); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
 		}
 	}
 	if flags.Background && flags.Print {
@@ -342,6 +356,22 @@ func runForwardWith(args []string, detached bool, recordID string, stdout io.Wri
 				flags.savedFromCatalog = saved.Name
 				touchForwardLastLaunched(stateDir, saved)
 			}
+		}
+	}
+	// Security gate: flags.Select and flags.Through are the destinations
+	// handed to the argv builder — typed on the CLI or loaded from a
+	// saved-forward catalog entry (whose JSON could have been tampered
+	// with). A dash-prefixed name would be parsed by OpenSSH as an option.
+	if flags.Select != "" {
+		if err := sshcmd.ValidateDestination(flags.Select); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
+	}
+	if flags.Through != "" {
+		if err := sshcmd.ValidateDestination(flags.Through); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
 		}
 	}
 	if !flags.LocalSet {
@@ -545,6 +575,24 @@ func parseJumpFlags(args []string, stderr io.Writer) (jumpFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -750,6 +798,24 @@ func parseProxyFlags(args []string, stderr io.Writer) (proxyFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -964,6 +1030,24 @@ func parseForwardFlags(args []string, stderr io.Writer) (forwardFlags, bool) {
 			flags.ComposerKeyName = name
 		case arg == "--no-composer":
 			flags.NoComposer = true
+		case arg == "--overlay-key":
+			value, ok := nextArg(args, &i, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			key, name, ok := parseControlKey(value, stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
+		case strings.HasPrefix(arg, "--overlay-key="):
+			key, name, ok := parseControlKey(strings.TrimPrefix(arg, "--overlay-key="), stderr, "--overlay-key")
+			if !ok {
+				return flags, false
+			}
+			flags.OverlayKey = key
+			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
 		case arg == "--record-max-bytes":
@@ -1134,6 +1218,15 @@ func resolveJumpRoute(flags jumpFlags, inventory hostlist.Inventory, stderr io.W
 		if flags.Destination == "" || len(flags.Hops) == 0 {
 			fmt.Fprintln(stderr, "ssherpa: jump requires --dest and at least one --hop when route flags are used")
 			return "", nil, false, 1
+		}
+		// Security gate before the inventory lookup: a dash-prefixed
+		// --dest or --hop must fail with the injection rationale, not
+		// a generic "alias not found".
+		for _, name := range append([]string{flags.Destination}, flags.Hops...) {
+			if err := sshcmd.ValidateDestination(name); err != nil {
+				fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+				return "", nil, false, 1
+			}
 		}
 		if err := sshcmd.ValidateJumpRoute(flags.Destination, flags.Hops); err != nil {
 			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
@@ -1480,6 +1573,15 @@ func resolveSSHCommand(flags connectFlags) sshcmd.Command {
 }
 
 func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.Metadata, stdout io.Writer, stderr io.Writer) int {
+	// Defense in depth for every launch path (connect/jump/proxy/forward):
+	// destinations normally arrive here from the filtered inventory or an
+	// upstream ValidateDestination gate, but a dash-prefixed target must
+	// never be printed or spawned even if a future caller forgets one.
+	if err := sshcmd.ValidateDestination(metadata.TargetAlias); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
 	cmd = sshcmd.WithConnectTimeout(cmd, sshcmd.DefaultConnectTimeoutSeconds)
 	if options.Supervise {
 		cmd = sshcmd.WithSessionEnvForwarding(cmd)
@@ -1848,6 +1950,9 @@ func connectFlagsAsRouteArgs(flags connectFlags) []string {
 	}
 	if flags.ComposerKey != 0 {
 		args = append(args, "--composer-key", flags.ComposerKeyName)
+	}
+	if flags.OverlayKey != 0 {
+		args = append(args, "--overlay-key", flags.OverlayKeyName)
 	}
 	if flags.NoComposer {
 		args = append(args, "--no-composer")

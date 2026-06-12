@@ -305,6 +305,7 @@ func runEditDelete(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
+	printPlanWarnings(stderr, plans)
 	warnCatalogDeletes(stderr, fmt.Sprintf("alias %q", alias), catalogPlan)
 
 	if !flags.DryRun && !flags.Yes {
@@ -383,6 +384,7 @@ func runEditDeleteAll(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
+	printPlanWarnings(stderr, plans)
 	warnCatalogDeletes(stderr, fmt.Sprintf("%d aliases", len(aliasesFromPlans(plans))), catalogPlan)
 
 	wantConfirm := fmt.Sprintf("delete %d aliases", len(inventory.Aliases))
@@ -1651,6 +1653,14 @@ func pluralize(count int, singular string, plural string) string {
 		return singular
 	}
 	return plural
+}
+
+func printPlanWarnings(stderr io.Writer, plans []sshconfig.MutationPlan) {
+	for _, plan := range plans {
+		for _, warning := range plan.Warnings {
+			fmt.Fprintf(stderr, "ssherpa: warning: %s\n", warning)
+		}
+	}
 }
 
 func aliasesFromPlans(plans []sshconfig.MutationPlan) []string {

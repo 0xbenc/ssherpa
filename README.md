@@ -13,6 +13,11 @@
 real `~/.ssh/config`, and lets you choose a host or preset.
 Then it runs your real `ssh`, and adds a map when sessions get nested.
 
+> **Where did github.com go?** Hosts whose `User` is `git` (github.com,
+> gitlab.com, and other git remotes) are hidden from the host list by
+> default — they are deploy endpoints, not shells. Set
+> `SSHERPA_IGNORE_USER_GIT=0` to show them.
+
 It exists because SSH workflows get messy: bastions, manual hops, local
 forwards, SOCKS proxies, file copies, and half-remembered aliases.
 
@@ -20,21 +25,26 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
 
 ## Standouts
 
-- **Session map:** press `Ctrl-]` in a supervised session to see the active
-  route and nested lineage.
+- **Session map:** press `Ctrl-^` in a supervised session to see the active
+  route and nested lineage (rebindable with `--overlay-key`). Lineage deeper
+  than one nesting level needs a one-line server opt-in — see
+  [Server-side setup](#server-side-setup-optional).
 - **File sending:** send or receive individual files over OpenSSH SFTP, with
   overwrite protection and picker-driven paths.
 - **Remote key seeding:** install or remove validated public keys on many saved
   SSH aliases, including hosts reached through ProxyJump routes, without sudo.
-- **Escape rope:** `Ctrl-]`, `X`, `X` disconnects every supervised layer below
-  you and returns to the outer shell.
+- **Escape rope:** `Ctrl-^`, `X`, `X` disconnects every supervised layer below
+  you and returns to the outer shell. Mash `Ctrl-^` three times for the
+  no-questions-asked panic rope.
 - **Session recording:** start, pause, and resume replayable output transcripts
-  from the `Ctrl-]` session map overlay. Browse recordings from the TUI or use
+  from the `Ctrl-^` session map overlay. Browse recordings from the TUI or use
   `ssherpa session log`, `grep`, `replay`, and `export`. Portable transcript
   bundles can be imported on another machine and are labeled as local, imported
   from this machine, imported from another machine, or unknown origin.
 - **Presets:** save reusable local port-forward and SOCKS proxy entries, launch
-  them later, and stop tracked background sessions by name.
+  them later, and stop tracked background sessions by name. Tunnels reconnect
+  with backoff when ssh exits; pair with `ServerAliveInterval` in your ssh
+  config so dead links exit instead of hanging (see the CLI reference).
 - **Full Theming:** adjust the colors to your liking and save presets.
 
 ## Install
@@ -89,6 +99,34 @@ sudo install -m 0755 ssherpa /usr/local/bin/ssherpa
 
 This works on macOS and Linux. The release build supports `amd64` and `arm64`
 for both platforms.
+
+## Server-side setup (optional)
+
+ssherpa needs nothing installed on the servers you connect to. Nested-session
+lineage rides SSH environment variables (`SSHERPA_SESSION_ID`,
+`SSHERPA_DEPTH`, `SSHERPA_ROUTE`, ...), and a stock sshd rejects them — its
+`AcceptEnv` default allows none. ssherpa degrades gracefully; here is exactly
+what works without any server change:
+
+| Feature | Stock server | With `AcceptEnv SSHERPA_*` |
+| --- | --- | --- |
+| Connect, jump, forward, proxy, transfer, check | works | works |
+| Escape rope and panic rope | works | works |
+| Local session map, one nesting level deep | works | works |
+| Incoming session presence (`ssherpa incoming list`) | works | works |
+| Remote lineage in maps deeper than one level | remote ssherpa sees itself as a root session | full route and depth |
+| Incoming session labels (origin host, route) | missing | shown |
+| Route/depth metadata in transcripts exported on the remote | incomplete | complete |
+
+To opt in, add one line to the server's `/etc/ssh/sshd_config` and reload
+sshd:
+
+```
+AcceptEnv SSHERPA_*
+```
+
+Labels are advisory either way: clients can spoof accepted environment
+variables.
 
 ## Docs
 
