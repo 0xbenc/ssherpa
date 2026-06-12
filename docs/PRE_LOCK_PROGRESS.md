@@ -25,10 +25,10 @@ every commit on this branch.
 | --- | --- |
 | Overlay hotkey → Ctrl-^ + `--overlay-key` | **done** |
 | Reconnect limitation docs | **done** |
-| Batch A — WP1 argv `--` guard (sshcmd) | pending |
-| Batch A — WP4 authkeys (options validation, exact delete, confirm defaults) | pending |
-| Batch A — WP5 sshconfig mutation round-trip integrity | pending |
-| Batch A — WP11 release integrity (goreleaser/CI/completions/deps) | pending |
+| Batch A — WP1 argv guard | **in progress** — first impl used `--` before alias, reviewer proved it breaks `-- -L 8080:...` option passthrough; redesign in flight: inventory rejection of dash aliases + sshcmd.ValidateDestination at route layer + `--` kept only for sftp/probe |
+| Batch A — WP4 authkeys | **done** (a5ba07f) — incl. review fixes: C1 range, dry-run preview gate, --all-matching docs |
+| Batch A — WP5 sshconfig | **done** (281b0e6) — incl. review fixes: multi-casing delete refusal, resolved-casing plan.Aliases, plan.Warnings printed |
+| Batch A — WP11 release | **done** (1525cc7) — incl. review fixes: SBOM+syft, macos release gate, dependabot direct-only. Completions/man regen + drift test DEFERRED to final pass after Batch C (CLI surface still moving) |
 | Batch B — WP9 transcript durability (torn tail, fsync, export, prune .cast) | pending |
 | Batch B — WP3 clamps (zip-bomb, replay sleep, atomic import) | pending |
 | Batch B — WP6 state integrity (prune path, skip-bad-file, version gates, reaping) | pending |
@@ -51,3 +51,23 @@ every commit on this branch.
 - Batches are file-disjoint to allow parallel subagents: A touches
   sshcmd/authkeys/sshconfig/release-config; B touches
   transcript/state/termstyle; C touches session/inband/cli render+contract.
+
+## Maintainer manual actions (cannot be done in-repo)
+
+- Enable GitHub private vulnerability reporting (Settings → Security) so the
+  new SECURITY.md channel works.
+- Replace `TAP_GITHUB_TOKEN` with a fine-grained PAT scoped to contents:write
+  on 0xbenc/homebrew-tap only; document owner/expiry/rotation in RELEASING.md.
+- Apple Developer signing/notarization for the Homebrew cask (Gatekeeper).
+- goreleaser version pin (v2.16.0 in both workflows) is NOT bumped by
+  dependabot — bump manually on goreleaser releases.
+
+## Deferred minors (post-lock or later batch)
+
+- ui.wrapConfirmText collapses explicit newlines (multi-entry authkeys delete
+  confirm renders as one paragraph) — fix with Batch C ui work.
+- add-flow records picker result under typed casing, not plan-resolved casing
+  (cosmetic).
+- Include-at-end-of-stanza scope-change warning unevenness (sshconfig).
+- splitFields backslash-in-quotes parity with OpenSSH argv_split (tokenizer
+  dialect finding, §12.2).
