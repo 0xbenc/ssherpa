@@ -25,7 +25,7 @@ every commit on this branch.
 | --- | --- |
 | Overlay hotkey → Ctrl-^ + `--overlay-key` | **done** |
 | Reconnect limitation docs | **done** |
-| Batch A — WP1 argv guard | **in progress** — first impl used `--` before alias, reviewer proved it breaks `-- -L 8080:...` option passthrough; redesign in flight: inventory rejection of dash aliases + sshcmd.ValidateDestination at route layer + `--` kept only for sftp/probe |
+| Batch A — WP1 argv guard | **done** (9221070) — dash aliases filtered from inventory with warning; ValidateDestination at route layer incl. tampered catalogs; `--` kept only for sftp/probe; passthrough preserved and pinned by tests |
 | Batch A — WP4 authkeys | **done** (a5ba07f) — incl. review fixes: C1 range, dry-run preview gate, --all-matching docs |
 | Batch A — WP5 sshconfig | **done** (281b0e6) — incl. review fixes: multi-casing delete refusal, resolved-casing plan.Aliases, plan.Warnings printed |
 | Batch A — WP11 release | **done** (1525cc7) — incl. review fixes: SBOM+syft, macos release gate, dependabot direct-only. Completions/man regen + drift test DEFERRED to final pass after Batch C (CLI surface still moving) |
