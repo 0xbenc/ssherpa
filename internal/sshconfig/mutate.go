@@ -308,6 +308,13 @@ func validateAliasName(alias string, allowPattern bool) error {
 	if containsControlRune(alias) {
 		return errors.New("alias cannot contain control characters")
 	}
+	if strings.HasPrefix(alias, "-") {
+		// A leading dash makes OpenSSH parse the alias as an option, so
+		// ssherpa filters such hosts from its inventory and refuses to
+		// connect to them — writing one would author a stanza ssherpa
+		// then silently drops from its own host list.
+		return errors.New("alias cannot begin with '-' (it would be parsed as an ssh option)")
+	}
 	if !allowPattern && (strings.HasPrefix(alias, "!") || strings.ContainsAny(alias, "*?")) {
 		return errors.New("alias cannot be a wildcard or negated pattern")
 	}

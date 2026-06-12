@@ -419,15 +419,15 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			return
 		}
 		close(ropePulledCh)
-		recordMu.Lock()
-		record.DisconnectReason = EscapeRopeReason
-		record.Events = append(record.Events, state.SessionEvent{
-			Time:    now().UTC(),
-			Type:    EscapeRopeReason,
-			Message: "escape rope pulled; disconnecting all downstream sessions",
+		withLock(&recordMu, func() {
+			record.DisconnectReason = EscapeRopeReason
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    EscapeRopeReason,
+				Message: "escape rope pulled; disconnecting all downstream sessions",
+			})
+			_ = state.WriteRecord(stateDir, record)
 		})
-		_ = state.WriteRecord(stateDir, record)
-		recordMu.Unlock()
 		proc := procRefShared.get()
 		if proc == nil {
 			// Mid-backoff: no live process. The retry loop wakes on
@@ -456,15 +456,15 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			return
 		}
 		close(interruptedCh)
-		recordMu.Lock()
-		record.DisconnectReason = InterruptReason
-		record.Events = append(record.Events, state.SessionEvent{
-			Time:    now().UTC(),
-			Type:    InterruptReason,
-			Message: "connection attempt interrupted locally with Ctrl+C",
+		withLock(&recordMu, func() {
+			record.DisconnectReason = InterruptReason
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    InterruptReason,
+				Message: "connection attempt interrupted locally with Ctrl+C",
+			})
+			_ = state.WriteRecord(stateDir, record)
 		})
-		_ = state.WriteRecord(stateDir, record)
-		recordMu.Unlock()
 		proc := procRefShared.get()
 		if proc == nil {
 			return
@@ -616,32 +616,32 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		}
 		if !shouldRetry(metadata.Kind, opts.Reconnect, waitErr, attempt) {
 			if attempt > 1 {
-				recordMu.Lock()
-				record.Events = append(record.Events, state.SessionEvent{
-					Time:    now().UTC(),
-					Type:    "reconnect_gave_up",
-					Message: fmt.Sprintf("attempt %d: %v", attempt, waitErr),
+				withLock(&recordMu, func() {
+					record.Events = append(record.Events, state.SessionEvent{
+						Time:    now().UTC(),
+						Type:    "reconnect_gave_up",
+						Message: fmt.Sprintf("attempt %d: %v", attempt, waitErr),
+					})
+					_ = state.WriteRecord(stateDir, record)
 				})
-				_ = state.WriteRecord(stateDir, record)
-				recordMu.Unlock()
 			}
 			break
 		}
 		backoff := computeBackoff(attempt, opts.Reconnect)
-		recordMu.Lock()
-		record.Events = append(record.Events, state.SessionEvent{
-			Time:    now().UTC(),
-			Type:    "reconnect_scheduled",
-			Message: fmt.Sprintf("attempt %d failed: %v; retrying in %s", attempt, waitErr, backoff),
+		withLock(&recordMu, func() {
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    "reconnect_scheduled",
+				Message: fmt.Sprintf("attempt %d failed: %v; retrying in %s", attempt, waitErr, backoff),
+			})
+			if record.Forward != nil {
+				record.Forward.RetryCount = attempt
+			}
+			if record.Proxy != nil {
+				record.Proxy.RetryCount = attempt
+			}
+			_ = state.WriteRecord(stateDir, record)
 		})
-		if record.Forward != nil {
-			record.Forward.RetryCount = attempt
-		}
-		if record.Proxy != nil {
-			record.Proxy.RetryCount = attempt
-		}
-		_ = state.WriteRecord(stateDir, record)
-		recordMu.Unlock()
 		recorder.WriteMarker(now().UTC(), fmt.Sprintf("reconnect scheduled after attempt %d failed: %v", attempt, waitErr))
 		fmt.Fprintf(stderr, "\r\nssherpa: session attempt %d ended (%v); retrying in %s\r\n", attempt, waitErr, backoff)
 		timer := time.NewTimer(backoff)
@@ -668,12 +668,13 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		exitCode = 1
 	}
 	endedAt := now().UTC()
-	recordMu.Lock()
-	record.EndedAt = &endedAt
-	record.ExitCode = &exitCode
-	err = state.WriteRecord(stateDir, record)
-	recordForTelemetry := record
-	recordMu.Unlock()
+	var recordForTelemetry state.SessionRecord
+	withLock(&recordMu, func() {
+		record.EndedAt = &endedAt
+		record.ExitCode = &exitCode
+		err = state.WriteRecord(stateDir, record)
+		recordForTelemetry = record
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: update session record: %v\n", err)
 		if exitCode == 0 {
@@ -2220,10 +2221,22 @@ func (r *sessionRecorder) updateRecord(spec state.TranscriptSpec) {
 	if r.record == nil || r.recordMu == nil {
 		return
 	}
-	r.recordMu.Lock()
-	r.record.Transcript = &spec
-	_ = state.WriteRecord(r.stateDir, *r.record)
-	r.recordMu.Unlock()
+	withLock(r.recordMu, func() {
+		r.record.Transcript = &spec
+		_ = state.WriteRecord(r.stateDir, *r.record)
+	})
+}
+
+// withLock runs fn while holding mu, releasing it via defer. Using a
+// deferred unlock (rather than an inline Lock/.../Unlock) means a panic
+// inside fn releases the lock during unwind, so the deferred
+// recorder.Close and the top-level panic recovery — which both need
+// this same mutex to finalize the record — cannot deadlock the
+// terminal-restore path.
+func withLock(mu *sync.Mutex, fn func()) {
+	mu.Lock()
+	defer mu.Unlock()
+	fn()
 }
 
 // attemptOnce spawns the SSH process once under a fresh PTY, swaps the

@@ -317,6 +317,7 @@ func TestValidateAliasSpec(t *testing.T) {
 		{name: "empty alias", spec: AliasSpec{HostName: "host"}},
 		{name: "space alias", spec: AliasSpec{Alias: "bad alias", HostName: "host"}},
 		{name: "pattern alias", spec: AliasSpec{Alias: "*.example.com", HostName: "host"}},
+		{name: "dash alias", spec: AliasSpec{Alias: "-oProxyCommand=evil", HostName: "host"}},
 		{name: "missing host", spec: AliasSpec{Alias: "prod"}},
 		{name: "bad port", spec: AliasSpec{Alias: "prod", HostName: "host", Port: "70000"}},
 	}
