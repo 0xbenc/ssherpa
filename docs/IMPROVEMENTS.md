@@ -94,7 +94,7 @@ A curated, codebase-specific backlog. Each item is concrete (names real files/pa
 | 69 | Testing | Terminal-capability matrix tests | Mock `TERM`, `NO_COLOR`, and width to verify graceful degradation across dumb/256/truecolor terminals. |
 | 70 | Testing | Coverage gate in CI | Fail CI if total coverage drops below a threshold, with per-package floors; target lifting `cli` (~43%) and `ui` (~45%). |
 | 71 | Testing | Race detector in CI | Run `go test -race ./...` (esp. `session`, `daemon`, `state`) to catch the concurrency bugs PTY/daemon code is prone to. |
-| 72 | Testing | Escape rope edge cases | Test rope behavior under nested zsh/fish, `tmux`/`screen`, and `nohup` layers where signal delivery differs. |
+| 72 | Testing | Escape rope edge cases | Test rope behavior under nested zsh/fish and `nohup` layers where signal delivery differs. (`tmux` addressed by the muxer guard — `internal/session/muxer_guard.go`; `screen` is detect-only.) |
 | 73 | Testing | Performance regression guard | Benchmark large-config parse time and alert if it regresses >2× between commits. |
 | 74 | Architecture | Split monolithic `cli.go` (1410 LOC) | Separate command dispatch from interactive flows; move each command group into its own file/handler to improve testability of `cli` (currently ~43%). |
 | 75 | Architecture | Decompose `session.go` (1958 LOC) | PTY plumbing, overlay, input composer, watchdog, and escape rope are five concerns in one file; extract into focused units. |

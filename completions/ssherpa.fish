@@ -37,6 +37,7 @@ complete -c ssherpa -n '__fish_use_subcommand' -l composer-key -r -d 'Queued-inp
 complete -c ssherpa -n '__fish_use_subcommand' -l no-composer -d 'Disable queued-input composer'
 complete -c ssherpa -n '__fish_use_subcommand' -l overlay-key -r -d 'Session-map overlay key'
 complete -c ssherpa -n '__fish_use_subcommand' -l no-record -d 'Disable transcript recording'
+complete -c ssherpa -n '__fish_use_subcommand' -l no-muxer-guard -d 'Disable tmux upstream-loss teardown'
 complete -c ssherpa -n '__fish_use_subcommand' -l record-max-bytes -r -d 'Cap transcript size'
 complete -c ssherpa -n '__fish_use_subcommand' -l no-kitty -d 'Disable Kitty SSH command detection'
 complete -c ssherpa -n '__fish_use_subcommand' -l no-color -d 'Disable color styling'

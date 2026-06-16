@@ -41,6 +41,7 @@ _ssherpa() {
     '--no-composer[disable queued-input composer]' \
     '--overlay-key[session-map overlay key]:key' \
     '--no-record[disable transcript recording]' \
+    '--no-muxer-guard[disable tmux upstream-loss teardown]' \
     '--record-max-bytes[cap transcript size]:bytes' \
     '--no-kitty[disable Kitty SSH command detection]' \
     '--no-color[disable color styling]' \

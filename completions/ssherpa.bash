@@ -6,7 +6,7 @@ _ssherpa()
     _init_completion || return
 
     local commands="add edit jump proxy forward send receive recv check incoming authkeys theme session list show version help"
-    local connect_flags="--json --all --filter --user --config --print --exec --select --ssh-binary --supervise --direct --state-dir --latency-warn --latency-disconnect --composer-key --no-composer --overlay-key --no-record --record-max-bytes --no-kitty --no-color --theme-file --help"
+    local connect_flags="--json --all --filter --user --config --print --exec --select --ssh-binary --supervise --direct --state-dir --latency-warn --latency-disconnect --composer-key --no-composer --overlay-key --no-record --no-muxer-guard --record-max-bytes --no-kitty --no-color --theme-file --help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$commands $connect_flags" -- "$cur") )

@@ -35,7 +35,14 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   SSH aliases, including hosts reached through ProxyJump routes, without sudo.
 - **Escape rope:** `Ctrl-^`, `X`, `X` disconnects every supervised layer below
   you and returns to the outer shell. Mash `Ctrl-^` three times for the
-  no-questions-asked panic rope.
+  no-questions-asked panic rope. A layer running inside `tmux` would normally
+  survive the rope (the multiplexer keeps it alive across the disconnect), so a
+  nested ssherpa inside tmux watches its own upstream link and tears *itself*
+  down — without touching tmux — when the link is lost while you were attached;
+  a deliberate `tmux` detach is spared so detach-and-reattach still works.
+  Requires the one-line server opt-in (see [Server-side setup](#server-side-setup-optional))
+  or `SSHERPA_MUXER_GUARD=force`; disable with `--no-muxer-guard`. tmux only for
+  now (screen is detected and labeled but not auto-torn-down).
 - **Session recording:** start, pause, and resume replayable output transcripts
   from the `Ctrl-^` session map overlay. Browse recordings from the TUI or use
   `ssherpa session log`, `grep`, `replay`, and `export`. Portable transcript
@@ -115,6 +122,7 @@ what works without any server change:
 | Local session map, one nesting level deep | works | works |
 | Incoming session presence (`ssherpa incoming list`) | works | works |
 | Remote lineage in maps deeper than one level | remote ssherpa sees itself as a root session | full route and depth |
+| tmux escape-rope teardown of a nested session | detect-only (no auto-teardown; set `SSHERPA_MUXER_GUARD=force` to override) | tears down on upstream loss |
 | Incoming session labels (origin host, route) | missing | shown |
 | Route/depth metadata in transcripts exported on the remote | incomplete | complete |
 

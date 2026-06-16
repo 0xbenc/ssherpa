@@ -378,6 +378,11 @@ func clampTelemetryRecord(record state.SessionRecord) (state.SessionRecord, bool
 	record.ControlPath = ""
 	record.Transcript = nil
 	record.Import = nil
+	// Muxer describes the sender's own local shell environment, not
+	// attestation, and is meaningless across the wire — drop it like the
+	// other machine-local references so a hostile child cannot inject a
+	// muxer label into the parent's session map.
+	record.Muxer = nil
 	if record.RecordedBy != nil {
 		origin := *record.RecordedBy
 		origin.MachineID = sanitizeRemoteString(origin.MachineID, remoteMaxStringRunes)

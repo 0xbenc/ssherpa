@@ -108,9 +108,18 @@ type sessionJSON struct {
 	LocalPID         int                `json:"local_pid,omitempty"`
 	SSHPID           int                `json:"ssh_pid,omitempty"`
 	Origin           string             `json:"origin"`
+	Muxer            *muxerJSON         `json:"muxer,omitempty"`
 	Transcript       *transcriptJSON    `json:"transcript,omitempty"`
 	RecordedBy       *recordedByJSON    `json:"recorded_by,omitempty"`
 	Import           *sessionImportJSON `json:"import,omitempty"`
+}
+
+// muxerJSON is the public projection of state.MuxerSpec: the terminal
+// multiplexer a session is held by, and whether its client deliberately
+// detached. Additive and omitempty, so it does not bump the schema version.
+type muxerJSON struct {
+	Type     string `json:"type,omitempty"`
+	Detached bool   `json:"detached,omitempty"`
 }
 
 type transcriptJSON struct {
@@ -195,6 +204,12 @@ func sessionProjection(record state.SessionRecord) sessionJSON {
 			OriginClass:     record.Import.OriginClass,
 			SourceSessionID: record.Import.SourceSessionID,
 			SourceMachineID: record.Import.SourceMachineID,
+		}
+	}
+	if record.Muxer != nil {
+		out.Muxer = &muxerJSON{
+			Type:     record.Muxer.Type,
+			Detached: record.Muxer.Detached,
 		}
 	}
 	return out

@@ -166,6 +166,27 @@ in
 .IR sshd_config .
 The local session map, escape rope, and incoming presence detection work
 without it.
+.SH MUXER GUARD
+A nested ssherpa running inside
+.B tmux
+does not receive the escape rope's hangup cascade \(em the multiplexer server
+survives the disconnect by design \(em so such a session, and the ssh below it,
+would persist after the rope was pulled. When a session is interactive, runs
+inside tmux, and is nested under an ssherpa parent (which requires
+.B AcceptEnv SSHERPA_*
+on the intermediate host, or
+.BR SSHERPA_MUXER_GUARD=force ),
+ssherpa polls tmux for its attached client and tears
+.I itself
+down \(em ssh child only, never the multiplexer \(em when the upstream link is
+lost while attached (exit code 121,
+.BR disconnect_reason " " muxer_upstream_lost ).
+A deliberate tmux detach is spared so detach-and-reattach still works. Disable
+per session with
+.BR --no-muxer-guard ,
+or globally with
+.BR SSHERPA_MUXER_GUARD=0 .
+GNU screen is detected and labeled in the session map but is not auto-torn-down.
 .SH CHECK EXAMPLES
 .EX
 ssherpa check prod

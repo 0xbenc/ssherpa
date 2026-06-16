@@ -51,6 +51,18 @@ const (
 	InterruptReason = "interrupt"
 	// InterruptExitCode mirrors the conventional shell status for SIGINT.
 	InterruptExitCode = 130
+	// MuxerUpstreamLostReason marks a session a nested ssherpa tore down
+	// itself because its upstream link died while it was running inside a
+	// terminal multiplexer (tmux). The escape rope's SIGHUP cascade cannot
+	// cross the muxer server — it survives the disconnect by design — so
+	// the muxer guard watches the link and finalizes the session when it is
+	// lost while attached. See internal/session/muxer_guard.go.
+	MuxerUpstreamLostReason = "muxer_upstream_lost"
+	// MuxerUpstreamLostExitCode is returned when the muxer guard tears the
+	// session down. Distinct from the escape rope (120) and interrupt (130)
+	// so a wrapper can tell an upstream-loss teardown apart from a
+	// deliberate rope or a local Ctrl+C.
+	MuxerUpstreamLostExitCode = 121
 )
 
 type Metadata struct {
@@ -74,16 +86,21 @@ type Metadata struct {
 }
 
 type Options struct {
-	StateDir       string
-	Stdin          *os.File
-	Stdout         io.Writer
-	Stderr         io.Writer
-	Env            []string
-	Now            func() time.Time
-	Watchdog       WatchdogOptions
-	Composer       ComposerOptions
-	Overlay        OverlayOptions
-	Reconnect      ReconnectOptions
+	StateDir  string
+	Stdin     *os.File
+	Stdout    io.Writer
+	Stderr    io.Writer
+	Env       []string
+	Now       func() time.Time
+	Watchdog  WatchdogOptions
+	Composer  ComposerOptions
+	Overlay   OverlayOptions
+	Reconnect ReconnectOptions
+	// MuxerGuard configures the terminal-multiplexer upstream guard for
+	// interactive sessions. The zero value is "enabled with defaults"; it
+	// only engages when the session is actually running inside a supported
+	// muxer and is nested under an ssherpa parent (see muxerGuardConfigFor).
+	MuxerGuard     MuxerGuardSettings
 	Theme          termstyle.Theme
 	ThemeName      string
 	ThemeFile      string
@@ -296,6 +313,14 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		record.RecordedBy = &origin
 	}
 
+	// A session running inside a terminal multiplexer is tagged so the
+	// session map can explain why it persists; the muxer guard (started
+	// below) only engages for tmux nested under an ssherpa parent.
+	muxerKind, muxerPane, inMuxer := detectMuxer(env)
+	if inMuxer {
+		record.Muxer = &state.MuxerSpec{Type: muxerKind}
+	}
+
 	guard := newTerminalGuard()
 	var recordMu sync.Mutex
 	// A panic in the supervisor's own goroutine must never leave the
@@ -412,8 +437,10 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	defer interruptCancel()
 	var ropePulled atomic.Bool
 	var interrupted atomic.Bool
+	var muxerUpstreamLost atomic.Bool
 	ropePulledCh := make(chan struct{})
 	interruptedCh := make(chan struct{})
+	muxerUpstreamLostCh := make(chan struct{})
 	pullRope := func() {
 		if !ropePulled.CompareAndSwap(false, true) {
 			return
@@ -475,6 +502,50 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			defer timer.Stop()
 			select {
 			case <-interruptCtx.Done():
+			case <-timer.C:
+				signalSessionGroup(p, syscall.SIGKILL)
+			}
+		}(proc)
+	}
+
+	// pullMuxerRope is the muxer guard's teardown: structurally identical
+	// to pullRope but with its own flag/channel and the
+	// MuxerUpstreamLostReason. Invoked only from the guard goroutine when it
+	// concludes the upstream link died while this (nested, tmux-resident)
+	// session was attached. It SIGHUPs only this session's own ssh child
+	// group — never the muxer — collapsing the chain below; the pane is
+	// left at a shell prompt. DisconnectReason is set only when no
+	// higher-priority reason already won, keeping the persisted reason and
+	// the exit-code precedence (rope > interrupt > muxer) consistent.
+	pullMuxerRope := func() {
+		if !muxerUpstreamLost.CompareAndSwap(false, true) {
+			return
+		}
+		close(muxerUpstreamLostCh)
+		withLock(&recordMu, func() {
+			if record.DisconnectReason == "" {
+				record.DisconnectReason = MuxerUpstreamLostReason
+			}
+			record.Events = append(record.Events, state.SessionEvent{
+				Time:    now().UTC(),
+				Type:    MuxerUpstreamLostReason,
+				Message: "upstream link lost while attached to a terminal multiplexer; disconnecting this session",
+			})
+			_ = state.WriteRecord(stateDir, record)
+		})
+		proc := procRefShared.get()
+		if proc == nil {
+			// Mid-backoff / pre-spawn: no live process. The retry loop
+			// wakes on muxerUpstreamLostCh below and exits without
+			// restarting; closing the channel above is what frees it.
+			return
+		}
+		signalSessionGroup(proc, syscall.SIGHUP)
+		go func(p *os.Process) {
+			timer := time.NewTimer(escapeRopeKillGrace)
+			defer timer.Stop()
+			select {
+			case <-ropeCtx.Done():
 			case <-timer.C:
 				signalSessionGroup(p, syscall.SIGKILL)
 			}
@@ -551,6 +622,35 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 		close(lifetimeSignalsDone)
 	}()
 
+	// Muxer guard: a nested ssherpa inside tmux never receives the escape
+	// rope's SIGHUP cascade (the muxer server survives the disconnect), so
+	// it watches its own upstream link and tears down just its ssh child
+	// when the link is lost while attached. Lifetime-scoped because it
+	// polls the muxer, not any single ssh attempt; stopped synchronously
+	// after the retry loop (below) so it cannot race the record
+	// finalization, with this defer as a panic-path safety net.
+	stopMuxerGuard := func() {}
+	if inMuxer {
+		if guardCfg, ok := muxerGuardConfigFor(muxerGuardDeps{
+			Env:      env,
+			Kind:     muxerKind,
+			Pane:     muxerPane,
+			Settings: opts.MuxerGuard,
+			MetaKind: metadata.Kind,
+			Detached: opts.Detached,
+			Record:   &record,
+			RecordMu: &recordMu,
+			StateDir: stateDir,
+			Now:      now,
+			Stderr:   stderr,
+			OnPanic:  failSupervisor,
+			Teardown: pullMuxerRope,
+		}); ok {
+			stopMuxerGuard = startMuxerGuard(guardCfg)
+		}
+	}
+	defer stopMuxerGuard()
+
 	output := &lockedWriter{w: stdout}
 	tap := &outputTap{}
 	startupInterruptible := &atomic.Bool{}
@@ -575,7 +675,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 
 	var lastWaitErr error
 	for attempt := 1; ; attempt++ {
-		if ropePulled.Load() || interrupted.Load() || panicked.Load() {
+		if ropePulled.Load() || interrupted.Load() || muxerUpstreamLost.Load() || panicked.Load() {
 			break
 		}
 		ac := attemptContext{
@@ -606,7 +706,7 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			fmt.Fprintf(stderr, "ssherpa: run %s: %v\n", sshcmd.QuoteArgv(command.Argv), waitErr)
 			return 1
 		}
-		if ropePulled.Load() || interrupted.Load() || panicked.Load() {
+		if ropePulled.Load() || interrupted.Load() || muxerUpstreamLost.Load() || panicked.Load() {
 			break
 		}
 		if waitErr == nil {
@@ -650,22 +750,30 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 			timer.Stop()
 		case <-interruptedCh:
 			timer.Stop()
+		case <-muxerUpstreamLostCh:
+			timer.Stop()
 		case <-panickedCh:
 			timer.Stop()
 		case <-timer.C:
 		}
 	}
 
-	exitCode := exitCodeFromError(lastWaitErr)
-	if ropePulled.Load() {
-		exitCode = EscapeRopeExitCode
+	// Join the muxer guard before reading its flag and finalizing the
+	// record, so a teardown decision can never land after the exit-code
+	// selection or the final WriteRecord (the deferred stop above is only a
+	// panic-path net). Safe here because recordMu is not held.
+	stopMuxerGuard()
+
+	exitCode, teardown := selectExitCode(exitCodeFromError(lastWaitErr), ropePulled.Load(), interrupted.Load(), muxerUpstreamLost.Load(), panicked.Load())
+	switch teardown {
+	case teardownRope:
 		fmt.Fprint(stderr, "\r\nssherpa: escape rope pulled — disconnecting all downstream sessions\r\n")
-	} else if interrupted.Load() {
-		exitCode = InterruptExitCode
+	case teardownInterrupt:
 		fmt.Fprint(stderr, "\r\nssherpa: connection attempt interrupted\r\n")
-	} else if panicked.Load() {
+	case teardownMuxer:
+		fmt.Fprintf(stderr, "\r\nssherpa: upstream link lost while attached to %s — disconnecting this session\r\n", muxerKind)
+	case teardownPanic:
 		// failSupervisor already reported the panic on stderr.
-		exitCode = 1
 	}
 	endedAt := now().UTC()
 	var recordForTelemetry state.SessionRecord
@@ -1930,6 +2038,42 @@ func resizePTY(stdin *os.File, ptmx *os.File) {
 		return
 	}
 	_ = pty.InheritSize(stdin, ptmx)
+}
+
+// teardownKind names which forced-teardown path (if any) ended the
+// session, so the exit-code selector can return both the code and a tag
+// the caller maps to a stderr message — keeping the precedence in one
+// place instead of duplicating it across the code path and the message
+// path.
+type teardownKind int
+
+const (
+	teardownNone teardownKind = iota
+	teardownRope
+	teardownInterrupt
+	teardownMuxer
+	teardownPanic
+)
+
+// selectExitCode resolves the supervisor's exit code from the base
+// (wait-derived) code and the teardown flags, enforcing a fixed
+// precedence: escape rope (120) > local interrupt (130) > muxer upstream
+// loss (121) > panic (1) > base. The order is load-bearing — a real rope
+// pull that also trips the muxer guard must report the rope — so it lives
+// in this one pure, table-tested function.
+func selectExitCode(base int, ropePulled, interrupted, muxerLost, panicked bool) (int, teardownKind) {
+	switch {
+	case ropePulled:
+		return EscapeRopeExitCode, teardownRope
+	case interrupted:
+		return InterruptExitCode, teardownInterrupt
+	case muxerLost:
+		return MuxerUpstreamLostExitCode, teardownMuxer
+	case panicked:
+		return 1, teardownPanic
+	default:
+		return base, teardownNone
+	}
 }
 
 func exitCodeFromError(err error) int {

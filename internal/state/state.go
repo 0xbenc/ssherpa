@@ -103,6 +103,7 @@ type SessionRecord struct {
 	Kind             string           `json:"kind,omitempty"`
 	Forward          *ForwardSpec     `json:"forward,omitempty"`
 	Proxy            *ProxySpec       `json:"proxy,omitempty"`
+	Muxer            *MuxerSpec       `json:"muxer,omitempty"`
 	Transcript       *TranscriptSpec  `json:"transcript,omitempty"`
 	RecordedBy       *RecordingOrigin `json:"recorded_by,omitempty"`
 	Import           *ImportSpec      `json:"import,omitempty"`
@@ -160,6 +161,20 @@ type ProxySpec struct {
 	SavedAlias string `json:"saved_alias,omitempty"`
 	Detached   bool   `json:"detached,omitempty"`
 	RetryCount int    `json:"retry_count,omitempty"`
+}
+
+// MuxerSpec records the terminal multiplexer a supervised session is
+// running inside. Type ("tmux"/"screen") is set locally from the
+// environment at session start so the session map can show that a session
+// is held by a multiplexer; Detached flips true once the multiplexer guard
+// observes a deliberate client detach (the session is then left running
+// for reattach). Like ForwardSpec/ProxySpec it is additive and omitempty,
+// so older binaries simply ignore it and no state_version bump is needed.
+// The field carries only machine-local descriptive data, so telemetry
+// drops it (see clampTelemetryRecord) rather than mirroring it upstream.
+type MuxerSpec struct {
+	Type     string `json:"type,omitempty"`
+	Detached bool   `json:"detached,omitempty"`
 }
 
 type TranscriptSpec struct {
