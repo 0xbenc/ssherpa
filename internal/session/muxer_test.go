@@ -1,9 +1,11 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +162,123 @@ func TestClampTelemetryDropsMuxer(t *testing.T) {
 	}
 }
 
+// writeFakeTmux drops an executable shell script named "tmux" into dir and
+// returns its absolute path. The body switches on the tmux subcommand
+// ($1 is display-message / list-clients), letting the production probe path
+// run end-to-end against a deterministic stand-in instead of a real server.
+func writeFakeTmux(t *testing.T, dir, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	return p
+}
+
+// TestResolveTmuxContextProductionPath drives the real (non-injected)
+// resolution path: PATH lookup, the display-message session-id query, and a
+// list-clients probe, asserting the #{session_id}/#{client_tty} format
+// strings are parsed into a usable context and probe.
+func TestResolveTmuxContextProductionPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeTmux(t, dir, `case "$1" in
+  display-message) printf '$3\n' ;;
+  list-clients) printf '/dev/pts/2\n/dev/pts/7\n' ;;
+  *) exit 2 ;;
+esac
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stderr bytes.Buffer
+	bin, sessionID, ok := resolveTmuxContext("%0", &stderr)
+	if !ok {
+		t.Fatalf("resolveTmuxContext ok=false (stderr=%q)", stderr.String())
+	}
+	if sessionID != "$3" {
+		t.Fatalf("sessionID = %q, want %q", sessionID, "$3")
+	}
+	if !strings.HasSuffix(bin, "tmux") {
+		t.Fatalf("resolved bin = %q, want the fake tmux", bin)
+	}
+
+	probe := buildTmuxAttachProbe(bin, sessionID)
+	st := probe(context.Background())
+	if !st.OK {
+		t.Fatal("probe OK=false on a successful list-clients")
+	}
+	want := []string{"/dev/pts/2", "/dev/pts/7"}
+	if len(st.Clients) != len(want) {
+		t.Fatalf("probe clients = %#v, want %#v", st.Clients, want)
+	}
+	for i := range want {
+		if st.Clients[i] != want[i] {
+			t.Fatalf("probe clients[%d] = %q, want %q", i, st.Clients[i], want[i])
+		}
+	}
+}
+
+// TestResolveTmuxContextDegrades confirms every resolution failure mode
+// returns ok=false (detect-only) rather than arming a guard on bad data.
+func TestResolveTmuxContextDegrades(t *testing.T) {
+	t.Run("invalid pane id", func(t *testing.T) {
+		if _, _, ok := resolveTmuxContext("bogus", nil); ok {
+			t.Fatal("accepted a malformed pane id")
+		}
+	})
+	t.Run("tmux not on PATH", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir()) // a dir with no tmux in it
+		var stderr bytes.Buffer
+		if _, _, ok := resolveTmuxContext("%0", &stderr); ok {
+			t.Fatal("resolved a context with no tmux on PATH")
+		}
+		if !strings.Contains(stderr.String(), "tmux not found") {
+			t.Fatalf("stderr = %q, want a 'tmux not found' note", stderr.String())
+		}
+	})
+	t.Run("malformed session id", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFakeTmux(t, dir, `[ "$1" = display-message ] && printf 'not-a-session\n'`)
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if _, _, ok := resolveTmuxContext("%0", nil); ok {
+			t.Fatal("accepted a session id that fails the $<digits> shape")
+		}
+	})
+	t.Run("display-message exits non-zero", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFakeTmux(t, dir, `exit 1`)
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if _, _, ok := resolveTmuxContext("%0", nil); ok {
+			t.Fatal("resolved a context when tmux exited non-zero")
+		}
+	})
+}
+
+// TestBuildTmuxAttachProbeDegrades exercises the probe's safe answers: a
+// non-zero list-clients exit and oversized output both yield OK=false so the
+// guard takes no destructive action that tick. The overflow case drives
+// runMuxerCommand's cappedBuffer guard through a real exec.
+func TestBuildTmuxAttachProbeDegrades(t *testing.T) {
+	t.Run("list-clients failure", func(t *testing.T) {
+		bin := writeFakeTmux(t, t.TempDir(), `exit 1`)
+		if st := buildTmuxAttachProbe(bin, "$3")(context.Background()); st.OK {
+			t.Fatal("probe OK=true when list-clients failed")
+		}
+	})
+	t.Run("oversized output", func(t *testing.T) {
+		bin := writeFakeTmux(t, t.TempDir(), `head -c 70000 /dev/zero | tr '\0' 'a'`)
+		if st := buildTmuxAttachProbe(bin, "$3")(context.Background()); st.OK {
+			t.Fatal("probe OK=true on output past the cap")
+		}
+	})
+	t.Run("success parses clients", func(t *testing.T) {
+		bin := writeFakeTmux(t, t.TempDir(), `printf '/dev/pts/2\n/dev/pts/7\n'`)
+		st := buildTmuxAttachProbe(bin, "$3")(context.Background())
+		if !st.OK || len(st.Clients) != 2 {
+			t.Fatalf("probe = %+v, want OK with 2 clients", st)
+		}
+	})
+}
+
 // fakeTmuxContext provides a deterministic, mutable view of attached
 // clients and live pts nodes shared between an injected attach probe and
 // an injected tty stat, so the integration tests drive attach/detach/drop
@@ -219,6 +338,7 @@ func TestMuxerGuardConfigForGate(t *testing.T) {
 			MetaKind: "",
 			Record:   &state.SessionRecord{ParentID: "parent"},
 			RecordMu: &mu,
+			StateDir: "/run/ssherpa-state",
 			Now:      time.Now,
 			Teardown: func() {},
 		}
@@ -248,10 +368,69 @@ func TestMuxerGuardConfigForGate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, ok := muxerGuardConfigFor(tt.deps)
+			cfg, ok := muxerGuardConfigFor(tt.deps)
 			if ok != tt.want {
 				t.Fatalf("muxerGuardConfigFor ok = %v, want %v", ok, tt.want)
 			}
+			if !ok {
+				return
+			}
+			// When the gate opens, the returned config must be fully
+			// wired. startMuxerGuard silently no-ops the guard if Probe,
+			// Stat or Teardown is nil, so a regression that opens the gate
+			// with a missing dependency would disable the kill path without
+			// any test noticing — assert the contract here. (Func values are
+			// only comparable to nil in Go, hence the nil checks.)
+			if cfg.Probe == nil {
+				t.Error("config Probe is nil; startMuxerGuard would no-op the guard")
+			}
+			if cfg.Stat == nil {
+				t.Error("config Stat is nil; startMuxerGuard would no-op the guard")
+			}
+			if cfg.Teardown == nil {
+				t.Error("config Teardown is nil; startMuxerGuard would no-op the guard")
+			}
+			if cfg.Now == nil {
+				t.Error("config Now is nil")
+			}
+			if cfg.Interval != defaultMuxerGuardInterval {
+				t.Errorf("config Interval = %v, want default %v", cfg.Interval, defaultMuxerGuardInterval)
+			}
+			if cfg.Record != tt.deps.Record {
+				t.Error("config Record not wired through to deps.Record")
+			}
+			if cfg.RecordMu != tt.deps.RecordMu {
+				t.Error("config RecordMu not wired through to deps.RecordMu")
+			}
+			if cfg.StateDir != tt.deps.StateDir {
+				t.Errorf("config StateDir = %q, want %q", cfg.StateDir, tt.deps.StateDir)
+			}
 		})
+	}
+}
+
+// TestMuxerGuardConfigForInterval confirms a caller-supplied poll cadence
+// survives the gate instead of being overwritten by the default.
+func TestMuxerGuardConfigForInterval(t *testing.T) {
+	var mu sync.Mutex
+	const custom = 5 * time.Second
+	cfg, ok := muxerGuardConfigFor(muxerGuardDeps{
+		Kind: muxerKindTmux,
+		Pane: "%0",
+		Settings: MuxerGuardSettings{
+			Interval: custom,
+			Probe:    func(context.Context) muxerAttachState { return muxerAttachState{OK: true} },
+			Stat:     func(string) (uint64, uint64, bool) { return 0, 0, false },
+		},
+		Record:   &state.SessionRecord{ParentID: "parent"},
+		RecordMu: &mu,
+		Now:      time.Now,
+		Teardown: func() {},
+	})
+	if !ok {
+		t.Fatal("gate did not open for a valid nested tmux session")
+	}
+	if cfg.Interval != custom {
+		t.Fatalf("config Interval = %v, want caller override %v", cfg.Interval, custom)
 	}
 }
