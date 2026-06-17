@@ -79,6 +79,9 @@ Connect Flags:
   --no-composer      Disable local queued-input composer
   --overlay-key KEY  Open session-map overlay with KEY; default ctrl-^
   --no-record        Disable output transcript recording for this supervised session
+  --no-muxer-guard   Disable tmux upstream-loss teardown for this nested session
+                     (also via SSHERPA_MUXER_GUARD=0; =force to skip the
+                     ssherpa-ancestry check)
   --record-max-bytes BYTES
                      Cap transcript size; default 50MB
   --no-kitty         Disable Kitty SSH command detection
@@ -327,6 +330,7 @@ type connectFlags struct {
 	OverlayKey        byte
 	OverlayKeyName    string
 	NoRecord          bool
+	NoMuxerGuard      bool
 	RecordMaxBytes    int64
 	NoKitty           bool
 	NoColor           bool
@@ -667,6 +671,8 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.OverlayKeyName = name
 		case arg == "--no-record":
 			flags.NoRecord = true
+		case arg == "--no-muxer-guard":
+			flags.NoMuxerGuard = true
 		case arg == "--record-max-bytes":
 			value, ok := nextArg(args, &i, stderr, "--record-max-bytes")
 			if !ok {
@@ -982,6 +988,11 @@ func pickerSummary(flags connectFlags, graph *sshconfig.Graph, inventory hostlis
 		scope = append(scope, "recording=off")
 	} else if flags.RecordMaxBytes > 0 {
 		scope = append(scope, fmt.Sprintf("record-max=%d", flags.RecordMaxBytes))
+	}
+	if flags.NoMuxerGuard || envBoolDisabled("SSHERPA_MUXER_GUARD") {
+		scope = append(scope, "muxer-guard=off")
+	} else if envMuxerGuardForce() {
+		scope = append(scope, "muxer-guard=force")
 	}
 	if flags.ThemeFile != "" {
 		scope = append(scope, "theme-file="+flags.ThemeFile)
@@ -1611,6 +1622,29 @@ func envBoolDisabled(key string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// envMuxerGuardForce reports whether SSHERPA_MUXER_GUARD opts the muxer
+// guard past its ssherpa-ancestry check (force/aggressive/always). This
+// lets the teardown engage on hosts without the `AcceptEnv SSHERPA_*`
+// opt-in, at the user's explicit risk of tearing down an outermost session
+// running in a local tmux on an ssh-reached host.
+func envMuxerGuardForce() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SSHERPA_MUXER_GUARD"))) {
+	case "force", "aggressive", "always":
+		return true
+	default:
+		return false
+	}
+}
+
+// muxerGuardSettings resolves the guard's runtime settings from the
+// --no-muxer-guard flag and the SSHERPA_MUXER_GUARD environment variable.
+func muxerGuardSettings(noFlag bool) session.MuxerGuardSettings {
+	return session.MuxerGuardSettings{
+		Disabled: noFlag || envBoolDisabled("SSHERPA_MUXER_GUARD"),
+		Force:    envMuxerGuardForce(),
 	}
 }
 

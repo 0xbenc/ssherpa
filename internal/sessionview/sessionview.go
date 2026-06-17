@@ -670,6 +670,9 @@ func metadataLines(record state.SessionRecord, theme termstyle.Theme, width int)
 	if proxy := ProxySummary(record); proxy != "" {
 		add("proxy", proxy)
 	}
+	if muxer := MuxerSummary(record); muxer != "" {
+		add("muxer", muxer)
+	}
 	if remote := RemoteSummary(record); remote != "" {
 		add("remote", remote)
 	}
@@ -1836,6 +1839,20 @@ func ProxySummary(record state.SessionRecord) string {
 	}
 	if len(parts) > 0 {
 		summary += "  (" + strings.Join(parts, ", ") + ")"
+	}
+	return summary
+}
+
+// MuxerSummary renders the terminal multiplexer a session is held by, if
+// any (e.g. "tmux" or "tmux  (detached)"), so the session map explains why
+// a session running inside tmux/screen persists across an upstream drop.
+func MuxerSummary(record state.SessionRecord) string {
+	if record.Muxer == nil || record.Muxer.Type == "" {
+		return ""
+	}
+	summary := cleanField(record.Muxer.Type)
+	if record.Muxer.Detached {
+		summary += "  (detached)"
 	}
 	return summary
 }

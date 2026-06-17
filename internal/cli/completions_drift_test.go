@@ -52,7 +52,7 @@ var (
 // without leading dashes because fish spells flags as "-l name".
 var completionRequiredFlags = []string{
 	"latency-warn", "latency-disconnect", "overlay-key", "composer-key",
-	"record-max-bytes", "reconnect-max", "no-reconnect",
+	"record-max-bytes", "reconnect-max", "no-reconnect", "no-muxer-guard",
 	"saved-forward", "saved-forwards", "all-matching", "theme-file",
 }
 

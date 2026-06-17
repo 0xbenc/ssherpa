@@ -86,6 +86,7 @@ type connectOptions struct {
 	OverlayKey     byte
 	OverlayKeyName string
 	Reconnect      session.ReconnectOptions
+	MuxerGuard     session.MuxerGuardSettings
 	NoColor        bool
 	ThemeName      string
 	ThemeFile      string
@@ -117,6 +118,7 @@ func (flags connectFlags) connectOptions(probe sshcmd.Command) connectOptions {
 		},
 		OverlayKey:     flags.OverlayKey,
 		OverlayKeyName: flags.OverlayKeyName,
+		MuxerGuard:     muxerGuardSettings(flags.NoMuxerGuard),
 		NoColor:        flags.NoColor,
 		ThemeName:      flags.ThemeName,
 		ThemeFile:      flags.ThemeFile,
@@ -1614,6 +1616,7 @@ func printOrRunSSH(cmd sshcmd.Command, options connectOptions, metadata session.
 			Composer:       options.Composer,
 			Overlay:        overlayTransferOptions(options, metadata, stdout, stderr),
 			Reconnect:      options.Reconnect,
+			MuxerGuard:     options.MuxerGuard,
 			ThemeName:      options.ThemeName,
 			ThemeFile:      options.ThemeFile,
 			NoColor:        options.NoColor,
