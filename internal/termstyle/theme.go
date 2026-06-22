@@ -152,8 +152,19 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 		}
 	}
 
-	theme := TerminalTheme().Normalized()
-	theme = theme.Normalized()
+	// Honor the config's base theme (`theme = vivid`) so the truecolor
+	// VividTheme is actually reachable — previously this hardcoded
+	// TerminalTheme, making BaseName dead. Bubble Tea v2's renderer
+	// downsamples the resulting truecolor SGR to the terminal's real color
+	// profile, so 256/16/mono terminals stay correct. The CLI Name stays
+	// deprecated/ignored (see TestResolveThemeIgnoresDeprecatedThemeName).
+	base := TerminalTheme()
+	if cfg.BaseName != "" {
+		if b, ok := BuiltinTheme(cfg.BaseName); ok {
+			base = b
+		}
+	}
+	theme := base.Normalized()
 	if len(cfg.Codes) > 0 {
 		theme.Name = "custom"
 		for role, code := range cfg.Codes {

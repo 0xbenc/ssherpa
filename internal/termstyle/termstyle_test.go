@@ -315,6 +315,24 @@ func TestResolveThemeIgnoresDeprecatedThemeName(t *testing.T) {
 	}
 }
 
+// TestResolveThemeHonorsConfigBaseName pins S10-a: `theme = vivid` in the
+// config selects the truecolor VividTheme (previously dead — BaseName was
+// ignored and only TerminalTheme was ever returned).
+func TestResolveThemeHonorsConfigBaseName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "theme.conf")
+	if err := os.WriteFile(path, []byte("theme = vivid\n"), 0o600); err != nil {
+		t.Fatalf("write theme config: %v", err)
+	}
+	theme, err := ResolveTheme(ThemeOptions{File: path, Env: []string{}, SkipDefaultFile: true})
+	if err != nil {
+		t.Fatalf("ResolveTheme: %v", err)
+	}
+	if got := theme.Style(RolePrimary, "x"); !strings.Contains(got, "38;2;") {
+		t.Fatalf("vivid base did not yield truecolor: %q", got)
+	}
+}
+
 func TestResolveThemeReportsInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "theme.conf")
