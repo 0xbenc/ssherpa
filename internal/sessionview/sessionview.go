@@ -345,10 +345,12 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "i":
 			m.mode = "imported"
 			m.applyFilter()
-		case "v":
+		case "o":
+			// Active filter. Moved off "v" so v=receive / X=escape-rope can be
+			// reserved globally across the three map faces (G7).
 			m.mode = "active"
 			m.applyFilter()
-		case "x":
+		case "e":
 			m.mode = "exited"
 			m.applyFilter()
 		}
@@ -397,7 +399,15 @@ func (m listModel) View() tea.View {
 		lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, "No session selected."), width))
 	}
 	lines = append(lines, boxDivider(m.theme, width))
-	lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, "arrows move / a all / v active / x exited / l local / i imported / q back"), width))
+	lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, chrome.Footer([]chrome.KeyHint{
+		{Key: "arrows", Label: "move"},
+		{Key: "a", Label: "all"},
+		{Key: "o", Label: "active"},
+		{Key: "e", Label: "exited"},
+		{Key: "l", Label: "local"},
+		{Key: "i", Label: "imported"},
+		{Key: "q", Label: "back"},
+	}, 0)), width))
 	lines = append(lines, boxBottom(m.theme, width))
 	view := tea.NewView(strings.Join(lines, "\n"))
 	view.AltScreen = !m.noAltScreen
