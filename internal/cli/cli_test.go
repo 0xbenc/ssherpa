@@ -3193,3 +3193,47 @@ func assertNotContains(t *testing.T, got string, unwanted string) {
 		t.Fatalf("got %q, unwanted substring %q", got, unwanted)
 	}
 }
+
+// TestFormatThemeConfigBaseAndPassthrough pins Phase 1: the writer persists a
+// non-default base (`theme = vivid`) so it is not silently lost on re-save, and
+// it preserves roles ssherpa does not render (selected_bar) so passage->ssherpa
+// ->passage is lossless.
+func TestFormatThemeConfigBaseAndPassthrough(t *testing.T) {
+	cfg := termstyle.ThemeConfig{
+		BaseName: "vivid",
+		Codes: map[termstyle.Role]string{
+			termstyle.RolePrimary:     "31",
+			termstyle.RoleSelectedBar: "100",
+		},
+		Specs: map[termstyle.Role]string{
+			termstyle.RolePrimary:     "red",
+			termstyle.RoleSelectedBar: "100",
+		},
+	}
+	out := string(formatThemeConfig(cfg))
+	if !strings.Contains(out, "theme = vivid") {
+		t.Fatalf("writer dropped the base:\n%s", out)
+	}
+	if !strings.Contains(out, "selected_bar = 100") {
+		t.Fatalf("writer dropped passthrough role:\n%s", out)
+	}
+	// Round-trip: re-parsing keeps base + the foreign role.
+	back, err := termstyle.ParseThemeConfig([]byte(out))
+	if err != nil {
+		t.Fatalf("re-parse error: %v", err)
+	}
+	if back.BaseName != "vivid" {
+		t.Fatalf("round-trip base = %q, want vivid", back.BaseName)
+	}
+	if back.Specs[termstyle.RoleSelectedBar] != "100" {
+		t.Fatalf("round-trip lost selected_bar: %q", back.Specs[termstyle.RoleSelectedBar])
+	}
+}
+
+// TestFormatThemeConfigTerminalImplicit keeps terminal-base output lean.
+func TestFormatThemeConfigTerminalImplicit(t *testing.T) {
+	out := string(formatThemeConfig(termstyle.ThemeConfig{BaseName: "terminal"}))
+	if strings.Contains(out, "theme =") {
+		t.Fatalf("terminal base should be implicit:\n%s", out)
+	}
+}

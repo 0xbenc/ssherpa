@@ -28,6 +28,11 @@ const (
 	RoleInfo       Role = "info"
 	RoleSearch     Role = "search"
 	RolePill       Role = "pill"
+	// RoleSelectedBar is recognized for cross-app theme interchange — a sibling
+	// app (passage) paints a selection bar — but ssherpa does not render it, so
+	// it is deliberately absent from Roles(). A parsed theme carries it through
+	// losslessly so a round-trip never drops it.
+	RoleSelectedBar Role = "selected_bar"
 )
 
 type Theme struct {
@@ -453,27 +458,30 @@ func colorTokenCode(token string, background bool) (string, bool) {
 }
 
 var roleAliases = map[string]Role{
-	"title":      RoleTitle,
-	"primary":    RolePrimary,
-	"secondary":  RoleSecondary,
-	"accent":     RoleAccent,
-	"muted":      RoleMuted,
-	"subtle":     RoleSubtle,
-	"dim":        RoleSubtle,
-	"foreground": RoleForeground,
-	"fg":         RoleForeground,
-	"text":       RoleForeground,
-	"selected":   RoleSelected,
-	"selection":  RoleSelected,
-	"border":     RoleBorder,
-	"rule":       RoleBorder,
-	"success":    RoleSuccess,
-	"warning":    RoleWarning,
-	"danger":     RoleDanger,
-	"error":      RoleDanger,
-	"info":       RoleInfo,
-	"search":     RoleSearch,
-	"pill":       RolePill,
+	"title":         RoleTitle,
+	"primary":       RolePrimary,
+	"secondary":     RoleSecondary,
+	"accent":        RoleAccent,
+	"muted":         RoleMuted,
+	"subtle":        RoleSubtle,
+	"dim":           RoleSubtle,
+	"foreground":    RoleForeground,
+	"fg":            RoleForeground,
+	"text":          RoleForeground,
+	"selected":      RoleSelected,
+	"selection":     RoleSelected,
+	"selected_bar":  RoleSelectedBar,
+	"selection_bar": RoleSelectedBar,
+	"bar":           RoleSelectedBar,
+	"border":        RoleBorder,
+	"rule":          RoleBorder,
+	"success":       RoleSuccess,
+	"warning":       RoleWarning,
+	"danger":        RoleDanger,
+	"error":         RoleDanger,
+	"info":          RoleInfo,
+	"search":        RoleSearch,
+	"pill":          RolePill,
 }
 
 var styleTokenCodes = map[string]string{

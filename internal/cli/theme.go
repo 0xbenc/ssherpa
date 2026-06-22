@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/fsutil"
@@ -148,15 +149,43 @@ func formatThemeConfig(cfg termstyle.ThemeConfig) []byte {
 	var b strings.Builder
 	b.WriteString("# ssherpa theme config\n")
 	b.WriteString("# Edit with: ssherpa theme\n\n")
-	for _, role := range termstyle.Roles() {
+	// Persist the chosen base palette so `theme = vivid` survives a round-trip.
+	// Without this, re-saving a vivid theme silently reverted it to terminal.
+	// Terminal is the implicit default, so it is left out to keep configs lean.
+	if base := strings.TrimSpace(cfg.BaseName); base != "" {
+		if t, ok := termstyle.BuiltinTheme(base); ok && t.Name != "terminal" {
+			b.WriteString("theme = ")
+			b.WriteString(t.Name)
+			b.WriteString("\n\n")
+		}
+	}
+	rendered := make(map[termstyle.Role]bool)
+	writeRole := func(role termstyle.Role) {
 		spec := strings.TrimSpace(cfg.Specs[role])
 		if spec == "" {
-			continue
+			return
 		}
 		b.WriteString(string(role))
 		b.WriteString(" = ")
 		b.WriteString(spec)
 		b.WriteString("\n")
+		rendered[role] = true
+	}
+	for _, role := range termstyle.Roles() {
+		writeRole(role)
+	}
+	// Preserve roles ssherpa does not itself render (e.g. selected_bar from a
+	// theme authored in a sibling app) so a round-trip through `ssherpa theme`
+	// never drops them. Sorted for stable output.
+	var passthrough []termstyle.Role
+	for role := range cfg.Specs {
+		if !rendered[role] {
+			passthrough = append(passthrough, role)
+		}
+	}
+	sort.Slice(passthrough, func(i, j int) bool { return passthrough[i] < passthrough[j] })
+	for _, role := range passthrough {
+		writeRole(role)
 	}
 	return []byte(b.String())
 }

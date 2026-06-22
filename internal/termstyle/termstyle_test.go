@@ -432,3 +432,25 @@ func TestResolveThemeToleratesUnknownRoleKeys(t *testing.T) {
 		t.Fatalf("primary style = %q, want magenta override applied", got)
 	}
 }
+
+// TestParseRecognizesSelectedBar pins the Phase-1 cross-app alias: ssherpa does
+// not render selected_bar, but it must recognize the role (no warning) and park
+// it in the config so a theme authored in a sibling app survives a round-trip.
+func TestParseRecognizesSelectedBar(t *testing.T) {
+	cfg, err := ParseThemeConfig([]byte("primary = red\nselected_bar = 100\nbar = 7\n"))
+	if err != nil {
+		t.Fatalf("ParseThemeConfig error: %v", err)
+	}
+	if cfg.Specs[RoleSelectedBar] == "" {
+		t.Fatalf("selected_bar not recognized: %#v", cfg.Specs)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none (selected_bar/bar are known aliases)", cfg.Warnings)
+	}
+	// And it is deliberately absent from the rendered role set.
+	for _, role := range Roles() {
+		if role == RoleSelectedBar {
+			t.Fatal("RoleSelectedBar must not be in Roles() (ssherpa does not render it)")
+		}
+	}
+}
