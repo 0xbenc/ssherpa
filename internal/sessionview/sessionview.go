@@ -38,6 +38,11 @@ func WriteList(w io.Writer, stateDir string, records []state.SessionRecord) {
 type MapOptions struct {
 	CurrentID     string
 	IncludeExited bool
+	// Scroll windows the lineage body so deep ProxyJump chains are reachable
+	// in the standalone map. The live overlay always passes 0 (its scroll is
+	// blocked until an input ANSI decoder lands), so its rendering is
+	// unaffected.
+	Scroll int
 }
 
 type ViewOptions struct {
@@ -165,16 +170,9 @@ func MapView(opts ViewOptions) tea.View {
 		boxTop(theme, mapHeader(theme, title, opts.StateDir, active, exited, len(opts.Records), len(visible), opts.Map.IncludeExited), width),
 	}
 
-	reserved := 1
-	if opts.Help != "" {
-		reserved += 2
-	}
-	bodyBudget := max(1, height-len(lines)-reserved)
+	bodyBudget := mapBodyBudget(height, opts.Help)
 	body := mapBodyLines(visible, opts.Map.CurrentID, theme, innerWidth)
-	if len(body) > bodyBudget {
-		hidden := len(body) - bodyBudget + 1
-		body = append(body[:max(0, bodyBudget-1)], theme.Style(termstyle.RoleMuted, fmt.Sprintf("... %d more line(s)", hidden)))
-	}
+	body = windowMapBody(body, opts.Map.Scroll, bodyBudget, theme)
 	for _, line := range body {
 		lines = append(lines, boxLine(theme, line, width))
 	}
@@ -185,6 +183,75 @@ func MapView(opts ViewOptions) tea.View {
 	lines = append(lines, boxBottom(theme, width))
 
 	return tea.NewView(strings.Join(lines, "\n"))
+}
+
+// mapBodyBudget is the number of body rows the map can show, given the box
+// height: minus the top edge and the help divider+line when help is shown.
+func mapBodyBudget(height int, help string) int {
+	reserved := 1 // top edge
+	if strings.TrimSpace(help) != "" {
+		reserved += 2 // divider + help line
+	}
+	return max(1, max(8, height)-1-reserved)
+}
+
+// windowMapBody scrolls the lineage body to fit budget rows, with "▲ N above /
+// ▼ N below" indicators. scroll==0 with a body that fits is unchanged, so the
+// overlay path is byte-identical; deeper lineage becomes reachable by scrolling
+// in the standalone map.
+func windowMapBody(body []string, scroll, budget int, theme termstyle.Theme) []string {
+	if budget < 1 {
+		budget = 1
+	}
+	if len(body) <= budget {
+		return body
+	}
+	maxStart := len(body) - budget
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll > maxStart {
+		scroll = maxStart
+	}
+	slots := budget
+	if scroll > 0 && slots > 1 {
+		slots--
+	}
+	end := min(len(body), scroll+slots)
+	if end < len(body) && slots > 1 {
+		slots--
+		end = min(len(body), scroll+slots)
+	}
+	out := make([]string, 0, budget)
+	if scroll > 0 {
+		out = append(out, theme.Style(termstyle.RoleMuted, fmt.Sprintf("▲ %d above", scroll)))
+	}
+	out = append(out, body[scroll:end]...)
+	if end < len(body) {
+		out = append(out, theme.Style(termstyle.RoleMuted, fmt.Sprintf("▼ %d below — ↓ to scroll", len(body)-end)))
+	}
+	return out
+}
+
+// MapScrollMax is the largest useful scroll offset for a given view, so a
+// caller can clamp its scroll state without duplicating MapView's budgeting.
+func MapScrollMax(opts ViewOptions) int {
+	theme := opts.Theme
+	if theme.Codes == nil {
+		theme = termstyle.TerminalTheme()
+	}
+	width := clamp(opts.Width, 48, 140)
+	innerWidth := max(12, width-4)
+	visible := opts.Records
+	if !opts.Map.IncludeExited {
+		visible = ActiveRecords(opts.Records)
+	}
+	body := mapBodyLines(visible, opts.Map.CurrentID, theme, innerWidth)
+	budget := mapBodyBudget(opts.Height, opts.Help)
+	if len(body) <= budget {
+		return 0
+	}
+	return len(body) - budget
 }
 
 func ShowMap(ctx context.Context, opts ShowOptions) error {
@@ -1215,6 +1282,7 @@ type mapModel struct {
 	view        ViewOptions
 	width       int
 	height      int
+	scroll      int
 	action      MapAction
 }
 
@@ -1235,22 +1303,61 @@ func (m mapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "d", "D":
 			m.action = MapActionDeleteAllData
-		default:
+			return m, tea.Quit
+		case "q", "Q", "esc", "ctrl+c", "enter":
 			m.action = MapActionBack
+			return m, tea.Quit
+		case "up", "k", "ctrl+p":
+			m.scroll = m.clampScroll(m.scroll - 1)
+		case "down", "j", "ctrl+n":
+			m.scroll = m.clampScroll(m.scroll + 1)
+		case "pgup":
+			m.scroll = m.clampScroll(m.scroll - m.mapPage())
+		case "pgdown":
+			m.scroll = m.clampScroll(m.scroll + m.mapPage())
+		case "home", "g":
+			m.scroll = 0
+		case "end", "G":
+			m.scroll = m.clampScroll(1 << 30)
 		}
-		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m mapModel) View() tea.View {
+func (m mapModel) mapPage() int {
+	return max(1, mapBodyBudget(m.height, m.mapHelp())-1)
+}
+
+func (m mapModel) clampScroll(scroll int) int {
+	opts := m.viewWithSize()
+	maxScroll := MapScrollMax(opts)
+	if scroll < 0 {
+		return 0
+	}
+	if scroll > maxScroll {
+		return maxScroll
+	}
+	return scroll
+}
+
+func (m mapModel) mapHelp() string {
+	if strings.TrimSpace(m.view.Help) == "" {
+		return "↑↓ scroll / q back / D delete all local data"
+	}
+	return m.view.Help
+}
+
+func (m mapModel) viewWithSize() ViewOptions {
 	opts := m.view
 	opts.Width = m.width
 	opts.Height = m.height
-	if strings.TrimSpace(opts.Help) == "" {
-		opts.Help = "q back / D delete all local data"
-	}
-	view := MapView(opts)
+	opts.Help = m.mapHelp()
+	opts.Map.Scroll = m.scroll
+	return opts
+}
+
+func (m mapModel) View() tea.View {
+	view := MapView(m.viewWithSize())
 	view.AltScreen = !m.noAltScreen
 	return view
 }
