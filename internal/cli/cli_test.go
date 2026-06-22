@@ -2218,6 +2218,36 @@ func TestRunAddWritesConfigAndCreatesBackup(t *testing.T) {
 	assertContains(t, readFile(t, backups[0]), "Host old")
 }
 
+func TestRunAddForcePasswordWritesDirectives(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, "")
+
+	code := Run([]string{"add", "--alias", "pwbox", "--host", "pwbox.example.com", "--force-password", "--config", config, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code != 0 {
+		t.Fatalf("Run returned %d, want 0; stderr = %q", code, stderr.String())
+	}
+	got := readFile(t, config)
+	assertContains(t, got, "Host pwbox")
+	assertContains(t, got, "  PubkeyAuthentication no")
+	assertContains(t, got, "  PreferredAuthentications keyboard-interactive,password")
+	assertNotContains(t, got, "IdentityFile")
+}
+
+func TestRunAddForcePasswordRejectsIdentity(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	config := writeConfig(t, "")
+
+	code := Run([]string{"add", "--alias", "pwbox", "--host", "h", "--force-password", "--identity", "~/.ssh/id", "--config", config, "--yes"}, &stdout, &stderr, BuildInfo{})
+
+	if code == 0 {
+		t.Fatalf("Run returned 0, want non-zero for conflicting flags")
+	}
+	assertContains(t, stderr.String(), "--force-password cannot be combined with --identity")
+}
+
 func TestRunAddUpdatesIncludedSourceByDefault(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

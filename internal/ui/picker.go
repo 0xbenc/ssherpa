@@ -33,6 +33,7 @@ const (
 	ItemStopAllActive ItemKind = "stop_all_active"
 	ItemCheck         ItemKind = "check"
 	ItemSessions      ItemKind = "sessions"
+	ItemPorting       ItemKind = "porting"
 	ItemTheme         ItemKind = "theme"
 	ItemDocs          ItemKind = "docs"
 	ItemConfirmDelete ItemKind = "confirm_delete"
@@ -227,6 +228,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
+		Item{Kind: ItemPorting, Token: "PORTING", Title: "Import / Export aliases and presets", Group: "Actions", Badge: "io"},
 		Item{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Group: "Actions", Badge: "theme"},
 		Item{Kind: ItemDocs, Token: "DOCS", Title: "Completions and manpage", Group: "Actions", Badge: "docs"},
 	)
@@ -1013,6 +1015,8 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleWarning
 	case ItemSessions:
 		role = termstyle.RoleSecondary
+	case ItemPorting:
+		role = termstyle.RoleSecondary
 	case ItemTheme:
 		role = termstyle.RoleAccent
 	case ItemDocs:
@@ -1149,6 +1153,8 @@ func selectionHint(item Item) string {
 		return "Manages authorized_keys on this device."
 	case ItemSessions:
 		return "Opens the active session route map."
+	case ItemPorting:
+		return "Exports or imports SSH aliases and saved presets as a JSON bundle."
 	case ItemTheme:
 		return "Builds and saves a UI color schema."
 	case ItemDocs:

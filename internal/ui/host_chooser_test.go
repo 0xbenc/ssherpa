@@ -94,6 +94,24 @@ func TestHostChooserViewRendersFramedAliasPicker(t *testing.T) {
 	}
 }
 
+func TestHostChooserMultiSelectToggleAll(t *testing.T) {
+	model := newTestHostChooser(t, hostChooserBaseOptions{Mode: "choose"})
+	model.multiSelect = true
+	model.checked = map[string]bool{}
+	model.width = 108
+	model.height = 24
+
+	model = updateHostChooser(model, keyPressCtrl('a'))
+	if got := len(model.checkedTokens()); got != 3 {
+		t.Fatalf("ctrl+a checked %d, want all 3", got)
+	}
+
+	model = updateHostChooser(model, keyPressCtrl('a'))
+	if got := len(model.checkedTokens()); got != 0 {
+		t.Fatalf("second ctrl+a checked %d, want 0 (cleared)", got)
+	}
+}
+
 func TestHostChooserMultiSelectTogglesAndRequiresSelection(t *testing.T) {
 	model := newTestHostChooser(t, hostChooserBaseOptions{
 		Title:  "Seed: pick remote hosts",

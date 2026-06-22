@@ -23,8 +23,8 @@ import (
 // including the recv alias.
 var completionTopLevelCommands = []string{
 	"add", "edit", "jump", "proxy", "forward", "send", "receive", "recv",
-	"check", "incoming", "authkeys", "theme", "session", "list", "show",
-	"version", "help",
+	"check", "incoming", "authkeys", "theme", "session", "export", "import",
+	"list", "show", "version", "help",
 }
 
 // completionSessionSubcommands mirrors the runSession dispatch in
@@ -54,6 +54,7 @@ var completionRequiredFlags = []string{
 	"latency-warn", "latency-disconnect", "overlay-key", "composer-key",
 	"record-max-bytes", "reconnect-max", "no-reconnect", "no-muxer-guard",
 	"saved-forward", "saved-forwards", "all-matching", "theme-file",
+	"force-password",
 }
 
 var completionFiles = []string{"ssherpa.bash", "ssherpa.zsh", "ssherpa.fish"}

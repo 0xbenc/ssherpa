@@ -33,6 +33,7 @@ type addFlags struct {
 	Port           string
 	IdentityFile   string
 	IdentitiesOnly bool
+	ForcePassword  bool
 }
 
 type editSetFlags struct {
@@ -46,6 +47,8 @@ type editSetFlags struct {
 	ClearIdentity     bool
 	IdentitiesOnly    bool
 	IdentitiesOnlySet bool
+	ForcePassword     bool
+	ForcePasswordSet  bool
 }
 
 type deleteFlags struct {
@@ -99,6 +102,7 @@ func runAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 		Port:           flags.Port,
 		IdentityFile:   flags.IdentityFile,
 		IdentitiesOnly: flags.IdentitiesOnly,
+		ForcePassword:  flags.ForcePassword,
 	}
 
 	var err error
@@ -171,6 +175,7 @@ func addAliasResultFromSpec(spec sshconfig.AliasSpec) ui.AddAliasResult {
 		Port:           spec.Port,
 		IdentityFile:   spec.IdentityFile,
 		IdentitiesOnly: spec.IdentitiesOnly,
+		ForcePassword:  spec.ForcePassword,
 	}
 }
 
@@ -182,6 +187,7 @@ func aliasSpecFromAddResult(result ui.AddAliasResult) sshconfig.AliasSpec {
 		Port:           result.Port,
 		IdentityFile:   result.IdentityFile,
 		IdentitiesOnly: result.IdentitiesOnly,
+		ForcePassword:  result.ForcePassword,
 	}
 }
 
@@ -521,18 +527,76 @@ func runEditAliasTUI(alias string, flags editInteractiveFlags, stdout io.Writer,
 		return 0
 	}
 	spec = aliasSpecFromAddResult(result)
-	spec.Alias = alias
+	newAlias := strings.TrimSpace(result.Alias)
+	if newAlias == "" {
+		newAlias = alias
+	}
+	spec.Alias = newAlias
 
 	if err := sshconfig.ValidateAliasSpec(spec, false); err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
-	plan, err := sshconfig.PlanAddOrUpdate(targets[0], spec)
+
+	renamed := newAlias != alias
+	if renamed && !strings.EqualFold(newAlias, alias) {
+		// Reject a rename that collides with an alias anywhere in the config
+		// (PlanRenameAndUpdate only sees the single target file). A case-only
+		// change folds back to the same alias, so skip the check for it.
+		if graph, err := loadGraph(flags.Config); err == nil {
+			if occ := sshconfig.FindAliasOccurrences(graph, newAlias); len(occ) > 0 {
+				fmt.Fprintf(stderr, "ssherpa: alias %q already exists; choose another name\n", newAlias)
+				return 1
+			}
+		}
+	}
+
+	plan, err := sshconfig.PlanRenameAndUpdate(targets[0], alias, spec)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 		return 1
 	}
-	return applyMutationPlans([]sshconfig.MutationPlan{plan}, mutationFlags{Config: flags.Config, Yes: true}, stdout, stderr)
+	code := applyMutationPlans([]sshconfig.MutationPlan{plan}, mutationFlags{Config: flags.Config, Yes: true}, stdout, stderr)
+	if code == 0 && renamed {
+		repointPresetsReferencingAlias(flags.StateDir, alias, newAlias, stdout, stderr)
+	}
+	return code
+}
+
+// repointPresetsReferencingAlias updates saved forwards/proxies that pointed at
+// an alias's old name to its new name after a rename, so they keep working
+// instead of dangling. Each change is reported. Best-effort: a missing or
+// unreadable state dir is silently skipped, and a per-preset write failure is
+// surfaced as a warning without aborting the others.
+func repointPresetsReferencingAlias(stateDirOverride string, oldAlias string, newAlias string, stdout io.Writer, stderr io.Writer) {
+	stateDir, err := state.ResolveDir(stateDirOverride)
+	if err != nil {
+		return
+	}
+	forwards, _ := state.ListForwards(stateDir)
+	for _, f := range forwards {
+		if f.SSHAlias != oldAlias {
+			continue
+		}
+		f.SSHAlias = newAlias
+		if err := state.WriteForward(stateDir, f); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: warning: could not repoint saved forward %q to %q: %v\n", f.Name, newAlias, err)
+			continue
+		}
+		fmt.Fprintf(stdout, "[updated] saved forward %s now uses alias %s\n", f.Name, newAlias)
+	}
+	proxies, _ := state.ListProxies(stateDir)
+	for _, p := range proxies {
+		if p.SSHAlias != oldAlias {
+			continue
+		}
+		p.SSHAlias = newAlias
+		if err := state.WriteProxy(stateDir, p); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: warning: could not repoint saved proxy %q to %q: %v\n", p.Name, newAlias, err)
+			continue
+		}
+		fmt.Fprintf(stdout, "[updated] saved proxy %s now uses alias %s\n", p.Name, newAlias)
+	}
 }
 
 func runEditSavedForwardTUI(name string, flags editInteractiveFlags, stdout io.Writer, stderr io.Writer) int {
@@ -1097,6 +1161,8 @@ func parseAddFlags(args []string, stderr io.Writer) (addFlags, bool) {
 			flags.IdentityFile = strings.TrimPrefix(arg, "--identity=")
 		case arg == "--identities-only":
 			flags.IdentitiesOnly = true
+		case arg == "--force-password":
+			flags.ForcePassword = true
 		default:
 			handled, mutationOK := parseMutationFlag(arg, args, &i, stderr, &flags.mutationFlags)
 			if handled {
@@ -1108,6 +1174,17 @@ func parseAddFlags(args []string, stderr io.Writer) (addFlags, bool) {
 			fmt.Fprintf(stderr, "ssherpa: unknown add argument %q\n", arg)
 			return flags, false
 		}
+	}
+	// Force-password disables key auth, so combining it with an identity
+	// selection is contradictory. Reject early with a clear message rather
+	// than letting ValidateAliasSpec surface it after the form/write path.
+	if flags.ForcePassword && strings.TrimSpace(flags.IdentityFile) != "" {
+		fmt.Fprintln(stderr, "ssherpa: --force-password cannot be combined with --identity")
+		return flags, false
+	}
+	if flags.ForcePassword && flags.IdentitiesOnly {
+		fmt.Fprintln(stderr, "ssherpa: --force-password cannot be combined with --identities-only")
+		return flags, false
 	}
 	return flags, true
 }
@@ -1236,6 +1313,12 @@ func parseEditSetFlags(args []string, stderr io.Writer) (editSetFlags, bool) {
 		case arg == "--no-identities-only":
 			flags.IdentitiesOnly = false
 			flags.IdentitiesOnlySet = true
+		case arg == "--force-password":
+			flags.ForcePassword = true
+			flags.ForcePasswordSet = true
+		case arg == "--no-force-password":
+			flags.ForcePassword = false
+			flags.ForcePasswordSet = true
 		default:
 			handled, mutationOK := parseMutationFlag(arg, args, &i, stderr, &flags.mutationFlags)
 			if handled {
@@ -1247,6 +1330,10 @@ func parseEditSetFlags(args []string, stderr io.Writer) (editSetFlags, bool) {
 			fmt.Fprintf(stderr, "ssherpa: unknown edit set argument %q\n", arg)
 			return flags, false
 		}
+	}
+	if flags.ForcePassword && (strings.TrimSpace(flags.IdentityFile) != "" || (flags.IdentitiesOnlySet && flags.IdentitiesOnly)) {
+		fmt.Fprintln(stderr, "ssherpa: --force-password cannot be combined with --identity or --identities-only")
+		return flags, false
 	}
 	return flags, true
 }
@@ -1424,9 +1511,21 @@ func applyEditSetFlags(spec sshconfig.AliasSpec, flags editSetFlags) sshconfig.A
 		spec.IdentitiesOnly = false
 	} else if flags.IdentityFile != "" {
 		spec.IdentityFile = flags.IdentityFile
+		// Setting an identity supersedes a prior force-password choice.
+		spec.ForcePassword = false
 	}
 	if flags.IdentitiesOnlySet {
 		spec.IdentitiesOnly = flags.IdentitiesOnly
+		if flags.IdentitiesOnly {
+			spec.ForcePassword = false
+		}
+	}
+	if flags.ForcePasswordSet {
+		spec.ForcePassword = flags.ForcePassword
+		if spec.ForcePassword {
+			spec.IdentityFile = ""
+			spec.IdentitiesOnly = false
+		}
 	}
 	return spec
 }

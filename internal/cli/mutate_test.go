@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
+	"github.com/0xbenc/ssherpa/internal/sshconfig"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
@@ -103,5 +104,99 @@ func TestEditTargetSummary(t *testing.T) {
 	want := "2 aliases  1 forward  3 proxies"
 	if got != want {
 		t.Fatalf("editTargetSummary = %q, want %q", got, want)
+	}
+}
+
+func TestParseAddFlagsForcePassword(t *testing.T) {
+	var stderr strings.Builder
+	flags, ok := parseAddFlags([]string{"--alias", "pwbox", "--host", "h", "--force-password"}, &stderr)
+	if !ok {
+		t.Fatalf("parseAddFlags ok = false; stderr = %q", stderr.String())
+	}
+	if !flags.ForcePassword {
+		t.Fatalf("flags.ForcePassword = false, want true")
+	}
+}
+
+func TestParseAddFlagsForcePasswordRejectsIdentity(t *testing.T) {
+	var stderr strings.Builder
+	_, ok := parseAddFlags([]string{"--alias", "pwbox", "--host", "h", "--force-password", "--identity", "~/.ssh/id"}, &stderr)
+	if ok {
+		t.Fatalf("parseAddFlags ok = true, want rejection")
+	}
+	if !strings.Contains(stderr.String(), "--force-password cannot be combined with --identity") {
+		t.Fatalf("stderr = %q, want conflict message", stderr.String())
+	}
+}
+
+func TestParseAddFlagsForcePasswordRejectsIdentitiesOnly(t *testing.T) {
+	var stderr strings.Builder
+	_, ok := parseAddFlags([]string{"--alias", "pwbox", "--host", "h", "--force-password", "--identities-only"}, &stderr)
+	if ok {
+		t.Fatalf("parseAddFlags ok = true, want rejection")
+	}
+	if !strings.Contains(stderr.String(), "--identities-only") {
+		t.Fatalf("stderr = %q, want conflict message", stderr.String())
+	}
+}
+
+func TestAddResultSpecRoundTripForcePassword(t *testing.T) {
+	spec := aliasSpecFromAddResult(ui.AddAliasResult{Alias: "pwbox", HostName: "h", ForcePassword: true})
+	if !spec.ForcePassword {
+		t.Fatalf("aliasSpecFromAddResult dropped ForcePassword")
+	}
+	back := addAliasResultFromSpec(spec)
+	if !back.ForcePassword {
+		t.Fatalf("addAliasResultFromSpec dropped ForcePassword")
+	}
+}
+
+func TestRepointPresetsReferencingAlias(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.WriteForward(dir, state.StoredForward{Name: "db", SSHAlias: "prod", LocalPort: 5432, RemoteHost: "db.internal", RemotePort: 5432}); err != nil {
+		t.Fatalf("WriteForward: %v", err)
+	}
+	if err := state.WriteForward(dir, state.StoredForward{Name: "other", SSHAlias: "web", LocalPort: 8080, RemoteHost: "h", RemotePort: 80}); err != nil {
+		t.Fatalf("WriteForward other: %v", err)
+	}
+	if err := state.WriteProxy(dir, state.StoredProxy{Name: "socks", SSHAlias: "prod", Port: 1080}); err != nil {
+		t.Fatalf("WriteProxy: %v", err)
+	}
+
+	var stdout, stderr strings.Builder
+	repointPresetsReferencingAlias(dir, "prod", "prod2", &stdout, &stderr)
+
+	if f, err := state.ReadForward(dir, "db"); err != nil || f.SSHAlias != "prod2" {
+		t.Fatalf("forward db SSHAlias = %q err=%v, want prod2", f.SSHAlias, err)
+	}
+	if p, err := state.ReadProxy(dir, "socks"); err != nil || p.SSHAlias != "prod2" {
+		t.Fatalf("proxy socks SSHAlias = %q err=%v, want prod2", p.SSHAlias, err)
+	}
+	// A preset referencing a different alias must be untouched.
+	if f, err := state.ReadForward(dir, "other"); err != nil || f.SSHAlias != "web" {
+		t.Fatalf("forward other SSHAlias = %q err=%v, want web (unchanged)", f.SSHAlias, err)
+	}
+	if !strings.Contains(stdout.String(), "saved forward db now uses alias prod2") {
+		t.Fatalf("stdout missing forward report: %q", stdout.String())
+	}
+}
+
+func TestApplyEditSetFlagsForcePassword(t *testing.T) {
+	// Setting force-password clears any identity state.
+	spec := applyEditSetFlags(
+		sshconfig.AliasSpec{Alias: "pwbox", HostName: "h", IdentityFile: "~/.ssh/id", IdentitiesOnly: true},
+		editSetFlags{ForcePassword: true, ForcePasswordSet: true},
+	)
+	if !spec.ForcePassword || spec.IdentityFile != "" || spec.IdentitiesOnly {
+		t.Fatalf("force-password edit set leaked identity state: %#v", spec)
+	}
+
+	// Setting an identity on a force-password alias clears force-password.
+	spec = applyEditSetFlags(
+		sshconfig.AliasSpec{Alias: "pwbox", HostName: "h", ForcePassword: true},
+		editSetFlags{IdentityFile: "~/.ssh/id"},
+	)
+	if spec.ForcePassword || spec.IdentityFile != "~/.ssh/id" {
+		t.Fatalf("identity edit set did not clear force-password: %#v", spec)
 	}
 }

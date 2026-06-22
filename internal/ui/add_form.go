@@ -22,6 +22,10 @@ type AddAliasResult struct {
 	Port           string
 	IdentityFile   string
 	IdentitiesOnly bool
+	// ForcePassword writes PubkeyAuthentication no +
+	// PreferredAuthentications keyboard-interactive,password. It is
+	// mutually exclusive with IdentityFile/IdentitiesOnly.
+	ForcePassword bool
 }
 
 type AddAliasOptions struct {
@@ -84,24 +88,25 @@ const (
 type addAliasModel struct {
 	step addAliasStep
 
-	hostBuf     string
-	hostCursor  int
-	hostError   string
-	aliasBuf    string
-	aliasCursor int
-	aliasError  string
-	userBuf     string
-	userCursor  int
-	userError   string
-	portBuf     string
-	portCursor  int
-	portError   string
-	idBuf       string
-	idCursor    int
-	idError     string
-	idChoices   []string
-	idCursorRow int
-	idsOnly     bool
+	hostBuf       string
+	hostCursor    int
+	hostError     string
+	aliasBuf      string
+	aliasCursor   int
+	aliasError    string
+	userBuf       string
+	userCursor    int
+	userError     string
+	portBuf       string
+	portCursor    int
+	portError     string
+	idBuf         string
+	idCursor      int
+	idError       string
+	idChoices     []string
+	idCursorRow   int
+	idsOnly       bool
+	forcePassword bool
 
 	canceled bool
 	result   AddAliasResult
@@ -120,24 +125,25 @@ func newAddAliasModel(opts AddAliasOptions, theme termstyle.Theme) addAliasModel
 	}
 	choices := addIdentityChoices(initial.IdentityFile, opts.IdentityFiles)
 	return addAliasModel{
-		hostBuf:     initial.HostName,
-		hostCursor:  len([]rune(initial.HostName)),
-		aliasBuf:    initial.Alias,
-		aliasCursor: len([]rune(initial.Alias)),
-		userBuf:     initial.User,
-		userCursor:  len([]rune(initial.User)),
-		portBuf:     initial.Port,
-		portCursor:  len([]rune(initial.Port)),
-		idBuf:       initial.IdentityFile,
-		idCursor:    len([]rune(initial.IdentityFile)),
-		idChoices:   choices,
-		idCursorRow: addIdentityCursor(initial.IdentityFile, choices),
-		idsOnly:     initial.IdentitiesOnly,
-		theme:       theme,
-		noAltScreen: opts.NoAltScreen,
-		noColor:     opts.NoColor,
-		width:       104,
-		height:      24,
+		hostBuf:       initial.HostName,
+		hostCursor:    len([]rune(initial.HostName)),
+		aliasBuf:      initial.Alias,
+		aliasCursor:   len([]rune(initial.Alias)),
+		userBuf:       initial.User,
+		userCursor:    len([]rune(initial.User)),
+		portBuf:       initial.Port,
+		portCursor:    len([]rune(initial.Port)),
+		idBuf:         initial.IdentityFile,
+		idCursor:      len([]rune(initial.IdentityFile)),
+		idChoices:     choices,
+		idCursorRow:   addIdentityCursor(initial.IdentityFile, initial.ForcePassword, choices),
+		idsOnly:       initial.IdentitiesOnly,
+		forcePassword: initial.ForcePassword,
+		theme:         theme,
+		noAltScreen:   opts.NoAltScreen,
+		noColor:       opts.NoColor,
+		width:         104,
+		height:        24,
 	}
 }
 
@@ -259,12 +265,23 @@ func (m addAliasModel) updateIdentity(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.idBuf = ""
 			m.idCursor = 0
 			m.idsOnly = false
+			m.forcePassword = false
 			m.step = addStepReview
 		case addIdentityCustom:
+			m.forcePassword = false
 			m.step = addStepIdentityCustom
+		case addIdentityForcePassword:
+			// Force-password is exclusive with identity files: clear any key
+			// selection and skip the identity/IdentitiesOnly questions.
+			m.idBuf = ""
+			m.idCursor = 0
+			m.idsOnly = false
+			m.forcePassword = true
+			m.step = addStepReview
 		default:
 			m.idBuf = choice
 			m.idCursor = len([]rune(choice))
+			m.forcePassword = false
 			m = m.advanceFromIdentity()
 		}
 	}
@@ -282,6 +299,9 @@ func (m addAliasModel) updateIdentityCustom(msg tea.KeyPressMsg) (tea.Model, tea
 }
 
 func (m addAliasModel) advanceFromIdentity() addAliasModel {
+	// Reaching this path means a real identity file was chosen, which is
+	// incompatible with force-password; clear it defensively.
+	m.forcePassword = false
 	if strings.TrimSpace(m.idBuf) == "" {
 		m.idsOnly = false
 		m.step = addStepReview
@@ -336,20 +356,31 @@ func (m addAliasModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.canceled = true
 		return m, tea.Quit
 	case "shift+tab":
-		if strings.TrimSpace(m.idBuf) == "" {
+		// Force-password and empty-identity were both last set on the auth
+		// selector, so Back returns there; an identity file went through the
+		// IdentitiesOnly step.
+		if m.forcePassword || strings.TrimSpace(m.idBuf) == "" {
 			m.step = addStepIdentity
 		} else {
 			m.step = addStepIdentitiesOnly
 		}
 	case "enter":
-		m.result = AddAliasResult{
+		result := AddAliasResult{
 			Alias:          strings.TrimSpace(m.aliasBuf),
 			HostName:       strings.TrimSpace(m.hostBuf),
 			User:           strings.TrimSpace(m.userBuf),
 			Port:           strings.TrimSpace(m.portBuf),
 			IdentityFile:   strings.TrimSpace(m.idBuf),
 			IdentitiesOnly: m.idsOnly,
+			ForcePassword:  m.forcePassword,
 		}
+		if result.ForcePassword {
+			// Belt-and-suspenders: never emit an identity alongside
+			// force-password regardless of stale buffer state.
+			result.IdentityFile = ""
+			result.IdentitiesOnly = false
+		}
+		m.result = result
 		return m, tea.Quit
 	}
 	return m, nil
@@ -420,7 +451,7 @@ func (m addAliasModel) viewPort(b *strings.Builder, theme pickerTheme, width int
 
 func (m addAliasModel) viewIdentity(b *strings.Builder, theme pickerTheme, width int) {
 	b.WriteString("  ")
-	b.WriteString(theme.summary("Choose an identity file, or pick none to use OpenSSH defaults."))
+	b.WriteString(theme.summary("Choose an identity file, force password login, or use OpenSSH defaults."))
 	b.WriteString("\n\n")
 	maxLines := clamp(m.height-10, 5, 14)
 	from, to := windowRange(m.idCursorRow, len(m.idChoices), maxLines)
@@ -457,6 +488,8 @@ func identityChoiceText(choice string) (label string, desc string) {
 		return "(none)", "do not write IdentityFile"
 	case addIdentityCustom:
 		return "Custom path...", "type another key path"
+	case addIdentityForcePassword:
+		return "Force password login", "PubkeyAuthentication no + keyboard-interactive,password"
 	default:
 		return choice, "write IdentityFile"
 	}
@@ -540,7 +573,10 @@ func (m addAliasModel) viewReview(b *strings.Builder, theme pickerTheme, width i
 	if strings.TrimSpace(m.portBuf) != "" {
 		previewKVLine(b, theme, "Port", strings.TrimSpace(m.portBuf))
 	}
-	if strings.TrimSpace(m.idBuf) != "" {
+	if m.forcePassword {
+		previewKVLine(b, theme, "PubkeyAuthentication", "no")
+		previewKVLine(b, theme, "PreferredAuthentications", "keyboard-interactive,password")
+	} else if strings.TrimSpace(m.idBuf) != "" {
 		previewKVLine(b, theme, "IdentityFile", strings.TrimSpace(m.idBuf))
 		previewKVLine(b, theme, "IdentitiesOnly", yesNo(m.idsOnly))
 	}
@@ -614,8 +650,9 @@ func validatePortInput(value string) error {
 }
 
 const (
-	addIdentityNone   = "\x00none"
-	addIdentityCustom = "\x00custom"
+	addIdentityNone          = "\x00none"
+	addIdentityCustom        = "\x00custom"
+	addIdentityForcePassword = "\x00forcepassword"
 )
 
 func addIdentityChoices(initial string, discovered []string) []string {
@@ -635,10 +672,22 @@ func addIdentityChoices(initial string, discovered []string) []string {
 		add(value)
 	}
 	choices = append(choices, addIdentityCustom)
+	// Force-password is appended LAST so the (none)/discovered-key/Custom
+	// indices stay fixed — index-based navigation in tests and edit-mode
+	// cursor placement both rely on that ordering.
+	choices = append(choices, addIdentityForcePassword)
 	return choices
 }
 
-func addIdentityCursor(initial string, choices []string) int {
+func addIdentityCursor(initial string, forcePassword bool, choices []string) int {
+	if forcePassword {
+		for i, choice := range choices {
+			if choice == addIdentityForcePassword {
+				return i
+			}
+		}
+		return 0
+	}
 	initial = strings.TrimSpace(initial)
 	if initial == "" {
 		return 0
