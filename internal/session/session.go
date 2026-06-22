@@ -1215,7 +1215,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 
 	frame := drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
 	clearAndReturn := func() {
-		clearSessionOverlay(output.w, frame)
+		clearSessionOverlay(output.w, stdin, frame)
 	}
 
 	pull := func() {
@@ -1249,7 +1249,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 				return
 			}
 			confirming = false
-			clearSessionOverlay(output.w, frame)
+			clearSessionOverlay(output.w, stdin, frame)
 			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
 			continue
 		}
@@ -1278,13 +1278,13 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 		case 'X':
 			// Escape rope: confirm before tearing down every layer.
 			confirming = true
-			clearSessionOverlay(output.w, frame)
+			clearSessionOverlay(output.w, stdin, frame)
 			frame = drawEscapeConfirm(output.w, stdin, stateDir, currentID, theme)
 		case 'r', 'R':
-			clearSessionOverlay(output.w, frame)
+			clearSessionOverlay(output.w, stdin, frame)
 			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
 		case 't', 'T':
-			clearSessionOverlay(output.w, frame)
+			clearSessionOverlay(output.w, stdin, frame)
 			if recorder == nil {
 				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa recording", "recording is not available for this session")
 				continue
@@ -1297,11 +1297,11 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa recording", message)
 		case 's', 'S':
 			if overlay.Send == nil {
-				clearSessionOverlay(output.w, frame)
+				clearSessionOverlay(output.w, stdin, frame)
 				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa send", "send is not available for this session")
 				continue
 			}
-			clearSessionOverlay(output.w, frame)
+			clearSessionOverlay(output.w, stdin, frame)
 			req := overlayTransferRequest("send", stateDir, currentID, overlayBase)
 			req.InbandSend = newInbandSendFunc(ptmxRef, tap)
 			unlock()
@@ -1309,11 +1309,11 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			return
 		case 'v', 'V':
 			if overlay.Receive == nil {
-				clearSessionOverlay(output.w, frame)
+				clearSessionOverlay(output.w, stdin, frame)
 				frame = drawOverlayNotice(output.w, stdin, theme, "ssherpa receive", "receive is not available for this session")
 				continue
 			}
-			clearSessionOverlay(output.w, frame)
+			clearSessionOverlay(output.w, stdin, frame)
 			unlock()
 			runOverlayTransfer(overlay.Receive, overlayTransferRequest("receive", stateDir, currentID, overlayBase), suspendTerminal)
 			return
@@ -1672,13 +1672,32 @@ func drawSessionOverlay(w io.Writer, stdin *os.File, stateDir string, currentID 
 	return overlayFrame{terminal: true, startRow: startRow, lines: visibleLines}
 }
 
-func clearSessionOverlay(w io.Writer, frame overlayFrame) {
+func clearSessionOverlay(w io.Writer, stdin *os.File, frame overlayFrame) {
 	if !frame.terminal {
 		fmt.Fprintln(w, "----- ssherpa overlay closed -----")
 		return
 	}
+	clearRow := func(row int) {
+		if row >= 1 {
+			fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K", row)
+		}
+	}
+	// Clear the overlay's draw-time rows.
 	for i := 0; i < frame.lines; i++ {
-		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K", frame.startRow+i)
+		clearRow(frame.startRow + i)
+	}
+	// A SIGWINCH between paint and clear moves the bottom-pinned band: the
+	// stored startRow no longer matches where the overlay sits, so the
+	// draw-time clear above would miss the residue and the trailing DECRC
+	// would restore the cursor against a stale geometry. Re-measure the
+	// terminal and, if it changed height, also clear the current bottom band
+	// (same height) so no overlay row can survive a resize.
+	if _, height, ok := overlaySize(stdin); ok && height > 0 {
+		if newStart := max(1, height-frame.lines+1); newStart != frame.startRow {
+			for i := 0; i < frame.lines; i++ {
+				clearRow(newStart + i)
+			}
+		}
 	}
 	fmt.Fprint(w, "\x1b8\x1b[?25h")
 }

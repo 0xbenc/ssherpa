@@ -349,6 +349,18 @@ clear `max(old,new)` rows rather than trusting stale DECRC. A cheaper lower-blas
 in `clearSessionOverlay`, clamp against current size and clear the full bottom band on detected
 change. **Re-estimate M → L.** Add a stress test interleaving rapid resize + paint.
 
+**SHIPPED (cheaper variant).** Chose the lower-blast-radius fix, not the stdin-pump rewrite: the
+full `select{byteCh/resizeCh}` repaint touches the supervised hot path (idle-cold invariant +
+`output.mu` lifetime) for marginal gain over fixing the actual corruption. `clearSessionOverlay`
+now takes `stdin`, re-measures via `overlaySize`, and — when the height changed since paint —
+also clears the current bottom band (same height) before DECRC, so a SIGWINCH between paint and
+clear can't leave residue over the live stream. The overlay still sits at its draw-time position
+until the next keypress (no live repaint), but closing it is now resize-safe. Covered by
+`overlay_resize_test.go` (PTY `Setsize` between frame-capture and clear; asserts both the
+draw-time band and the post-resize bottom band are cleared, and the no-resize path stays
+byte-minimal). The stdin-pump live-repaint remains a documented follow-on if live resize-repaint
+(vs. resize-safe-close) is ever wanted.
+
 **S16-b is dropped.** The escape confirm is a raw single-byte stdin loop, **not a `tea`
 program**, so Bubble Tea v2 key-release events are unreachable; raw mode has no key-release at
 all (option 1 fails); and auto-repeat is byte-identical to deliberate taps (option 2 without a
