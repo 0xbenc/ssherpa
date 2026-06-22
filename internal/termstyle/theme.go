@@ -98,6 +98,12 @@ func Roles() []Role {
 	}
 }
 
+// BuiltinThemeNames lists the selectable base palettes in display order. It is
+// the single source of truth the theme editor's base selector cycles through.
+func BuiltinThemeNames() []string {
+	return []string{"terminal", "vivid"}
+}
+
 func BuiltinTheme(name string) (Theme, bool) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "terminal", "default", "auto":
