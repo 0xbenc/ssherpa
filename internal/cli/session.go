@@ -627,7 +627,7 @@ func runSessionBrowse(args []string, stdout io.Writer, stderr io.Writer) int {
 			Title:       "Session transcripts",
 			Mode:        "choose transcript",
 			Summary:     fmt.Sprintf("%d transcript(s)", len(items)),
-			Footer:      "enter select  /  type filter  /  arrows move  /  Q back",
+			Footer:      "enter select / type filter / arrows move / Q back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: transcript browser failed: %v\n", err)
@@ -711,7 +711,7 @@ func runTranscriptActionMenu(stateDir string, record state.SessionRecord, stdout
 		Title:       "Transcript: " + sessionview.Target(record),
 		Mode:        "choose action",
 		Summary:     originLabel(record) + " · " + sessionview.FormatRecordRoute(record),
-		Footer:      "enter select  /  arrows move  /  Q back",
+		Footer:      "enter select / arrows move / Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: transcript action failed: %v\n", err)
@@ -1732,7 +1732,7 @@ func runSessionToolsPicker(flags connectFlags, stdout io.Writer, stderr io.Write
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Sessions",
 		Mode:        "choose session tool",
-		Footer:      "enter select  /  arrows move  /  Q back",
+		Footer:      "enter select / arrows move / Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: sessions picker failed: %v\n", err)

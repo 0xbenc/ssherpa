@@ -108,7 +108,7 @@ func ChooseManagementMulti(ctx context.Context, items []ManagementItem, opts Man
 	}
 	footer := opts.Footer
 	if footer == "" {
-		footer = "space toggle  /  ctrl+a all  /  enter continue  /  type filter  /  arrows move  /  Q back"
+		footer = "space toggle / ctrl+a all / enter continue / type filter / arrows move / Q back"
 	}
 	model, err := newHostChooserModel(managementChooserItems(items), hostChooserBaseOptions{
 		Input:       opts.Input,

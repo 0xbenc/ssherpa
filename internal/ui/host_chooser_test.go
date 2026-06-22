@@ -116,7 +116,7 @@ func TestHostChooserMultiSelectTogglesAndRequiresSelection(t *testing.T) {
 	model := newTestHostChooser(t, hostChooserBaseOptions{
 		Title:  "Seed: pick remote hosts",
 		Mode:   "choose remote seed targets",
-		Footer: "space toggle  /  enter continue",
+		Footer: "space toggle / enter continue",
 	})
 	model.multiSelect = true
 	model.checked = map[string]bool{}
@@ -223,7 +223,7 @@ func TestJumpHopChooserViewAndFinishSelection(t *testing.T) {
 		Mode:        "route bastion -> prod",
 		Steps:       []string{"destination", "first hop", "extra hops", "run"},
 		CurrentStep: 2,
-		Footer:      "enter select  /  type filter  /  arrows move  /  Q back",
+		Footer:      "enter select / type filter / arrows move / Q back",
 	})
 	if err != nil {
 		t.Fatalf("newHostChooserModel: %v", err)

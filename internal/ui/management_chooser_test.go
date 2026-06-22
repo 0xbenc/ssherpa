@@ -64,7 +64,7 @@ func TestManagementChooserViewRendersEditTargets(t *testing.T) {
 		Steps:       []string{"target", "action", "editor"},
 		CurrentStep: 0,
 		Summary:     "1 alias  1 forward  1 proxy",
-		Footer:      "enter select  /  type filter  /  arrows move  /  Q back",
+		Footer:      "enter select / type filter / arrows move / Q back",
 	})
 	model.width = 112
 	model.height = 26

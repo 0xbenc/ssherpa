@@ -590,15 +590,15 @@ func addStepLabels() []string {
 func addFooter(step addAliasStep) string {
 	switch step {
 	case addStepIdentity:
-		return "enter select  /  up/down move  /  shift+tab back  /  esc cancel"
+		return "enter select / up/down move / shift+tab back / esc cancel"
 	case addStepIdentityCustom:
-		return "enter advance  /  shift+tab back to identity choices  /  type to edit  /  esc cancel"
+		return "enter advance / shift+tab back to identity choices / type to edit / esc cancel"
 	case addStepIdentitiesOnly:
-		return "enter review  /  arrows choose  /  space toggle  /  shift+tab back  /  esc cancel"
+		return "enter review / arrows choose / space toggle / shift+tab back / esc cancel"
 	case addStepReview:
-		return "enter save  /  shift+tab back  /  esc cancel"
+		return "enter save / shift+tab back / esc cancel"
 	default:
-		return "enter advance  /  shift+tab back  /  type to edit  /  esc cancel"
+		return "enter advance / shift+tab back / type to edit / esc cancel"
 	}
 }
 

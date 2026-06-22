@@ -139,7 +139,7 @@ func (m textPromptModel) View() tea.View {
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
 		Title:  m.title,
 		Body:   workflowBodyLines(&body),
-		Footer: "enter save  /  type to edit  /  esc cancel",
+		Footer: "enter save / type to edit / esc cancel",
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view

@@ -116,7 +116,7 @@ func (m transferDirectionModel) View() tea.View {
 		Steps:   transferDirectionSteps(),
 		Current: 0,
 		Body:    m.renderBody(max(20, width-4), theme),
-		Footer:  "enter select  /  s send  /  r receive  /  arrows move  /  Q back",
+		Footer:  "enter select / s send / r receive / arrows move / Q back",
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view

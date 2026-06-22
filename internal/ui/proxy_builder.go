@@ -444,13 +444,13 @@ func proxyStepIndex(step proxyBuilderStep) int {
 func proxyStepFooter(step proxyBuilderStep) string {
 	switch step {
 	case proxyStepDestination:
-		return "enter select  /  up-down move  /  type to filter  /  esc cancel"
+		return "enter select / up-down move / type to filter / esc cancel"
 	case proxyStepListener:
-		return "enter advance  /  shift+tab back  /  type to edit  /  esc cancel"
+		return "enter advance / shift+tab back / type to edit / esc cancel"
 	case proxyStepSummary:
-		return "enter fire  /  up-down move  /  shift+tab back  /  esc cancel"
+		return "enter fire / up-down move / shift+tab back / esc cancel"
 	case proxyStepSaveName:
-		return "enter save  /  shift+tab back to summary  /  type to edit  /  esc cancel"
+		return "enter save / shift+tab back to summary / type to edit / esc cancel"
 	default:
 		return ""
 	}

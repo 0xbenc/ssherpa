@@ -172,7 +172,7 @@ func (m transferBrowserModel) View() tea.View {
 	body := m.renderBody(width, theme)
 	footer := m.footer
 	if footer == "" {
-		footer = "enter open/select  /  type filter  /  arrows move  /  shift+arrows section  /  Q cancel"
+		footer = "enter open/select / type filter / arrows move / shift+arrows section / Q cancel"
 	}
 
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{

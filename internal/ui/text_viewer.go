@@ -71,7 +71,7 @@ func newTextViewModel(opts TextViewOptions, theme termstyle.Theme) textViewModel
 	}
 	footer := strings.TrimSpace(opts.Footer)
 	if footer == "" {
-		footer = "up/down scroll  /  pgup/pgdn page  /  q back"
+		footer = "up/down scroll / pgup/pgdn page / q back"
 	}
 	return textViewModel{
 		noAltScreen: opts.NoAltScreen,

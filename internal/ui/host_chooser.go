@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/0xbenc/ssherpa/internal/chrome"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -98,7 +99,14 @@ func ChooseHosts(ctx context.Context, aliases []hostlist.Alias, opts HostMultiCh
 	}
 	footer := opts.Footer
 	if footer == "" {
-		footer = "space toggle  /  enter continue  /  type filter  /  arrows move  /  shift+arrows section  /  Q back"
+		footer = chrome.Footer([]chrome.KeyHint{
+			{Key: "space", Label: "toggle"},
+			{Key: "enter", Label: "continue"},
+			{Key: "type", Label: "filter"},
+			{Key: "arrows", Label: "move"},
+			{Key: "shift+arrows", Label: "section"},
+			{Key: "Q", Label: "back"},
+		}, 0)
 	}
 	model, err := newHostChooserModel(hostChooserItemsFromAliases(aliases), hostChooserBaseOptions{
 		Input:       opts.Input,
@@ -157,7 +165,12 @@ func ChooseJumpHop(ctx context.Context, aliases []hostlist.Alias, opts JumpHopCh
 		Mode:        jumpHopMode(opts.Destination, opts.Hops),
 		Steps:       []string{"destination", "first hop", "extra hops", "run"},
 		CurrentStep: 2,
-		Footer:      "enter select  /  type filter  /  arrows move  /  Q back",
+		Footer: chrome.Footer([]chrome.KeyHint{
+			{Key: "enter", Label: "select"},
+			{Key: "type", Label: "filter"},
+			{Key: "arrows", Label: "move"},
+			{Key: "Q", Label: "back"},
+		}, 0),
 	})
 	if err != nil {
 		return JumpHopChoice{}, false, err
@@ -365,7 +378,7 @@ func (m hostChooserModel) View() tea.View {
 	theme := pickerTheme{theme: m.theme}
 	footer := m.footer
 	if footer == "" {
-		footer = "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back"
+		footer = "enter select / type filter / arrows move / shift+arrows section / Q back"
 	}
 
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{

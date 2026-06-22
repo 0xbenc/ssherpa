@@ -1206,7 +1206,7 @@ func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, start string) 
 			return "", false, err
 		}
 		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE TARGET", "local-folder", "LOCAL", cwd, receiveTransferSteps(), 3)
-		browserOpts.Footer = "enter open/use  /  type filter  /  arrows move  /  shift+arrows section  /  Q cancel"
+		browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
 		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err
@@ -1446,7 +1446,7 @@ func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transfe
 		}
 		items := remoteDirectoryPickerItems(current, listing.Dirs)
 		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND TARGET", "remote-folder", alias, current, sendTransferSteps(), 3)
-		browserOpts.Footer = "enter open/use  /  type filter  /  arrows move  /  shift+arrows section  /  Q cancel"
+		browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
 		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err

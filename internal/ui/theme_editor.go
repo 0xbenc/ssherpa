@@ -205,9 +205,9 @@ func (m themeEditorModel) View() tea.View {
 	body = append(body, "")
 	body = append(body, m.renderBody(bodyWidth, theme)...)
 
-	footer := "s save  /  arrows change  /  e edit raw  /  d inherit  /  r reset  /  t contrast  /  Q cancel"
+	footer := "s save / arrows change / e edit raw / d inherit / r reset / t contrast / Q cancel"
 	if m.editMode {
-		footer = "Enter accept  /  Esc cancel  /  Backspace edit  /  Ctrl-U clear"
+		footer = "Enter accept / Esc cancel / Backspace edit / Ctrl-U clear"
 	}
 
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{

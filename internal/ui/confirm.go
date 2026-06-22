@@ -152,7 +152,7 @@ func (m confirmModel) View() tea.View {
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
 		Title:  m.title,
 		Body:   workflowBodyLines(&body),
-		Footer: "enter confirm  /  left-right choose  /  esc cancel",
+		Footer: "enter confirm / left-right choose / esc cancel",
 		Danger: m.danger,
 	}))
 	view.AltScreen = !m.noAltScreen

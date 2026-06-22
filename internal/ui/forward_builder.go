@@ -323,7 +323,7 @@ func (m forwardActionModel) View() tea.View {
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
 		Title:  label,
 		Body:   workflowBodyLines(&body),
-		Footer: "enter launch  /  left-right choose  /  f foreground  /  b background  /  esc cancel",
+		Footer: "enter launch / left-right choose / f foreground / b background / esc cancel",
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view
@@ -1115,15 +1115,15 @@ func builderStepIndex(step builderStep) int {
 func stepFooter(step builderStep) string {
 	switch step {
 	case builderStepDestination:
-		return "enter select  /  up/down move  /  type to filter  /  esc cancel"
+		return "enter select / up/down move / type to filter / esc cancel"
 	case builderStepLocal, builderStepRemote:
-		return "enter advance  /  shift+tab back  /  type to edit  /  esc cancel"
+		return "enter advance / shift+tab back / type to edit / esc cancel"
 	case builderStepThrough:
-		return "enter select  /  up/down move  /  type to filter  /  shift+tab back  /  esc cancel"
+		return "enter select / up/down move / type to filter / shift+tab back / esc cancel"
 	case builderStepSummary:
-		return "enter fire  /  up/down move  /  shift+tab back  /  esc cancel"
+		return "enter fire / up/down move / shift+tab back / esc cancel"
 	case builderStepSaveName:
-		return "enter save  /  shift+tab back to summary  /  type to edit  /  esc cancel"
+		return "enter save / shift+tab back to summary / type to edit / esc cancel"
 	default:
 		return ""
 	}

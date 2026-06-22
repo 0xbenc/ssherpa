@@ -27,7 +27,7 @@ func runCheckPicker(flags connectFlags, inventory hostlist.Inventory, stdout io.
 		Steps:       []string{"scope", "target", "results"},
 		CurrentStep: 0,
 		Summary:     checkModeSummary(len(inventory.Aliases), len(saved)),
-		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: check picker failed: %v\n", err)
@@ -221,7 +221,7 @@ func pickSavedForwardForCheck(flags connectFlags, saved []ui.SavedForwardItem, s
 		Steps:       []string{"scope", "target", "results"},
 		CurrentStep: 1,
 		Summary:     checkCountLabel(len(saved), "forward", "forwards"),
-		Footer:      "enter select  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -261,7 +261,7 @@ func runDocsPicker(stdout io.Writer, stderr io.Writer, flags connectFlags) (int,
 		Steps:       []string{"artifact", "path"},
 		CurrentStep: 0,
 		Summary:     "4 artifacts",
-		Footer:      "enter show path  /  type filter  /  arrows move  /  shift+arrows section  /  Q back",
+		Footer:      "enter show path / type filter / arrows move / shift+arrows section / Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: docs picker failed: %v\n", err)

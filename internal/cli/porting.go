@@ -345,7 +345,7 @@ func runPortingPicker(flags connectFlags, stdout io.Writer, stderr io.Writer, bu
 		ThemeFile:   flags.ThemeFile,
 		Title:       "Import / Export",
 		Mode:        "choose porting action",
-		Footer:      "enter select  /  arrows move  /  Q back",
+		Footer:      "enter select / arrows move / Q back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: porting picker failed: %v\n", err)
