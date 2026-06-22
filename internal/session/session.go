@@ -1533,7 +1533,7 @@ func sameStrings(a []string, b []string) bool {
 
 func drawEscapeConfirm(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
 	names, count, layers := escapeBlastRadius(stateDir, currentID)
-	lines := []string{overlayTitle("ssherpa escape rope", theme)}
+	lines := []string{overlayTitle("SSHERPA ESCAPE ROPE", theme)}
 	if count == 0 {
 		lines = append(lines, theme.Style(termstyle.RoleWarning,
 			"Disconnect this session and return to the outer shell?"))
@@ -1809,7 +1809,7 @@ func sessionOverlayLines(stateDir string, currentID string, theme termstyle.Them
 	records, err := state.ListRecords(stateDir)
 	if err != nil {
 		lines := []string{
-			overlayTitle("ssherpa session map", theme),
+			overlayTitle("SSHERPA SESSION MAP", theme),
 			overlayField("state", stateDir, theme),
 			theme.Style(termstyle.RoleDanger, "error: "+err.Error()),
 			overlayHelp(help, theme),
@@ -1817,7 +1817,7 @@ func sessionOverlayLines(stateDir string, currentID string, theme termstyle.Them
 		return lines
 	}
 	view := sessionview.MapView(sessionview.ViewOptions{
-		Title:    "ssherpa session map",
+		Title:    "SSHERPA SESSION MAP",
 		StateDir: stateDir,
 		Records:  records,
 		Map:      sessionview.MapOptions{CurrentID: currentID},

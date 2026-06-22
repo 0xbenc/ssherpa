@@ -701,7 +701,7 @@ func TestRunSupervisedOverlayHotkeyDoesNotReachRemote(t *testing.T) {
 	if string(got) != "ab" {
 		t.Fatalf("remote input = %q, want only non-hotkey bytes", string(got))
 	}
-	if !strings.Contains(stdout.String(), "ssherpa session map") {
+	if !strings.Contains(stdout.String(), "SSHERPA SESSION MAP") {
 		t.Fatalf("stdout = %q, want local overlay", stdout.String())
 	}
 }
@@ -748,7 +748,7 @@ func TestRunSupervisedCustomOverlayKeyOpensOverlayAndFreesDefault(t *testing.T) 
 	if string(got) != "a"+string(OverlayHotkey)+"b" {
 		t.Fatalf("remote input = %q, want default hotkey to pass through", string(got))
 	}
-	if !strings.Contains(stdout.String(), "ssherpa session map") {
+	if !strings.Contains(stdout.String(), "SSHERPA SESSION MAP") {
 		t.Fatalf("stdout = %q, want local overlay", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "Ctrl-]/q/Esc close") {
@@ -883,12 +883,15 @@ func TestRunSupervisedRecordingStartsAndPausesFromOverlay(t *testing.T) {
 	}
 	defer userPTY.Close()
 	defer userTTY.Close()
-	stdout := newNotifyingBuffer("PRE")
+	// Markers are deliberately collision-proof tokens (not bare "ON"/"OFF"),
+	// so they cannot be matched prematurely by any UI text written to stdout
+	// — e.g. an uppercase "SESSION" in the overlay title contains "ON".
+	stdout := newNotifyingBuffer("PRE_MK")
 
 	done := make(chan int, 1)
 	go func() {
 		done <- RunSupervised(
-			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; printf PRE; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf ON; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf OFF; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf RESUMED`}},
+			sshcmd.Command{Argv: []string{"sh", "-c", `stty raw -echo 2>/dev/null; printf PRE_MK; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf ON_MK; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf OFF_MK; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf RESUMED_MK`}},
 			Metadata{TargetAlias: "prod"},
 			Options{
 				StateDir: stateDir,
@@ -901,7 +904,7 @@ func TestRunSupervisedRecordingStartsAndPausesFromOverlay(t *testing.T) {
 		)
 	}()
 
-	waitForBufferContains(t, stdout, "PRE", 3*time.Second, func() string { return stderr.String() })
+	waitForBufferContains(t, stdout, "PRE_MK", 3*time.Second, func() string { return stderr.String() })
 	if _, err := userPTY.Write([]byte{OverlayHotkey, 'T'}); err != nil {
 		t.Fatalf("write start recording keys: %v", err)
 	}
@@ -909,7 +912,7 @@ func TestRunSupervisedRecordingStartsAndPausesFromOverlay(t *testing.T) {
 	if _, err := userPTY.Write([]byte{'q', 'a'}); err != nil {
 		t.Fatalf("write first remote byte: %v", err)
 	}
-	waitForBufferContains(t, stdout, "ON", 3*time.Second, func() string { return stderr.String() })
+	waitForBufferContains(t, stdout, "ON_MK", 3*time.Second, func() string { return stderr.String() })
 
 	if _, err := userPTY.Write([]byte{OverlayHotkey, 'T'}); err != nil {
 		t.Fatalf("write pause recording keys: %v", err)
@@ -918,7 +921,7 @@ func TestRunSupervisedRecordingStartsAndPausesFromOverlay(t *testing.T) {
 	if _, err := userPTY.Write([]byte{'q', 'b'}); err != nil {
 		t.Fatalf("write paused remote byte: %v", err)
 	}
-	waitForBufferContains(t, stdout, "OFF", 3*time.Second, func() string { return stderr.String() })
+	waitForBufferContains(t, stdout, "OFF_MK", 3*time.Second, func() string { return stderr.String() })
 
 	if _, err := userPTY.Write([]byte{OverlayHotkey, 'T'}); err != nil {
 		t.Fatalf("write resume recording keys: %v", err)
@@ -954,13 +957,13 @@ func TestRunSupervisedRecordingStartsAndPausesFromOverlay(t *testing.T) {
 		t.Fatalf("read transcript: %v", err)
 	}
 	output := transcriptOutput(recording)
-	if strings.Contains(output, "PRE") {
+	if strings.Contains(output, "PRE_MK") {
 		t.Fatalf("transcript output = %q, want pre-start output omitted", output)
 	}
-	if strings.Contains(output, "OFF") {
+	if strings.Contains(output, "OFF_MK") {
 		t.Fatalf("transcript output = %q, want paused output omitted", output)
 	}
-	if !strings.Contains(output, "ON") || !strings.Contains(output, "RESUMED") {
+	if !strings.Contains(output, "ON_MK") || !strings.Contains(output, "RESUMED_MK") {
 		t.Fatalf("transcript output = %q, want active output ON and RESUMED", output)
 	}
 }
