@@ -38,6 +38,8 @@ Available Commands:
   authkeys   Manage local authorized_keys or seed keys to SSH aliases
   theme      Build and save the terminal UI color schema
   session    Inspect supervised session records and transcripts
+  export     Export SSH aliases and saved presets to a JSON bundle
+  import     Import SSH aliases and saved presets from a JSON bundle
   list       List SSH aliases from OpenSSH config
   show       Show one SSH alias from OpenSSH config
   version    Print build version information
@@ -97,19 +99,28 @@ Ctrl-G (rebindable with --composer-key) opens the local input composer.
 
 const addUsage = `Usage:
   ssherpa add --alias NAME --host HOST [--user USER] [--port PORT]
-              [--identity PATH] [--identities-only]
+              [--identity PATH] [--identities-only] [--force-password]
               [--config PATH] [--dry-run] [--yes]
 
 Add or update an SSH alias with previewable, backed-up config writes.
 Run "ssherpa add" without flags for the interactive form.
 
+--force-password writes PubkeyAuthentication no and PreferredAuthentications
+keyboard-interactive,password so the alias logs in with a password. It cannot
+be combined with --identity or --identities-only, and the server must permit
+password or keyboard-interactive authentication.
+
 Examples:
   ssherpa add --alias NAME --host HOST [--user USER] [--port PORT] [--yes]
+  ssherpa add --alias NAME --host HOST --force-password --yes
   ssherpa add --alias NAME --host HOST --dry-run
 `
 
 const editUsage = `Usage:
-  ssherpa edit set ALIAS [--host HOST] [--user USER] [--port PORT] [--yes]
+  ssherpa edit set ALIAS [--host HOST] [--user USER] [--port PORT]
+                         [--identity PATH | --clear-identity]
+                         [--identities-only | --no-identities-only]
+                         [--force-password | --no-force-password] [--yes]
   ssherpa edit delete ALIAS [--all-sources] [--state-dir PATH] [--yes]
   ssherpa edit delete-all [--state-dir PATH] --dry-run
   ssherpa edit delete-all --confirm "delete N aliases"
@@ -301,6 +312,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runTheme(args[1:], stdout, stderr)
 	case "session":
 		return runSession(args[1:], stdout, stderr, build)
+	case "export":
+		return runExport(args[1:], stdout, stderr)
+	case "import":
+		return runImport(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		if len(args) > 1 {
 			fmt.Fprintf(stderr, "ssherpa: version does not accept arguments: %s\n", strings.Join(args[1:], " "))
@@ -483,6 +498,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 			return code
 		case ui.ItemSessions:
 			code, returnHome := runSessionToolsPicker(flags, stdout, stderr, build)
+			if returnHome && code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
+		case ui.ItemPorting:
+			code, returnHome := runPortingPicker(flags, stdout, stderr, build)
 			if returnHome && code == 0 && flags.Select == "" {
 				continue
 			}
@@ -1786,6 +1807,10 @@ func helpTopicUsage(name string) (string, bool) {
 		return themeUsage, true
 	case "session":
 		return sessionUsage, true
+	case "export":
+		return exportUsage, true
+	case "import":
+		return importUsage, true
 	case "version":
 		return versionUsage, true
 	case "help":

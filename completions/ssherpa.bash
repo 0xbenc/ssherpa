@@ -5,7 +5,7 @@ _ssherpa()
     local cur prev words cword
     _init_completion || return
 
-    local commands="add edit jump proxy forward send receive recv check incoming authkeys theme session list show version help"
+    local commands="add edit jump proxy forward send receive recv check incoming authkeys theme session export import list show version help"
     local connect_flags="--json --all --filter --user --config --print --exec --select --ssh-binary --supervise --direct --state-dir --latency-warn --latency-disconnect --composer-key --no-composer --overlay-key --no-record --no-muxer-guard --record-max-bytes --no-kitty --no-color --theme-file --help"
 
     if [[ $cword -eq 1 ]]; then
@@ -15,13 +15,13 @@ _ssherpa()
 
     case "${words[1]}" in
         add)
-            COMPREPLY=( $(compgen -W "--alias --host --user --port --identity --identities-only --config --dry-run --yes" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--alias --host --user --port --identity --identities-only --force-password --config --dry-run --yes" -- "$cur") )
             return
             ;;
         edit)
             case "${words[2]}" in
                 set)
-                    COMPREPLY=( $(compgen -W "--host --user --clear-user --port --clear-port --identity --clear-identity --identities-only --no-identities-only --config --dry-run --yes" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--host --user --clear-user --port --clear-port --identity --clear-identity --identities-only --no-identities-only --force-password --no-force-password --config --dry-run --yes" -- "$cur") )
                     return
                     ;;
                 delete|remove)
@@ -221,6 +221,14 @@ _ssherpa()
                     return
                     ;;
             esac
+            ;;
+        export)
+            COMPREPLY=( $(compgen -W "--output --include --alias --forward --proxy --all --config --state-dir --json" -- "$cur") )
+            return
+            ;;
+        import)
+            COMPREPLY=( $(compgen -W "--input --include --alias --forward --proxy --force --config --state-dir --json" -- "$cur") )
+            return
             ;;
         list)
             COMPREPLY=( $(compgen -W "--json --all --filter --user --config" -- "$cur") )

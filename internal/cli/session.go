@@ -1217,36 +1217,20 @@ func runTranscriptBundleExportTUI(stateDir string, record state.SessionRecord, s
 }
 
 func runBundleImportTUI(flags connectFlags, stdout io.Writer, stderr io.Writer, build BuildInfo) (int, bool) {
-	path, ok, err := ui.PromptText(context.Background(), ui.TextPromptOptions{
-		Input:       os.Stdin,
-		Output:      stderr,
-		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
-		NoColor:     flags.NoColor,
-		ThemeName:   flags.ThemeName,
-		ThemeFile:   flags.ThemeFile,
-		Title:       "Import transcript bundle",
-		Label:       "bundle",
-		Validate: func(value string) error {
-			value = strings.TrimSpace(value)
-			if value == "" {
-				return fmt.Errorf("bundle path is required")
-			}
-			info, err := os.Stat(value)
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				return fmt.Errorf("path is a directory")
-			}
-			return nil
-		},
-	})
+	start := importBrowseStartDir()
+	path, ok, err := pickLocalFileWith(stderr, connectFilePickerOptions(flags), start, "SSHERPA IMPORT TRANSCRIPT", "local-file", "LOCAL", nil, 0)
 	if err != nil {
-		fmt.Fprintf(stderr, "ssherpa: import path prompt failed: %v\n", err)
+		fmt.Fprintf(stderr, "ssherpa: import file browser failed: %v\n", err)
 		return 1, false
 	}
 	if !ok {
 		return 0, true
+	}
+	// The browser only returns files, but guard defensively in case a caller
+	// hands back a directory token.
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		fmt.Fprintln(stderr, "ssherpa: selected path is a directory")
+		return 1, false
 	}
 	stateDir, err := state.ResolveDir(flags.StateDir)
 	if err != nil {

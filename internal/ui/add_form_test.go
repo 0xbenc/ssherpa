@@ -152,6 +152,87 @@ func TestAddAliasAuthModeCanMoveFromOnlyToNormal(t *testing.T) {
 	}
 }
 
+func TestAddAliasFormCanChooseForcePassword(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial:       AddAliasResult{HostName: "pwbox.example.com", Alias: "pwbox"},
+		IdentityFiles: []string{"~/.ssh/id_ed25519"},
+	}, termstyle.Theme{})
+	m.step = addStepIdentity
+
+	// Choices: (none), ~/.ssh/id_ed25519, Custom, Force password -> 3 downs.
+	m = updateAddAlias(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyDown, ""), keyPress(tea.KeyDown, ""), keyPress(tea.KeyEnter, ""))
+
+	if !m.forcePassword {
+		t.Fatalf("forcePassword = false, want true")
+	}
+	if m.idBuf != "" || m.idsOnly {
+		t.Fatalf("force-password should clear identity state: idBuf=%q idsOnly=%v", m.idBuf, m.idsOnly)
+	}
+	if m.step != addStepReview {
+		t.Fatalf("step = %d, want review", m.step)
+	}
+}
+
+func TestAddAliasFormForcePasswordBackReturnsToAuthSelector(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial:       AddAliasResult{HostName: "pwbox.example.com", Alias: "pwbox", ForcePassword: true},
+		IdentityFiles: []string{"~/.ssh/id_ed25519"},
+	}, termstyle.Theme{})
+	m.step = addStepReview
+
+	m = updateAddAlias(m, keyPressShiftTab())
+
+	if m.step != addStepIdentity {
+		t.Fatalf("step = %d, want identity selector", m.step)
+	}
+}
+
+func TestAddAliasFormForcePasswordReviewShowsDirectives(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial: AddAliasResult{HostName: "pwbox.example.com", Alias: "pwbox", ForcePassword: true},
+	}, termstyle.TerminalTheme().WithNoColor(true))
+	m.step = addStepReview
+
+	text := m.View().Content
+	for _, want := range []string{"PubkeyAuthentication", "no", "PreferredAuthentications", "keyboard-interactive,password"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("review view missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "IdentityFile") {
+		t.Fatalf("force-password review should not show IdentityFile:\n%s", text)
+	}
+}
+
+func TestAddAliasFormForcePasswordResultClearsIdentity(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial:       AddAliasResult{HostName: "pwbox.example.com", Alias: "pwbox"},
+		IdentityFiles: []string{"~/.ssh/id_ed25519"},
+	}, termstyle.Theme{})
+	m.step = addStepIdentity
+
+	m = updateAddAlias(m, keyPress(tea.KeyDown, ""), keyPress(tea.KeyDown, ""), keyPress(tea.KeyDown, ""), keyPress(tea.KeyEnter, ""))
+	m = updateAddAlias(m, keyPress(tea.KeyEnter, "")) // confirm review
+
+	if !m.result.ForcePassword {
+		t.Fatalf("result.ForcePassword = false, want true")
+	}
+	if m.result.IdentityFile != "" || m.result.IdentitiesOnly {
+		t.Fatalf("result leaked identity fields: %#v", m.result)
+	}
+}
+
+func TestAddAliasFormInitialForcePasswordSelectsRow(t *testing.T) {
+	m := newAddAliasModel(AddAliasOptions{
+		Initial:       AddAliasResult{HostName: "pwbox.example.com", Alias: "pwbox", ForcePassword: true},
+		IdentityFiles: []string{"~/.ssh/id_ed25519"},
+	}, termstyle.Theme{})
+
+	if got := m.idChoices[m.idCursorRow]; got != addIdentityForcePassword {
+		t.Fatalf("cursor row choice = %q, want force-password sentinel", got)
+	}
+}
+
 func TestAddAliasFormPastesIntoActiveTextField(t *testing.T) {
 	m := newAddAliasModel(AddAliasOptions{}, termstyle.Theme{})
 

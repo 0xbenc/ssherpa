@@ -1148,6 +1148,14 @@ func receiveTransferSteps() []string {
 }
 
 func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
+	return pickLocalFileWith(stderr, opts, start, "SSHERPA SEND SOURCE", "local-file", "LOCAL", sendTransferSteps(), 1)
+}
+
+// pickLocalFileWith drives the shared file browser to pick one local file,
+// looping on directory navigation. The title/mode/steps let callers reuse it
+// outside the send-transfer flow (e.g. importing a config or transcript
+// bundle) without duplicating the navigation loop.
+func pickLocalFileWith(stderr io.Writer, opts filePickerOptions, start string, title string, mode string, locationLabel string, steps []string, currentStep int) (string, bool, error) {
 	cwd, err := expandLocalPath(start)
 	if err != nil {
 		return "", false, err
@@ -1165,7 +1173,7 @@ func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (stri
 		if err != nil {
 			return "", false, err
 		}
-		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND SOURCE", "local-file", "LOCAL", cwd, sendTransferSteps(), 1)
+		browserOpts := transferBrowserOptions(stderr, opts, title, mode, locationLabel, cwd, steps, currentStep)
 		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
 		if err != nil || !ok {
 			return "", ok, err

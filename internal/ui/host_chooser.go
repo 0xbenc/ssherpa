@@ -325,6 +325,8 @@ func (m hostChooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case (key == " " || key == "space") && m.multiSelect:
 			m.toggleCurrent()
+		case key == "ctrl+a" && m.multiSelect:
+			m.toggleAll()
 		case key == "backspace":
 			if m.query != "" {
 				m.query = m.query[:len(m.query)-1]
@@ -665,6 +667,35 @@ func (m *hostChooserModel) toggleCurrent() {
 		return
 	}
 	m.checked[item.Token] = true
+}
+
+// toggleAll checks every selectable item when any is unchecked, and clears
+// the selection once everything is already checked. Bound to ctrl+a in
+// multi-select mode so "select all" is one keystroke.
+func (m *hostChooserModel) toggleAll() {
+	if m.checked == nil {
+		m.checked = map[string]bool{}
+	}
+	allChecked := true
+	for _, item := range m.items {
+		if item.Token == "" {
+			continue
+		}
+		if !m.checked[item.Token] {
+			allChecked = false
+			break
+		}
+	}
+	if allChecked {
+		m.checked = map[string]bool{}
+		return
+	}
+	for _, item := range m.items {
+		if item.Token == "" {
+			continue
+		}
+		m.checked[item.Token] = true
+	}
 }
 
 func (m hostChooserModel) checkedTokens() []string {

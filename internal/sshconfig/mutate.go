@@ -23,6 +23,12 @@ type AliasSpec struct {
 	// Host block whose ProxyJump captures the jump-hop choice.
 	// Existing alias specs leave this empty and behave as before.
 	ProxyJump string
+	// ForcePassword writes PubkeyAuthentication no and
+	// PreferredAuthentications keyboard-interactive,password so the alias
+	// logs in with a password instead of a key. It is mutually exclusive
+	// with IdentityFile/IdentitiesOnly (ValidateAliasSpec enforces this):
+	// forcing password auth and pinning an identity contradict each other.
+	ForcePassword bool
 }
 
 type DeleteOptions struct {
@@ -108,6 +114,84 @@ func PlanAddOrUpdate(path string, spec AliasSpec) (MutationPlan, error) {
 				return MutationPlan{}, fmt.Errorf("alias %q is in a multi-pattern Host stanza with wildcard or negated patterns at %s:%d; edit that stanza manually", spec.Alias, path, match.block.SourceLine)
 			}
 			doc.splitAliasBlock(match.block, match.index, spec)
+		}
+	}
+
+	newData := doc.Render()
+	if err := validateRenderedDocument(path, newData); err != nil {
+		return MutationPlan{}, err
+	}
+
+	return MutationPlan{
+		Path:    path,
+		Action:  action,
+		Alias:   spec.Alias,
+		Aliases: []string{spec.Alias},
+		OldData: append([]byte(nil), doc.data...),
+		NewData: newData,
+		Changed: !bytes.Equal(doc.data, newData),
+		Line:    line,
+	}, nil
+}
+
+// PlanRenameAndUpdate updates the stanza currently named oldAlias, applying
+// spec's managed fields and — when spec.Alias differs from oldAlias — renaming
+// the Host pattern in place. Unmanaged options and comments are preserved.
+// When the name is unchanged it behaves exactly like the update branch of
+// PlanAddOrUpdate. Renaming to a name that already exists in this file is an
+// error (the caller is responsible for cross-file conflict checks).
+func PlanRenameAndUpdate(path string, oldAlias string, spec AliasSpec) (MutationPlan, error) {
+	path = filepath.Clean(path)
+	spec = normalizeAliasSpec(spec)
+	if err := ValidateAliasSpec(spec, false); err != nil {
+		return MutationPlan{}, err
+	}
+	oldAlias = strings.TrimSpace(oldAlias)
+
+	doc, err := ReadDocument(path)
+	if err != nil {
+		return MutationPlan{}, err
+	}
+
+	matches := doc.findAliasBlocks(oldAlias)
+	if len(matches) == 0 {
+		return MutationPlan{}, fmt.Errorf("alias %q not found in %s", oldAlias, path)
+	}
+	if len(matches) > 1 {
+		return MutationPlan{}, fmt.Errorf("alias %q appears %d times in %s; resolve duplicates before editing", oldAlias, len(matches), path)
+	}
+	match := matches[0]
+
+	renaming := spec.Alias != match.block.Patterns[match.index]
+	if renaming {
+		// The new name must not already exist as a DIFFERENT stanza/pattern in
+		// this file. A case-only rename (e.g. prod -> Prod) folds back to the
+		// same occurrence we are editing, which is not a conflict.
+		for _, other := range doc.findAliasBlocks(spec.Alias) {
+			if other.block.SourceLine != match.block.SourceLine || other.index != match.index {
+				return MutationPlan{}, fmt.Errorf("alias %q already exists in %s; choose another name", spec.Alias, path)
+			}
+		}
+	}
+
+	action := "updated"
+	line := match.block.SourceLine
+	if len(match.block.Patterns) == 1 {
+		if renaming {
+			// Rewrite just the Host line; replaceBlockFields keeps it as-is.
+			doc.Lines[match.block.Start] = renderHostLine(doc.Lines[match.block.Start], []string{spec.Alias})
+			action = "renamed"
+		}
+		doc.replaceBlockFields(match.block, spec)
+	} else {
+		if containsPattern(match.block.Patterns) {
+			return MutationPlan{}, fmt.Errorf("alias %q is in a multi-pattern Host stanza with wildcard or negated patterns at %s:%d; edit that stanza manually", oldAlias, path, match.block.SourceLine)
+		}
+		// Split this alias out under its (possibly new) name; the remaining
+		// patterns keep the original stanza and its options.
+		doc.splitAliasBlock(match.block, match.index, spec)
+		if renaming {
+			action = "renamed"
 		}
 	}
 
@@ -270,6 +354,13 @@ func ValidateAliasSpec(spec AliasSpec, allowPattern bool) error {
 	}
 	if spec.HostName == "" {
 		return errors.New("HostName is required")
+	}
+	// Force-password auth disables key auth, so pinning an identity (or
+	// IdentitiesOnly, which only narrows which key is offered) is
+	// contradictory. Reject the combination centrally so every path —
+	// the add form, `edit set`, CLI flags, and bundle import — is covered.
+	if spec.ForcePassword && (spec.IdentityFile != "" || spec.IdentitiesOnly) {
+		return errors.New("ForcePassword cannot be combined with an identity file or IdentitiesOnly")
 	}
 	for name, value := range map[string]string{
 		"HostName":     spec.HostName,
@@ -579,7 +670,21 @@ func (d *Document) specFromBlock(block DocumentBlock, alias string) AliasSpec {
 			if spec.ProxyJump == "" {
 				spec.ProxyJump = value
 			}
+		case "pubkeyauthentication":
+			// PubkeyAuthentication no is the load-bearing signal that key
+			// auth is disabled; PreferredAuthentications is secondary, so
+			// keying on this alone is the robust detection. A re-render then
+			// normalizes the stanza to the canonical directive pair.
+			if strings.EqualFold(value, "no") {
+				spec.ForcePassword = true
+			}
 		}
+	}
+	if spec.ForcePassword {
+		// Force-password wins over any (inconsistent) identity directives in
+		// the same stanza, keeping the loaded spec valid for ValidateAliasSpec.
+		spec.IdentityFile = ""
+		spec.IdentitiesOnly = false
 	}
 	return spec
 }
@@ -706,11 +811,20 @@ func renderManagedLines(spec AliasSpec, indent string, omitIdentity bool) []stri
 	if spec.Port != "" {
 		lines = append(lines, indent+"Port "+renderValue(spec.Port))
 	}
-	if spec.IdentityFile != "" && !omitIdentity {
-		lines = append(lines, indent+"IdentityFile "+renderValue(spec.IdentityFile))
-	}
-	if spec.IdentitiesOnly {
-		lines = append(lines, indent+"IdentitiesOnly yes")
+	// ForcePassword and an identity are mutually exclusive (ValidateAliasSpec
+	// enforces this), so emit one auth block or the other. The directives are
+	// constants — keyboard-interactive,password has no whitespace/quote/comment
+	// characters, so they render verbatim without renderValue.
+	if spec.ForcePassword {
+		lines = append(lines, indent+"PubkeyAuthentication no")
+		lines = append(lines, indent+"PreferredAuthentications keyboard-interactive,password")
+	} else {
+		if spec.IdentityFile != "" && !omitIdentity {
+			lines = append(lines, indent+"IdentityFile "+renderValue(spec.IdentityFile))
+		}
+		if spec.IdentitiesOnly {
+			lines = append(lines, indent+"IdentitiesOnly yes")
+		}
 	}
 	if spec.ProxyJump != "" {
 		lines = append(lines, indent+"ProxyJump "+renderValue(spec.ProxyJump))
@@ -781,7 +895,15 @@ func renderValue(value string) string {
 
 func isManagedOption(keyword string) bool {
 	switch keyword {
-	case "hostname", "user", "port", "identityfile", "identitiesonly", "proxyjump":
+	case "hostname", "user", "port", "identityfile", "identitiesonly", "proxyjump",
+		// PubkeyAuthentication and PreferredAuthentications back the
+		// ForcePassword option. They MUST be managed: otherwise toggling
+		// force-password off on an edit would leave the directives behind
+		// (silently still forcing password), and toggling it on would append
+		// a duplicate next to a pre-existing line. The cost is that a
+		// hand-written value on these keywords is normalized when ssherpa
+		// next edits the alias.
+		"pubkeyauthentication", "preferredauthentications":
 		return true
 	default:
 		return false

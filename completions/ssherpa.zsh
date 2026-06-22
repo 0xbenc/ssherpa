@@ -16,6 +16,8 @@ _ssherpa() {
     'authkeys:Manage authorized_keys'
     'theme:Build and save the terminal UI color schema'
     'session:Inspect supervised session records'
+    'export:Export aliases and presets to a JSON bundle'
+    'import:Import aliases and presets from a JSON bundle'
     'list:List SSH aliases'
     'show:Show one SSH alias'
     'version:Print build version'
@@ -63,6 +65,7 @@ _ssherpa() {
             '--port[port]:port' \
             '--identity[identity file]:path:_files' \
             '--identities-only[set IdentitiesOnly yes]' \
+            '--force-password[force password login]' \
             '--config[read SSH config]:path:_files' \
             '--dry-run[preview without writing]' \
             '--yes[skip confirmation]'
@@ -80,6 +83,8 @@ _ssherpa() {
             '--clear-identity[clear identity]' \
             '--identities-only[set IdentitiesOnly yes]' \
             '--no-identities-only[unset IdentitiesOnly]' \
+            '--force-password[force password login]' \
+            '--no-force-password[unset force password login]' \
             '--all-sources[delete from all config sources]' \
             '--delete-patterns[allow deleting pattern hosts]' \
             '--confirm[type-to-confirm phrase]:phrase' \
@@ -308,6 +313,31 @@ _ssherpa() {
               '--dry-run[preview prune]'
           fi
           ;;
+        export)
+          _arguments \
+            '--output[write bundle here]:path:_files' \
+            '--include[categories]:list' \
+            '*--alias[export only this alias]:name' \
+            '*--forward[export only this saved forward]:name' \
+            '*--proxy[export only this saved proxy]:name' \
+            '--all[include pattern aliases]' \
+            '--config[read SSH config]:path:_files' \
+            '--state-dir[override state directory]:path:_files' \
+            '--json[emit JSON]'
+          ;;
+        import)
+          _arguments \
+            '1:bundle:_files' \
+            '--input[bundle file]:path:_files' \
+            '--include[categories]:list' \
+            '*--alias[import only this alias]:name' \
+            '*--forward[import only this saved forward]:name' \
+            '*--proxy[import only this saved proxy]:name' \
+            '--force[overwrite existing items]' \
+            '--config[read SSH config]:path:_files' \
+            '--state-dir[override state directory]:path:_files' \
+            '--json[emit JSON]'
+          ;;
         list)
           _arguments \
             '--json[emit JSON]' \
@@ -324,7 +354,7 @@ _ssherpa() {
           ;;
         help)
           _arguments \
-            '1:topic:(connect add edit jump proxy forward send receive recv check incoming authkeys theme session list show version help)'
+            '1:topic:(connect add edit jump proxy forward send receive recv check incoming authkeys theme session export import list show version help)'
           ;;
         *)
           _arguments '--help[show help]'

@@ -309,6 +309,189 @@ func TestPlanAddOrUpdateRendersProxyJump(t *testing.T) {
 	}
 }
 
+func TestPlanAddOrUpdateRendersForcePassword(t *testing.T) {
+	path := writeTempConfig(t, "")
+
+	plan, err := PlanAddOrUpdate(path, AliasSpec{
+		Alias:         "pwbox",
+		HostName:      "pwbox.example.com",
+		User:          "alice",
+		ForcePassword: true,
+	})
+	if err != nil {
+		t.Fatalf("PlanAddOrUpdate: %v", err)
+	}
+	got := string(plan.NewData)
+	for _, want := range []string{
+		"Host pwbox",
+		"HostName pwbox.example.com",
+		"User alice",
+		"PubkeyAuthentication no",
+		"PreferredAuthentications keyboard-interactive,password",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("planned config missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "IdentityFile") || strings.Contains(got, "IdentitiesOnly") {
+		t.Fatalf("force-password stanza should not write identity directives; got:\n%s", got)
+	}
+}
+
+func TestExistingAliasSpecDetectsForcePassword(t *testing.T) {
+	path := writeTempConfig(t, `Host pwbox
+  HostName pwbox.example.com
+  PubkeyAuthentication no
+  PreferredAuthentications keyboard-interactive,password
+`)
+
+	spec, ok, err := ExistingAliasSpec(path, "pwbox")
+	if err != nil || !ok {
+		t.Fatalf("ExistingAliasSpec ok=%v err=%v", ok, err)
+	}
+	if !spec.ForcePassword {
+		t.Fatalf("spec.ForcePassword = false, want true; spec=%#v", spec)
+	}
+	if spec.IdentityFile != "" || spec.IdentitiesOnly {
+		t.Fatalf("force-password spec leaked identity fields: %#v", spec)
+	}
+}
+
+func TestPlanAddOrUpdateTogglesForcePasswordOff(t *testing.T) {
+	path := writeTempConfig(t, `Host pwbox
+  HostName pwbox.example.com
+  PubkeyAuthentication no
+  PreferredAuthentications keyboard-interactive,password
+`)
+
+	// Switching to an identity must remove the managed password directives.
+	plan, err := PlanAddOrUpdate(path, AliasSpec{
+		Alias:        "pwbox",
+		HostName:     "pwbox.example.com",
+		IdentityFile: "~/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatalf("PlanAddOrUpdate: %v", err)
+	}
+	got := string(plan.NewData)
+	if strings.Contains(got, "PubkeyAuthentication") || strings.Contains(got, "PreferredAuthentications") {
+		t.Fatalf("toggle-off left password directives behind; got:\n%s", got)
+	}
+	if !strings.Contains(got, "IdentityFile ~/.ssh/id_ed25519") {
+		t.Fatalf("toggle-off did not write identity; got:\n%s", got)
+	}
+}
+
+func TestPlanAddOrUpdateNormalizesPartialForcePassword(t *testing.T) {
+	// A hand-written stanza with only PubkeyAuthentication no re-renders to
+	// the canonical directive pair when ssherpa next edits it.
+	path := writeTempConfig(t, `Host pwbox
+  HostName pwbox.example.com
+  PubkeyAuthentication no
+`)
+
+	spec, ok, err := ExistingAliasSpec(path, "pwbox")
+	if err != nil || !ok {
+		t.Fatalf("ExistingAliasSpec ok=%v err=%v", ok, err)
+	}
+	plan, err := PlanAddOrUpdate(path, spec)
+	if err != nil {
+		t.Fatalf("PlanAddOrUpdate: %v", err)
+	}
+	if !strings.Contains(string(plan.NewData), "PreferredAuthentications keyboard-interactive,password") {
+		t.Fatalf("partial stanza not normalized; got:\n%s", string(plan.NewData))
+	}
+}
+
+func TestPlanRenameAndUpdateRenamesAndPreservesUnmanagedLines(t *testing.T) {
+	path := writeTempConfig(t, `Host prod
+  HostName prod.example.com
+  User alice
+  # keep this comment
+  ForwardAgent yes
+`)
+
+	plan, err := PlanRenameAndUpdate(path, "prod", AliasSpec{
+		Alias:    "prod2",
+		HostName: "prod.example.com",
+		User:     "alice",
+	})
+	if err != nil {
+		t.Fatalf("PlanRenameAndUpdate: %v", err)
+	}
+	if plan.Action != "renamed" || !plan.Changed {
+		t.Fatalf("plan = %#v, want renamed+changed", plan)
+	}
+	got := string(plan.NewData)
+	if !strings.Contains(got, "Host prod2\n") {
+		t.Fatalf("new Host line missing; got:\n%s", got)
+	}
+	if strings.Contains(got, "Host prod\n") {
+		t.Fatalf("old alias name still present; got:\n%s", got)
+	}
+	for _, want := range []string{"# keep this comment", "ForwardAgent yes", "HostName prod.example.com", "User alice"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rename dropped %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestPlanRenameAndUpdateNoRenameUpdatesFields(t *testing.T) {
+	path := writeTempConfig(t, "Host prod\n  HostName old.example.com\n")
+
+	plan, err := PlanRenameAndUpdate(path, "prod", AliasSpec{
+		Alias:    "prod",
+		HostName: "new.example.com",
+	})
+	if err != nil {
+		t.Fatalf("PlanRenameAndUpdate: %v", err)
+	}
+	if plan.Action != "updated" {
+		t.Fatalf("plan.Action = %q, want updated", plan.Action)
+	}
+	got := string(plan.NewData)
+	if !strings.Contains(got, "Host prod\n") || !strings.Contains(got, "HostName new.example.com") {
+		t.Fatalf("update did not apply; got:\n%s", got)
+	}
+}
+
+func TestPlanRenameAndUpdateAllowsCaseOnlyRename(t *testing.T) {
+	path := writeTempConfig(t, "Host prod\n  HostName prod.example.com\n")
+
+	plan, err := PlanRenameAndUpdate(path, "prod", AliasSpec{Alias: "Prod", HostName: "prod.example.com"})
+	if err != nil {
+		t.Fatalf("case-only rename returned error: %v", err)
+	}
+	if !strings.Contains(string(plan.NewData), "Host Prod\n") {
+		t.Fatalf("case-only rename not applied; got:\n%s", string(plan.NewData))
+	}
+}
+
+func TestPlanRenameAndUpdateRejectsExistingName(t *testing.T) {
+	path := writeTempConfig(t, "Host prod\n  HostName prod.example.com\n\nHost web\n  HostName web.example.com\n")
+
+	_, err := PlanRenameAndUpdate(path, "prod", AliasSpec{Alias: "web", HostName: "prod.example.com"})
+	if err == nil {
+		t.Fatalf("PlanRenameAndUpdate to existing name = nil error, want conflict")
+	}
+}
+
+func TestPlanRenameAndUpdateSplitsMultiPatternStanza(t *testing.T) {
+	path := writeTempConfig(t, "Host prod web\n  HostName shared.example.com\n  ForwardAgent yes\n")
+
+	plan, err := PlanRenameAndUpdate(path, "prod", AliasSpec{Alias: "prod2", HostName: "shared.example.com"})
+	if err != nil {
+		t.Fatalf("PlanRenameAndUpdate: %v", err)
+	}
+	got := string(plan.NewData)
+	if !strings.Contains(got, "Host web") {
+		t.Fatalf("remaining pattern dropped; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Host prod2") {
+		t.Fatalf("renamed stanza missing; got:\n%s", got)
+	}
+}
+
 func TestValidateAliasSpec(t *testing.T) {
 	tests := []struct {
 		name string
@@ -320,6 +503,8 @@ func TestValidateAliasSpec(t *testing.T) {
 		{name: "dash alias", spec: AliasSpec{Alias: "-oProxyCommand=evil", HostName: "host"}},
 		{name: "missing host", spec: AliasSpec{Alias: "prod"}},
 		{name: "bad port", spec: AliasSpec{Alias: "prod", HostName: "host", Port: "70000"}},
+		{name: "force-password with identity", spec: AliasSpec{Alias: "prod", HostName: "host", ForcePassword: true, IdentityFile: "~/.ssh/id"}},
+		{name: "force-password with identities-only", spec: AliasSpec{Alias: "prod", HostName: "host", ForcePassword: true, IdentitiesOnly: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
