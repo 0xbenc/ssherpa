@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -398,6 +399,12 @@ func RunSupervised(command sshcmd.Command, metadata Metadata, opts Options) int 
 	terminalInput := false
 	if !opts.Detached {
 		terminalInput = stdin != nil && term.IsTerminal(stdin.Fd())
+		if terminalInput {
+			// One-shot, idle-cold hint printed before raw mode so it can never
+			// desync the supervised stream. Teaches Ctrl-^ on the first few
+			// top-level connects only.
+			maybePrintConnectHint(stderr, stateDir, env, record.Depth)
+		}
 		restore, err := makeRawIfTerminal(stdin)
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: put terminal in raw mode: %v\n", err)
@@ -1049,6 +1056,37 @@ func recoverSupervisorPanic(origin string, onPanic func(string, any)) {
 		panic(r)
 	}
 	onPanic(origin, r)
+}
+
+type connectHintState struct {
+	Shown int `json:"shown"`
+}
+
+const connectHintMaxShows = 3
+
+// maybePrintConnectHint teaches Ctrl-^ on the first few top-level interactive
+// connects. It is gated to depth-0 sessions with the hint not silenced, runs
+// before raw mode (so it can never desync the stream), and persists a tiny
+// seen-count. Any read/write error degrades to showing the hint — it never
+// blocks the connect.
+func maybePrintConnectHint(w io.Writer, stateDir string, env []string, depth int) {
+	if depth != 0 || sessionEnvValue(env, "SSHERPA_NO_CONNECT_HINT") != "" {
+		return
+	}
+	path := filepath.Join(stateDir, "connect_hint.json")
+	var st connectHintState
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &st) // parse error -> Shown stays 0 -> show
+	}
+	if st.Shown >= connectHintMaxShows {
+		return
+	}
+	fmt.Fprintln(w, "ssherpa: press Ctrl-^ in this session for the route map and escape rope")
+	fmt.Fprintln(w, "         (set SSHERPA_NO_CONNECT_HINT=1 to silence)")
+	st.Shown++
+	if data, err := json.Marshal(st); err == nil {
+		_ = os.WriteFile(path, data, 0o600) // best-effort; never blocks the connect
+	}
 }
 
 func makeRawIfTerminal(stdin *os.File) (func(), error) {
