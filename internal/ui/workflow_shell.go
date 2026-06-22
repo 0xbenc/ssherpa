@@ -142,5 +142,10 @@ func truncateStyled(value string, width int) string {
 	if termstyle.VisibleWidth(value) <= width {
 		return value
 	}
-	return termstyle.Truncate(termstyle.Strip(value), width)
+	// On overflow the styling is dropped anyway, so Sanitize (not just Strip)
+	// to additionally neutralize raw C0/C1/DEL — defense-in-depth at the
+	// trusted-chrome boundary an operator reads mid-incident. The fit path
+	// keeps the role styling; untrusted content is sanitized upstream
+	// (cleanField/sanitizeRemoteString) before it reaches the chrome.
+	return termstyle.Truncate(termstyle.Sanitize(value), width)
 }

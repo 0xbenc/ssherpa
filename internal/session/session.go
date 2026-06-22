@@ -1963,8 +1963,10 @@ func truncateOverlayLine(value string, width int) string {
 		return value
 	}
 	// Cell-accurate so a wide rune in a lineage label can never overflow the
-	// overlay box width over the live stream. Strip becomes Sanitize in S2.
-	return termstyle.Truncate(termstyle.Strip(value), width)
+	// overlay box width over the live stream. Sanitize (not Strip) on overflow
+	// to neutralize raw C0/C1/DEL at the trusted-chrome boundary; styling is
+	// already dropped here, and the fit path above preserves it.
+	return termstyle.Truncate(termstyle.Sanitize(value), width)
 }
 
 func forwardSignals(stdin *os.File, ptmx *os.File, proc *exec.Cmd, pullRope func(), onPanic func(string, any)) func() {
