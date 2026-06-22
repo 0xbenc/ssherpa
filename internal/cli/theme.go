@@ -16,9 +16,16 @@ import (
 
 const themeUsage = `Usage:
   ssherpa theme [--theme-file PATH] [--no-color]
+  ssherpa theme export PATH
+  ssherpa theme import PATH
 
 Open the interactive theme editor. The editor previews the picker and
 overlay palette live, then writes a theme config when you press s.
+
+  export PATH  Write the active theme to a portable .theme file that any
+               termtheme-based app (e.g. passage) can import.
+  import PATH  Replace the active theme with a .theme file (backs up the
+               previous one). Roles ssherpa does not paint are preserved.
 
 Theme Flags:
   --theme-file PATH  Edit this theme config path
@@ -32,6 +39,14 @@ type themeFlags struct {
 }
 
 func runTheme(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "export":
+			return runThemeExport(args[1:], stdout, stderr)
+		case "import":
+			return runThemeImport(args[1:], stdout, stderr)
+		}
+	}
 	if hasHelpFlag(args) {
 		fmt.Fprint(stdout, themeUsage)
 		return 0
@@ -123,6 +138,120 @@ func parseThemeFlags(args []string, stderr io.Writer) (themeFlags, bool) {
 		}
 	}
 	return flags, true
+}
+
+// runThemeExport writes the active theme to a portable .theme file that any
+// sibling app (passage, future TUIs) can import.
+func runThemeExport(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		fmt.Fprint(stdout, themeUsage)
+		return 0
+	}
+	flags, dest, ok := parseThemePortingArgs(args, stderr)
+	if !ok {
+		return 1
+	}
+	path, err := termstyle.ThemeConfigPath(flags.ThemeFile, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	cfg, _, err := loadThemeConfig(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	base, ok := termstyle.BuiltinTheme(cfg.BaseName)
+	if !ok {
+		base = termstyle.TerminalTheme()
+	}
+	if err := os.WriteFile(dest, termstyle.ExportTheme(cfg, base, "ssherpa", ""), 0o644); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: write %s: %v\n", dest, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[theme] exported %s\n", dest)
+	return 0
+}
+
+// runThemeImport loads a portable .theme file and writes it as the active theme
+// config (with an atomic backup of the previous one).
+func runThemeImport(args []string, stdout io.Writer, stderr io.Writer) int {
+	if hasHelpFlag(args) {
+		fmt.Fprint(stdout, themeUsage)
+		return 0
+	}
+	flags, src, ok := parseThemePortingArgs(args, stderr)
+	if !ok {
+		return 1
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: read %s: %v\n", src, err)
+		return 1
+	}
+	cfg, meta, err := termstyle.ImportTheme(data)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %s is not a valid theme: %v\n", src, err)
+		return 1
+	}
+	for _, w := range meta.Warnings {
+		fmt.Fprintf(stderr, "ssherpa: note: %s\n", w)
+	}
+	path, err := termstyle.ThemeConfigPath(flags.ThemeFile, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	writeResult, err := fsutil.AtomicWriteFile(path, formatThemeConfig(cfg), fsutil.WriteOptions{
+		Backup:       true,
+		BackupPrefix: "ssherpa-theme-backup",
+		Mode:         0o600,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: write theme config: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[theme] imported %s -> %s\n", src, writeResult.Path)
+	if writeResult.BackupPath != "" {
+		fmt.Fprintf(stdout, "[backup] %s\n", writeResult.BackupPath)
+	}
+	return 0
+}
+
+// parseThemePortingArgs parses the flags accepted by export/import plus exactly
+// one positional PATH.
+func parseThemePortingArgs(args []string, stderr io.Writer) (themeFlags, string, bool) {
+	var flags themeFlags
+	var path string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--theme-file":
+			value, ok := nextArg(args, &i, stderr, "--theme-file")
+			if !ok {
+				return flags, "", false
+			}
+			flags.ThemeFile = value
+		case strings.HasPrefix(arg, "--theme-file="):
+			flags.ThemeFile = strings.TrimPrefix(arg, "--theme-file=")
+		case arg == "--no-color":
+			flags.NoColor = true
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(stderr, "ssherpa: unknown theme flag %q\n", arg)
+			return flags, "", false
+		default:
+			if path != "" {
+				fmt.Fprintln(stderr, "ssherpa: theme export/import takes exactly one PATH")
+				return flags, "", false
+			}
+			path = arg
+		}
+	}
+	if path == "" {
+		fmt.Fprintln(stderr, "ssherpa: theme export/import needs a PATH")
+		return flags, "", false
+	}
+	return flags, path, true
 }
 
 func loadThemeConfig(path string) (termstyle.ThemeConfig, string, error) {

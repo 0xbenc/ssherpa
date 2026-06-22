@@ -167,7 +167,7 @@ _ssherpa()
             esac
             ;;
         theme)
-            COMPREPLY=( $(compgen -W "--theme-file --no-color" -- "$cur") )
+            COMPREPLY=( $(compgen -W "export import --theme-file --no-color" -- "$cur") )
             return
             ;;
         session)

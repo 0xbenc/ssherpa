@@ -3237,3 +3237,64 @@ func TestFormatThemeConfigTerminalImplicit(t *testing.T) {
 		t.Fatalf("terminal base should be implicit:\n%s", out)
 	}
 }
+
+// passageThemeFixture is a theme exported by passage: vivid base, all 16 roles
+// including selected_bar — a role ssherpa does not paint.
+const passageThemeFixture = `# termtheme v1
+# source = passage 0.6.0
+format = 1
+theme = vivid
+primary = 1;38;2;96;221;255
+selected_bar = 48;2;45;55;72
+danger = 1;38;2;255;151;112
+`
+
+// TestThemeImportFromPassagePreservesSelectedBar is the headline cross-app
+// contract at the CLI boundary: ssherpa imports a passage-authored .theme,
+// keeps the base, and preserves selected_bar (a role it never renders) so a
+// later re-export is lossless.
+func TestThemeImportFromPassagePreservesSelectedBar(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "passage.theme")
+	if err := os.WriteFile(src, []byte(passageThemeFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	dest := filepath.Join(dir, "theme.conf")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"theme", "import", "--theme-file", dest, src}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("import = %d; stderr=%s", code, stderr.String())
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	out := string(got)
+	for _, want := range []string{"theme = vivid", "primary = 1;38;2;96;221;255", "selected_bar = 48;2;45;55;72"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("imported config missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestThemeExportImportRoundTrip drives export then import through ssherpa's CLI.
+func TestThemeExportImportRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.conf")
+	if err := os.WriteFile(src, []byte("theme = vivid\nprimary = red\n"), 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	exported := filepath.Join(dir, "out.theme")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"theme", "export", "--theme-file", src, exported}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("export = %d; stderr=%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(exported)
+	if err != nil {
+		t.Fatalf("read exported: %v", err)
+	}
+	for _, want := range []string{"# termtheme v1", "theme = vivid", "primary = red"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("export missing %q:\n%s", want, data)
+		}
+	}
+}

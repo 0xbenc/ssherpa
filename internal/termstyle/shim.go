@@ -52,3 +52,22 @@ var (
 	Truncate         = termtheme.Truncate
 	TruncateWith     = termtheme.TruncateWith
 )
+
+// ThemeMeta is the header/version info recovered from a portable .theme file.
+type ThemeMeta = termtheme.Meta
+
+// ExportTheme serializes the resolved theme to the portable .theme format. It
+// dumps ssherpa's 15 rendered roles plus any role the config carries that
+// ssherpa does not paint (e.g. selected_bar from a passage theme), so a
+// round-trip is lossless. ssherpa Theme and termtheme.Theme share an identical
+// layout (Role is a type alias), so the conversion is free.
+func ExportTheme(cfg ThemeConfig, base Theme, app, version string) []byte {
+	return termtheme.Marshal(cfg, termtheme.Theme(base), termtheme.MarshalOptions{
+		App:        app,
+		AppVersion: version,
+		Roles:      Roles(),
+	})
+}
+
+// ImportTheme parses a portable .theme file into a config plus its metadata.
+var ImportTheme = termtheme.Unmarshal
