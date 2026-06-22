@@ -6,58 +6,27 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
-type Role string
-
-const (
-	RoleTitle      Role = "title"
-	RolePrimary    Role = "primary"
-	RoleSecondary  Role = "secondary"
-	RoleAccent     Role = "accent"
-	RoleMuted      Role = "muted"
-	RoleSubtle     Role = "subtle"
-	RoleForeground Role = "foreground"
-	RoleSelected   Role = "selected"
-	RoleBorder     Role = "border"
-	RoleSuccess    Role = "success"
-	RoleWarning    Role = "warning"
-	RoleDanger     Role = "danger"
-	RoleInfo       Role = "info"
-	RoleSearch     Role = "search"
-	RolePill       Role = "pill"
-	// RoleSelectedBar is recognized for cross-app theme interchange — a sibling
-	// app (passage) paints a selection bar — but ssherpa does not render it, so
-	// it is deliberately absent from Roles(). A parsed theme carries it through
-	// losslessly so a round-trip never drops it.
-	RoleSelectedBar Role = "selected_bar"
-)
-
+// Theme is ssherpa's concrete palette: a role->SGR-code map plus a NoColor
+// switch. It is in-memory render state (never serialized — ThemeConfig is), so
+// it stays local along with the builtin palettes; the interchange surface lives
+// in termtheme (see shim.go).
 type Theme struct {
 	Name    string
 	NoColor bool
 	Codes   map[Role]string
 }
 
+// ThemeOptions selects and loads a theme. Name is deprecated and ignored; the
+// base palette comes from the config's `theme =` line.
 type ThemeOptions struct {
 	Name            string
 	File            string
 	NoColor         bool
 	Env             []string
 	SkipDefaultFile bool
-}
-
-type ThemeConfig struct {
-	BaseName string
-	Codes    map[Role]string
-	Specs    map[Role]string
-	// Warnings collects non-fatal parse diagnostics, such as role keys
-	// this binary does not know about. Unknown keys are tolerated so a
-	// theme.conf written by a newer ssherpa never hard-fails an older
-	// binary; callers decide where to surface the warnings.
-	Warnings []string
 }
 
 func TerminalTheme() Theme {
@@ -106,6 +75,9 @@ func VividTheme() Theme {
 	}
 }
 
+// Roles is ssherpa's rendered role set — 15 roles. RoleSelectedBar is a
+// recognized universal role (so a passage theme round-trips) but is absent here
+// because ssherpa paints no selection bar.
 func Roles() []Role {
 	return []Role{
 		RoleTitle,
@@ -158,11 +130,10 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 	}
 
 	// Honor the config's base theme (`theme = vivid`) so the truecolor
-	// VividTheme is actually reachable — previously this hardcoded
-	// TerminalTheme, making BaseName dead. Bubble Tea v2's renderer
-	// downsamples the resulting truecolor SGR to the terminal's real color
-	// profile, so 256/16/mono terminals stay correct. The CLI Name stays
-	// deprecated/ignored (see TestResolveThemeIgnoresDeprecatedThemeName).
+	// VividTheme is actually reachable. Bubble Tea v2's renderer downsamples the
+	// resulting truecolor SGR to the terminal's real color profile, so
+	// 256/16/mono terminals stay correct. The CLI Name stays deprecated/ignored
+	// (see TestResolveThemeIgnoresDeprecatedThemeName).
 	base := TerminalTheme()
 	if cfg.BaseName != "" {
 		if b, ok := BuiltinTheme(cfg.BaseName); ok {
@@ -180,93 +151,6 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 		theme.NoColor = true
 	}
 	return theme.Normalized(), nil
-}
-
-func ParseThemeConfig(data []byte) (ThemeConfig, error) {
-	cfg := ThemeConfig{
-		Codes: make(map[Role]string),
-		Specs: make(map[Role]string),
-	}
-	lines := strings.Split(string(data), "\n")
-	for index, raw := range lines {
-		line := stripThemeComment(raw)
-		if line == "" {
-			continue
-		}
-		key, value, ok := cutThemeAssignment(line)
-		if !ok {
-			return ThemeConfig{}, fmt.Errorf("line %d: expected key=value", index+1)
-		}
-		key = normalizeThemeKey(key)
-		value = strings.TrimSpace(value)
-		switch key {
-		case "theme", "base":
-			if value == "" {
-				return ThemeConfig{}, fmt.Errorf("line %d: theme cannot be empty", index+1)
-			}
-			cfg.BaseName = value
-		default:
-			role, ok := roleForKey(key)
-			if !ok {
-				cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("line %d: unknown theme role %q ignored", index+1, key))
-				continue
-			}
-			code, err := ParseStyleSpec(value)
-			if err != nil {
-				return ThemeConfig{}, fmt.Errorf("line %d: %w", index+1, err)
-			}
-			cfg.Codes[role] = code
-			cfg.Specs[role] = value
-		}
-	}
-	return cfg, nil
-}
-
-func ParseStyleSpec(value string) (string, error) {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" || value == "none" || value == "plain" {
-		return "", nil
-	}
-	if rawSGR(value) {
-		return normalizeSGR(value), nil
-	}
-
-	tokens := strings.FieldsFunc(value, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == ',' || r == '+'
-	})
-	var parts []string
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		if rawSGR(token) {
-			parts = append(parts, strings.Split(normalizeSGR(token), ";")...)
-			continue
-		}
-		if code, ok := styleTokenCodes[token]; ok {
-			parts = append(parts, code)
-			continue
-		}
-		if code, ok := colorTokenCode(token, false); ok {
-			parts = append(parts, code)
-			continue
-		}
-		if strings.HasPrefix(token, "fg-") {
-			if code, ok := colorTokenCode(strings.TrimPrefix(token, "fg-"), false); ok {
-				parts = append(parts, code)
-				continue
-			}
-		}
-		if strings.HasPrefix(token, "bg-") {
-			if code, ok := colorTokenCode(strings.TrimPrefix(token, "bg-"), true); ok {
-				parts = append(parts, code)
-				continue
-			}
-		}
-		return "", fmt.Errorf("unknown style token %q", token)
-	}
-	return strings.Join(parts, ";"), nil
 }
 
 func (t Theme) IsZero() bool {
@@ -377,146 +261,4 @@ func envTruthy(value string) bool {
 	default:
 		return true
 	}
-}
-
-func stripThemeComment(line string) string {
-	if index := strings.IndexByte(line, '#'); index >= 0 {
-		line = line[:index]
-	}
-	return strings.TrimSpace(line)
-}
-
-func cutThemeAssignment(line string) (string, string, bool) {
-	if key, value, ok := strings.Cut(line, "="); ok {
-		return strings.TrimSpace(key), strings.TrimSpace(value), true
-	}
-	if key, value, ok := strings.Cut(line, ":"); ok {
-		return strings.TrimSpace(key), strings.TrimSpace(value), true
-	}
-	return "", "", false
-}
-
-func normalizeThemeKey(key string) string {
-	key = strings.ToLower(strings.TrimSpace(key))
-	key = strings.ReplaceAll(key, "-", "_")
-	return key
-}
-
-func roleForKey(key string) (Role, bool) {
-	role, ok := roleAliases[key]
-	return role, ok
-}
-
-func rawSGR(value string) bool {
-	if value == "" {
-		return false
-	}
-	parts := strings.Split(value, ";")
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 || n > 255 {
-			return false
-		}
-	}
-	return true
-}
-
-func normalizeSGR(value string) string {
-	parts := strings.Split(value, ";")
-	for i, part := range parts {
-		parts[i] = strings.TrimSpace(part)
-	}
-	return strings.Join(parts, ";")
-}
-
-func colorTokenCode(token string, background bool) (string, bool) {
-	token = strings.ReplaceAll(token, "_", "-")
-	code, ok := colorTokenCodes[token]
-	if !ok {
-		return "", false
-	}
-	if !background {
-		return code, true
-	}
-	n, err := strconv.Atoi(code)
-	if err != nil {
-		return "", false
-	}
-	switch {
-	case n == 39:
-		return "49", true
-	case n >= 30 && n <= 37:
-		return strconv.Itoa(n + 10), true
-	case n >= 90 && n <= 97:
-		return strconv.Itoa(n + 10), true
-	default:
-		return "", false
-	}
-}
-
-var roleAliases = map[string]Role{
-	"title":         RoleTitle,
-	"primary":       RolePrimary,
-	"secondary":     RoleSecondary,
-	"accent":        RoleAccent,
-	"muted":         RoleMuted,
-	"subtle":        RoleSubtle,
-	"dim":           RoleSubtle,
-	"foreground":    RoleForeground,
-	"fg":            RoleForeground,
-	"text":          RoleForeground,
-	"selected":      RoleSelected,
-	"selection":     RoleSelected,
-	"selected_bar":  RoleSelectedBar,
-	"selection_bar": RoleSelectedBar,
-	"bar":           RoleSelectedBar,
-	"border":        RoleBorder,
-	"rule":          RoleBorder,
-	"success":       RoleSuccess,
-	"warning":       RoleWarning,
-	"danger":        RoleDanger,
-	"error":         RoleDanger,
-	"info":          RoleInfo,
-	"search":        RoleSearch,
-	"pill":          RolePill,
-}
-
-var styleTokenCodes = map[string]string{
-	"reset":     "0",
-	"bold":      "1",
-	"faint":     "2",
-	"dim":       "2",
-	"italic":    "3",
-	"underline": "4",
-	"reverse":   "7",
-	"inverse":   "7",
-}
-
-var colorTokenCodes = map[string]string{
-	"default":        "39",
-	"foreground":     "39",
-	"fg":             "39",
-	"black":          "30",
-	"red":            "31",
-	"green":          "32",
-	"yellow":         "33",
-	"blue":           "34",
-	"magenta":        "35",
-	"purple":         "35",
-	"cyan":           "36",
-	"white":          "37",
-	"gray":           "90",
-	"grey":           "90",
-	"bright-black":   "90",
-	"bright-red":     "91",
-	"bright-green":   "92",
-	"bright-yellow":  "93",
-	"bright-blue":    "94",
-	"bright-magenta": "95",
-	"bright-purple":  "95",
-	"bright-cyan":    "96",
-	"bright-white":   "97",
 }
