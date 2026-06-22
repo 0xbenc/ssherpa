@@ -306,6 +306,7 @@ type pickerModel struct {
 	canceled     bool
 	refresh      bool
 	refreshable  bool
+	help         bool // the ? key reference overlay is open (home page only)
 	noAltScreen  bool
 	theme        termstyle.Theme
 	title        string
@@ -372,6 +373,14 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		key := msg.String()
 		keystroke := msg.Key().Keystroke()
+		if m.help {
+			if key == "ctrl+c" || key == "Q" {
+				m.canceled = true
+				return m, tea.Quit
+			}
+			m.help = false
+			return m, nil
+		}
 		// Home page only: "R" reloads the inventory. Elsewhere it falls
 		// through to the filter like any other letter.
 		if m.refreshable && key == "R" {
@@ -403,6 +412,11 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.moveCursor(-1)
 			case key == "down" || key == "ctrl+n":
 				m.moveCursor(1)
+			case msg.Text == "?" && m.query == "" && m.refreshable:
+				// "?" opens the key reference only on the home page with an
+				// empty filter, so a filter can still contain "?".
+				m.help = true
+				return m, nil
 			case msg.Text != "" && !isControlKey(key):
 				m.query += msg.Text
 				m.applyFilter()
@@ -415,6 +429,15 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m pickerModel) View() tea.View {
 	width := max(56, m.width)
 	theme := pickerTheme{theme: m.theme}
+	if m.help {
+		view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
+			Title:  "ssherpa · keys",
+			Body:   pickerHelpLines(theme),
+			Footer: "press any key to return",
+		}))
+		view.AltScreen = !m.noAltScreen
+		return view
+	}
 	bodyWidth := max(20, width-4)
 	body := m.renderHomeStatusLines(bodyWidth, theme)
 	body = append(body, m.renderFilterLine(bodyWidth, theme), "")
@@ -423,7 +446,7 @@ func (m pickerModel) View() tea.View {
 	footer := m.footer
 	if footer == "" {
 		if m.refreshable {
-			footer = "enter select / type filter / arrows move / shift+arrows section / R refresh / Q quit"
+			footer = "enter select / type filter / arrows move / R refresh / ? keys / Q quit"
 		} else {
 			footer = "enter select / type filter / arrows move / shift+arrows section / Q quit"
 		}
@@ -549,6 +572,30 @@ func (m pickerModel) renderHeader(width int, theme pickerTheme) string {
 	b.WriteByte('\n')
 	b.WriteString(theme.rule(width))
 	return b.String()
+}
+
+// pickerHelpLines is the home-page key reference behind "?", including the
+// two-map-door cross-reference (the Sessions action vs the in-session Ctrl-^
+// overlay) and the Docs pointer.
+func pickerHelpLines(theme pickerTheme) []string {
+	row := func(k, d string) string {
+		return "  " + termstyle.PadRight(k, 22) + theme.muted(d)
+	}
+	var b []string
+	b = append(b, theme.groupHeader("NAVIGATE", 56))
+	b = append(b, row("type", "fuzzy-filter (matches highlighted, ranked)"))
+	b = append(b, row("up / down", "move cursor"))
+	b = append(b, row("shift+arrows", "jump between sections"))
+	b = append(b, row("enter", "select / launch the highlighted row"))
+	b = append(b, "", theme.groupHeader("THE TWO MAP DOORS", 56))
+	b = append(b, row("Sessions action", "open the session & route map from here"))
+	b = append(b, row("Ctrl-^ (in a session)", "the live overlay map + escape rope"))
+	b = append(b, "", theme.groupHeader("GENERAL", 56))
+	b = append(b, row("R", "refresh inventory"))
+	b = append(b, row("Docs action", "shell completions and manpage"))
+	b = append(b, row("?", "this help"))
+	b = append(b, row("Q / esc", "quit"))
+	return b
 }
 
 func (m pickerModel) hasHosts() bool {

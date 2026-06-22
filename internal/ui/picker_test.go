@@ -810,3 +810,41 @@ func TestPickerFirstRunWelcome(t *testing.T) {
 		t.Fatal("welcome must not show when hosts exist")
 	}
 }
+
+func TestPickerHelpOverlay(t *testing.T) {
+	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "db1", HostName: "x"}}), PickOptions{NoAltScreen: true, NoColor: true, Refreshable: true})
+	model.width = 80
+	model.height = 30
+
+	// "?" with empty filter opens help on the home page.
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "?"})
+	got := updated.(pickerModel)
+	if !got.help {
+		t.Fatal("\"?\" on the home page should open help")
+	}
+	text := termstyle.Strip(got.View().Content)
+	for _, want := range []string{"NAVIGATE", "TWO MAP DOORS", "Ctrl-^", "this help"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help overlay missing %q:\n%s", want, text)
+		}
+	}
+	// Any key closes it.
+	closed, _ := got.Update(tea.KeyPressMsg{Code: 0x1b})
+	if closed.(pickerModel).help {
+		t.Fatal("a key should close the help overlay")
+	}
+}
+
+func TestPickerQuestionMarkFiltersWhenQueryNonEmpty(t *testing.T) {
+	model := newPickerModel(BuildItems(nil), PickOptions{NoAltScreen: true, Refreshable: true})
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "a"})
+	model = updated.(pickerModel)
+	updated, _ = model.Update(tea.KeyPressMsg{Text: "?"})
+	got := updated.(pickerModel)
+	if got.help {
+		t.Fatal("\"?\" with a non-empty filter must type into the filter")
+	}
+	if got.query != "a?" {
+		t.Fatalf("query = %q, want a?", got.query)
+	}
+}
