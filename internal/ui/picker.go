@@ -551,6 +551,15 @@ func (m pickerModel) renderHeader(width int, theme pickerTheme) string {
 	return b.String()
 }
 
+func (m pickerModel) hasHosts() bool {
+	for i := range m.items {
+		if m.items[i].Kind == ItemAlias {
+			return true
+		}
+	}
+	return false
+}
+
 func (m pickerModel) renderBody(width int, theme pickerTheme) []string {
 	listWidth := width
 	previewWidth := 0
@@ -615,6 +624,17 @@ func (m pickerModel) renderListLines(width int, theme pickerTheme) []string {
 	// list grows to fill a tall terminal instead of stopping at a fixed cap.
 	budget := listBudget(m.height, len(m.summary))
 	lines := []string{}
+	// First-run welcome: a fresh machine has no host aliases but the Action
+	// rows still render, so this is a distinct branch — not the "No matches"
+	// path. Point to Add (and the route map), never Ctrl-^ (unreachable
+	// without a live session).
+	if m.query == "" && !m.hasHosts() {
+		lines = append(lines,
+			"  "+theme.empty("No saved hosts yet — ssherpa reads your ~/.ssh/config."),
+			"  "+theme.empty("Choose \"Add new alias\" below, or open \"Sessions and route map\"."),
+			"",
+		)
+	}
 	start := m.normalizedScrollOffset()
 	if start > 0 {
 		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more above", start)))

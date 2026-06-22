@@ -788,3 +788,25 @@ func pickerCursorForToken(t *testing.T, model pickerModel, token string) int {
 	t.Fatalf("token %q not found in filtered items", token)
 	return 0
 }
+
+func TestPickerFirstRunWelcome(t *testing.T) {
+	// No host aliases -> Action rows still render, plus a first-run welcome.
+	model := newPickerModel(BuildItems(nil), PickOptions{NoAltScreen: true, NoColor: true})
+	model.width = 90
+	model.height = 30
+	text := model.View().Content
+	if !strings.Contains(text, "No saved hosts yet") {
+		t.Fatalf("first-run welcome missing:\n%s", text)
+	}
+	if !strings.Contains(text, "Add new alias") {
+		t.Fatalf("welcome should point to Add:\n%s", text)
+	}
+
+	// With a host, no welcome.
+	withHost := newPickerModel(BuildItems([]hostlist.Alias{{Name: "db1", HostName: "x"}}), PickOptions{NoAltScreen: true, NoColor: true})
+	withHost.width = 90
+	withHost.height = 30
+	if strings.Contains(withHost.View().Content, "No saved hosts yet") {
+		t.Fatal("welcome must not show when hosts exist")
+	}
+}
