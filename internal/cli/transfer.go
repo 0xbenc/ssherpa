@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/term"
+
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/session"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
@@ -438,6 +440,41 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 	}, true, 0
 }
 
+// startTransferSpinner animates an ASCII spinner + elapsed seconds on a TTY
+// stderr while a transfer runs, returning a stop function that clears the line.
+// On a non-TTY writer (--print, pipe, redirect) it is a no-op so output stays
+// plain. The goroutine exists only for the duration of the transfer.
+func startTransferSpinner(w io.Writer) func() {
+	f, ok := w.(*os.File)
+	if !ok || !term.IsTerminal(f.Fd()) {
+		return func() {}
+	}
+	frames := []rune{'|', '/', '-', '\\'}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		start := time.Now()
+		ticker := time.NewTicker(120 * time.Millisecond)
+		defer ticker.Stop()
+		i := 0
+		for {
+			select {
+			case <-done:
+				fmt.Fprint(w, "\r\x1b[K") // clear the spinner line
+				return
+			case <-ticker.C:
+				fmt.Fprintf(w, "\r%c transferring… %.0fs", frames[i%len(frames)], time.Since(start).Seconds())
+				i++
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
 func runSFTPCommand(cmd sshcmd.Command, batch string, stdout io.Writer, stderr io.Writer) int {
 	if len(cmd.Argv) == 0 {
 		fmt.Fprintln(stderr, "ssherpa: empty SFTP command")
@@ -451,7 +488,12 @@ func runSFTPCommand(cmd sshcmd.Command, batch string, stdout io.Writer, stderr i
 	proc.Stdin = strings.NewReader(batch)
 	proc.Stdout = stdout
 	proc.Stderr = stderr
+	// Animate an indeterminate spinner + elapsed while sftp blocks, so a
+	// multi-GB transfer is not a frozen screen. Gated on stderr being a TTY,
+	// so --print / piped paths stay plain; cleared before sftp's own output.
+	stopSpinner := startTransferSpinner(stderr)
 	err := proc.Run()
+	stopSpinner()
 	if err == nil {
 		return 0
 	}
