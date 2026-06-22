@@ -1241,7 +1241,7 @@ func showSessionOverlay(ptmxRef *ptmxRef, stdin *os.File, output *lockedWriter, 
 			// Escape rope: confirm before tearing down every layer.
 			confirming = true
 			clearSessionOverlay(output.w, frame)
-			frame = drawEscapeConfirm(output.w, stdin, theme)
+			frame = drawEscapeConfirm(output.w, stdin, stateDir, currentID, theme)
 		case 'r', 'R':
 			clearSessionOverlay(output.w, frame)
 			frame = drawSessionOverlay(output.w, stdin, stateDir, currentID, overlay, theme, recorder)
@@ -1493,13 +1493,79 @@ func sameStrings(a []string, b []string) bool {
 	return true
 }
 
-func drawEscapeConfirm(w io.Writer, stdin *os.File, theme termstyle.Theme) overlayFrame {
-	lines := []string{
-		overlayTitle("ssherpa escape rope", theme),
-		theme.Style(termstyle.RoleWarning, "Disconnect ALL nested sessions and return to the outermost shell?"),
-		overlayHelp("press X to confirm   any other key cancels", theme),
+func drawEscapeConfirm(w io.Writer, stdin *os.File, stateDir string, currentID string, theme termstyle.Theme) overlayFrame {
+	names, count, layers := escapeBlastRadius(stateDir, currentID)
+	lines := []string{overlayTitle("ssherpa escape rope", theme)}
+	if count == 0 {
+		lines = append(lines, theme.Style(termstyle.RoleWarning,
+			"Disconnect this session and return to the outer shell?"))
+	} else {
+		lines = append(lines, theme.Style(termstyle.RoleDanger, fmt.Sprintf(
+			"⚠  Tear down %d supervised session%s below you, across %d layer%s:",
+			count, escapePlural(count), layers, escapePlural(layers))))
+		lines = append(lines, theme.Style(termstyle.RoleDanger, "     "+strings.Join(names, " → ")))
 	}
+	lines = append(lines, overlayHelp("press X to confirm   any other key cancels", theme))
 	return drawBottomFrame(w, stdin, lines)
+}
+
+func escapePlural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// escapeBlastRadius enumerates the ACTIVE supervised sessions nested below
+// currentID — the layers the escape rope tears down. Only active routes are
+// counted (state.ListRecords also returns exited and synthesized nodes;
+// counting those would make the confirm lie). Names are Sanitized because they
+// can be remote-influenced.
+func escapeBlastRadius(stateDir string, currentID string) (names []string, count int, layers int) {
+	records, err := state.ListRecords(stateDir)
+	if err != nil {
+		return nil, 0, 0
+	}
+	byID := make(map[string]state.SessionRecord, len(records))
+	children := map[string][]string{}
+	for _, r := range records {
+		byID[r.ID] = r
+		if r.ParentID != "" && r.ParentID != r.ID {
+			children[r.ParentID] = append(children[r.ParentID], r.ID)
+		}
+	}
+	type node struct {
+		id    string
+		depth int
+	}
+	seen := map[string]bool{currentID: true}
+	queue := []node{{currentID, 0}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, childID := range children[cur.id] {
+			if seen[childID] {
+				continue
+			}
+			seen[childID] = true
+			depth := cur.depth + 1
+			queue = append(queue, node{childID, depth})
+			r, ok := byID[childID]
+			if !ok || !sessionview.IsRouteActive(r) {
+				continue
+			}
+			label := strings.TrimSpace(r.TargetAlias)
+			if label == "" {
+				label = childID
+			}
+			names = append(names, termstyle.Sanitize(label))
+			count++
+			if depth > layers {
+				layers = depth
+			}
+		}
+	}
+	return names, count, layers
 }
 
 func drawOverlayNotice(w io.Writer, stdin *os.File, theme termstyle.Theme, title string, message string) overlayFrame {
