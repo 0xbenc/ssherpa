@@ -170,7 +170,11 @@ func runCheckTUI(args []string, connect connectFlags, stderr io.Writer) int {
 	if flags.ICMPTimeout <= 0 {
 		flags.ICMPTimeout = 2 * time.Second
 	}
+	// The probe blocks up to ~7s per host (5s SSH + 2s ICMP) with no output;
+	// animate progress on a TTY so it is not indistinguishable from a hang.
+	stopSpinner := startProgressSpinner(stderr, "checking reachability…")
 	out, code := runCheckWithFlags(flags, stderr)
+	stopSpinner()
 	if code != 0 {
 		return code
 	}

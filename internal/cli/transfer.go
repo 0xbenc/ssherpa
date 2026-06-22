@@ -440,11 +440,15 @@ func resolveTransferSpec(direction sshcmd.SFTPTransferDirection, flags transferF
 	}, true, 0
 }
 
-// startTransferSpinner animates an ASCII spinner + elapsed seconds on a TTY
-// stderr while a transfer runs, returning a stop function that clears the line.
-// On a non-TTY writer (--print, pipe, redirect) it is a no-op so output stays
-// plain. The goroutine exists only for the duration of the transfer.
 func startTransferSpinner(w io.Writer) func() {
+	return startProgressSpinner(w, "transferring…")
+}
+
+// startProgressSpinner animates an ASCII spinner + elapsed seconds on a TTY
+// stderr while a blocking operation runs, returning a stop function that clears
+// the line. On a non-TTY writer (--print, pipe, redirect) it is a no-op so
+// output stays plain. The goroutine exists only for the duration of the work.
+func startProgressSpinner(w io.Writer, label string) func() {
 	f, ok := w.(*os.File)
 	if !ok || !term.IsTerminal(f.Fd()) {
 		return func() {}
@@ -464,7 +468,7 @@ func startTransferSpinner(w io.Writer) func() {
 				fmt.Fprint(w, "\r\x1b[K") // clear the spinner line
 				return
 			case <-ticker.C:
-				fmt.Fprintf(w, "\r%c transferring… %.0fs", frames[i%len(frames)], time.Since(start).Seconds())
+				fmt.Fprintf(w, "\r%c %s %.0fs", frames[i%len(frames)], label, time.Since(start).Seconds())
 				i++
 			}
 		}
