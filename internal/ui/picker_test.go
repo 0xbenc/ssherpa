@@ -115,6 +115,47 @@ func TestFuzzyMatch(t *testing.T) {
 	}
 }
 
+func TestPickerRanksHostsByScore(t *testing.T) {
+	// Config order puts staging-db before db1; a "db" filter must rank the
+	// stronger boundary match (db1, db at a "-"/start) ahead within the Hosts
+	// group, while leaving the Actions group in place.
+	aliases := []hostlist.Alias{
+		{Name: "webdbcache", HostName: "x"}, // "db" mid-word (weaker)
+		{Name: "db1", HostName: "y"},        // "db" prefix (stronger)
+	}
+	model := newPickerModel(BuildItems(aliases), PickOptions{NoAltScreen: true})
+	model.query = "db"
+	model.applyFilter()
+
+	var hosts []string
+	for _, idx := range model.filtered {
+		if model.items[idx].Group == "Hosts" {
+			hosts = append(hosts, model.items[idx].Title)
+		}
+	}
+	if len(hosts) != 2 {
+		t.Fatalf("filtered hosts = %v, want both db hosts", hosts)
+	}
+	if hosts[0] != "db1" {
+		t.Fatalf("ranked hosts = %v, want db1 first (stronger match)", hosts)
+	}
+}
+
+func TestPickerRejectsScatteredHostMatch(t *testing.T) {
+	aliases := []hostlist.Alias{
+		{Name: "db1", HostName: "y"},
+		{Name: "deep-bastion-shadow-relay", HostName: "z"},
+	}
+	model := newPickerModel(BuildItems(aliases), PickOptions{NoAltScreen: true})
+	model.query = "db1"
+	model.applyFilter()
+	for _, idx := range model.filtered {
+		if model.items[idx].Title == "deep-bastion-shadow-relay" {
+			t.Fatal("scattered subsequence d-b... should not match 'db1'")
+		}
+	}
+}
+
 func TestPickerRefreshKeyReturnsRefreshResult(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,

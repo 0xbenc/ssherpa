@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/0xbenc/ssherpa/internal/fuzzy"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
@@ -87,6 +89,13 @@ type Item struct {
 	Group       string
 	Badge       string
 	Detail      string
+	// SourceLine is the item's original position within its group (config
+	// order). It is the stable tiebreak when fuzzy scores are equal so ranked
+	// results never reorder arbitrarily.
+	SourceLine int
+	// matchPositions holds the matched rune indices in Title for the current
+	// query, populated by applyFilter and consumed by S8 highlighting.
+	matchPositions []int
 }
 
 type PickOptions struct {
@@ -233,7 +242,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemDocs, Token: "DOCS", Title: "Completions and manpage", Group: "Actions", Badge: "docs"},
 	)
 
-	for _, alias := range aliases {
+	for i, alias := range aliases {
 		items = append(items, Item{
 			Kind:        ItemAlias,
 			Token:       alias.Name,
@@ -242,6 +251,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 			Group:       "Hosts",
 			Badge:       aliasBadge(alias),
 			Detail:      aliasDetail(alias),
+			SourceLine:  i, // config order, the stable tiebreak under ranking
 		})
 	}
 
@@ -693,15 +703,73 @@ func (m pickerModel) currentItem() (Item, bool) {
 
 func (m *pickerModel) applyFilter() {
 	m.filtered = m.filtered[:0]
-	for i, item := range m.items {
-		if m.query == "" || fuzzyMatch(item.Title+"\t"+item.Description, m.query) {
+	query := strings.TrimSpace(m.query)
+	qlen := len([]rune(query))
+	scores := make([]int, len(m.items))
+	for i := range m.items {
+		item := &m.items[i]
+		item.matchPositions = nil
+		if query == "" {
 			m.filtered = append(m.filtered, i)
+			continue
 		}
+		// Per-field scoring; an item is included if any field is a relevant
+		// (not merely scattered-subsequence) match. Title positions feed the
+		// S8 highlight.
+		titleRes, titleOK := fuzzy.Match(query, item.Title)
+		descRes, descOK := fuzzy.Match(query, item.Description)
+		tokRes, tokOK := fuzzy.Match(query, item.Token)
+		best, matched := 0, false
+		for _, c := range []struct {
+			ok    bool
+			score int
+		}{{titleOK, titleRes.Score}, {descOK, descRes.Score}, {tokOK, tokRes.Score}} {
+			if c.ok && (!matched || c.score > best) {
+				best, matched = c.score, true
+			}
+		}
+		if !matched || !fuzzy.Relevant(fuzzy.Result{Score: best}, qlen) {
+			continue
+		}
+		scores[i] = best
+		if titleOK {
+			item.matchPositions = titleRes.Positions
+		}
+		m.filtered = append(m.filtered, i)
+	}
+	if query != "" {
+		m.rankHostsSubrange(scores)
 	}
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
 	m.ensureCursorVisible()
+}
+
+// rankHostsSubrange re-sorts only the contiguous Hosts block of m.filtered by
+// fuzzy score (then config order), located by group identity. Pinned groups
+// (Actions, Active, …) keep config order so section jumps stay valid.
+func (m *pickerModel) rankHostsSubrange(scores []int) {
+	start, end := -1, -1
+	for fi, idx := range m.filtered {
+		if m.items[idx].Group == "Hosts" {
+			if start == -1 {
+				start = fi
+			}
+			end = fi + 1
+		}
+	}
+	if start < 0 {
+		return
+	}
+	sub := m.filtered[start:end]
+	sort.SliceStable(sub, func(a, b int) bool {
+		ia, ib := sub[a], sub[b]
+		if scores[ia] != scores[ib] {
+			return scores[ia] > scores[ib]
+		}
+		return m.items[ia].SourceLine < m.items[ib].SourceLine
+	})
 }
 
 func (m *pickerModel) moveCursor(delta int) {
@@ -1164,25 +1232,17 @@ func selectionHint(item Item) string {
 	}
 }
 
+// fuzzyMatch reports whether query is a *relevant* fuzzy match of value — not
+// merely an order-preserving subsequence. The relevance gate (fuzzy.Relevant)
+// rejects scattered matches whose letters only happen to appear spread across
+// value with large gaps, which the old boolean subsequence accepted.
 func fuzzyMatch(value string, query string) bool {
-	valueRunes := []rune(strings.ToLower(value))
-	queryRunes := []rune(strings.ToLower(query))
-	pos := 0
-	for _, r := range queryRunes {
-		found := false
-		for pos < len(valueRunes) {
-			if valueRunes[pos] == r {
-				pos++
-				found = true
-				break
-			}
-			pos++
-		}
-		if !found {
-			return false
-		}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return true
 	}
-	return true
+	res, ok := fuzzy.Match(query, value)
+	return ok && fuzzy.Relevant(res, len([]rune(query)))
 }
 
 func isControlKey(key string) bool {
