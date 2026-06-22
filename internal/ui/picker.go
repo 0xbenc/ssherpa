@@ -922,6 +922,51 @@ func listWindowContainsCursor(items []Item, filtered []int, start int, cursor in
 	return false
 }
 
+// highlightTitle cell-truncates display to width and styles it: matched runes
+// (rune indices into the full display, from the fuzzy filter) render in
+// RoleSearch, the rest in the base row-title role. Each run is a full Apply so
+// styling never bleeds across a run or past the truncation; with no positions
+// it is byte-identical to the previous single-Apply title, keeping the
+// unfiltered view unchanged.
+func (m pickerModel) highlightTitle(display string, positions []int, width int, selected bool, theme pickerTheme) string {
+	base := func(s string) string { return theme.rowTitle(s, selected) }
+	truncated := termstyle.Truncate(display, width)
+	if len(positions) == 0 {
+		return base(truncated)
+	}
+	keptStr := truncated
+	hasMarker := false
+	if termstyle.VisibleWidth(display) > width && strings.HasSuffix(truncated, "~") {
+		keptStr = strings.TrimSuffix(truncated, "~")
+		hasMarker = true
+	}
+	runes := []rune(keptStr)
+	matched := make([]bool, len(runes))
+	for _, p := range positions {
+		if p >= 0 && p < len(runes) {
+			matched[p] = true
+		}
+	}
+	var b strings.Builder
+	for i := 0; i < len(runes); {
+		j := i
+		for j < len(runes) && matched[j] == matched[i] {
+			j++
+		}
+		seg := string(runes[i:j])
+		if matched[i] {
+			b.WriteString(theme.search(seg))
+		} else {
+			b.WriteString(base(seg))
+		}
+		i = j
+	}
+	if hasMarker {
+		b.WriteString(base("~"))
+	}
+	return b.String()
+}
+
 func (m pickerModel) renderRow(item Item, selected bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
@@ -939,11 +984,9 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 		titleWidth = max(10, width-len(cursor)-badgeWidth-3)
 	}
 	descWidth := max(10, width-len(cursor)-badgeWidth-titleWidth-3)
-	title := termstyle.Truncate(item.Title, titleWidth)
 	desc := termstyle.Truncate(item.Description, descWidth)
 	if item.Kind == ItemAlias {
 		titleWidth = max(10, width-len(cursor)-badgeWidth-3)
-		title = termstyle.Truncate(item.Title, titleWidth)
 		desc = ""
 	}
 	if item.Kind != ItemAlias && item.Kind != ItemForwardSaved && item.Kind != ItemProxySaved && item.Detail != "" && descWidth > 24 {
@@ -952,7 +995,7 @@ func (m pickerModel) renderRow(item Item, selected bool, width int, theme picker
 	}
 	cursor = theme.cursor(cursor, selected)
 	badgeText := theme.badge(item.Kind, "["+strings.ToUpper(badge)+"]")
-	titleText := theme.rowTitle(title, selected)
+	titleText := m.highlightTitle(item.Title, item.matchPositions, titleWidth, selected, theme)
 	descText := theme.rowDesc(desc, selected)
 	line := cursor + " " + termstyle.PadRight(badgeText, badgeWidth) + " " + termstyle.PadRight(titleText, titleWidth) + " " + descText
 	return termstyle.PadRight(line, width)

@@ -156,6 +156,31 @@ func TestPickerRejectsScatteredHostMatch(t *testing.T) {
 	}
 }
 
+func TestHighlightTitleStylesMatchedRunes(t *testing.T) {
+	var m pickerModel
+	theme := pickerTheme{theme: termstyle.TerminalTheme()}
+	out := m.highlightTitle("database", []int{0, 1, 2, 3}, 40, false, theme)
+
+	if got := termstyle.Strip(out); got != "database" {
+		t.Fatalf("Strip(highlight) = %q, want plain title", got)
+	}
+	searchOpen := "\x1b[1;39m" // RoleSearch in TerminalTheme
+	if !strings.Contains(out, searchOpen+"data") {
+		t.Fatalf("matched prefix not highlighted with RoleSearch: %q", out)
+	}
+	if termstyle.VisibleWidth(out) != termstyle.VisibleWidth("database") {
+		t.Fatalf("highlighted width %d != plain width", termstyle.VisibleWidth(out))
+	}
+}
+
+func TestHighlightTitleNoPositionsUnchanged(t *testing.T) {
+	var m pickerModel
+	theme := pickerTheme{theme: termstyle.TerminalTheme()}
+	if got, want := m.highlightTitle("host", nil, 40, false, theme), theme.rowTitle("host", false); got != want {
+		t.Fatalf("no-match title = %q, want byte-identical base %q", got, want)
+	}
+}
+
 func TestPickerRefreshKeyReturnsRefreshResult(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
