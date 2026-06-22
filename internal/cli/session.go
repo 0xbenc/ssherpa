@@ -1134,18 +1134,9 @@ func replayTruncateLine(value string, width int) string {
 	if termstyle.VisibleWidth(value) <= width {
 		return value
 	}
-	plain := termstyle.Sanitize(value)
-	if len(plain) <= width {
-		return plain
-	}
-	if width == 1 {
-		return "…"
-	}
-	runes := []rune(plain)
-	if len(runes) <= width {
-		return plain
-	}
-	return string(runes[:width-1]) + "…"
+	// Cell-accurate so a wide rune in a privacy-sensitive transcript replay
+	// line can never overflow the render width.
+	return termstyle.TruncateWith(termstyle.Sanitize(value), width, "…")
 }
 
 func replayOffset(offset float64) string {

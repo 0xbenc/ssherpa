@@ -23,28 +23,32 @@ func TestStripAndVisibleWidthCSISequences(t *testing.T) {
 		name  string
 		input string
 		want  string
+		width int // 0 -> default len([]rune(want)); set where cell width differs
 	}{
-		{"sgr", "\x1b[1;31mred\x1b[0m", "red"},
-		{"ich at-final", "abc\x1b[1@123 def", "abc123 def"},
-		{"hpa backtick-final", "a\x1b[5`99,99 b", "a99,99 b"},
-		{"keypad tilde-final", "x\x1b[5~y", "xy"},
-		{"brace finals", "\x1b[3{a\x1b[4}b\x1b[5|c", "abc"},
-		{"cjk after non-letter final", "\x1b[1@日本語x", "日本語x"},
-		{"cursor style intermediate", "\x1b[2 qhello", "hello"},
-		{"private params", "\x1b[?25hshown", "shown"},
-		{"mixed text", "one\x1b[32mtwo\x1b[0mthree", "onetwothree"},
-		{"truncated params at end", "abc\x1b[12", "abc"},
-		{"bare introducer at end", "abc\x1b[", "abc"},
-		{"malformed interior abort", "\x1b[12\x1b[31mxyz", "xyz"},
-		{"embedded c0 control continues sequence", "a\x1b[31\x08mb", "ab"},
-		{"embedded esc aborts sequence", "a\x1b[31\x1b[32mb", "ab"},
+		{"sgr", "\x1b[1;31mred\x1b[0m", "red", 0},
+		{"ich at-final", "abc\x1b[1@123 def", "abc123 def", 0},
+		{"hpa backtick-final", "a\x1b[5`99,99 b", "a99,99 b", 0},
+		{"keypad tilde-final", "x\x1b[5~y", "xy", 0},
+		{"brace finals", "\x1b[3{a\x1b[4}b\x1b[5|c", "abc", 0},
+		{"cjk after non-letter final", "\x1b[1@日本語x", "日本語x", 7},
+		{"cursor style intermediate", "\x1b[2 qhello", "hello", 0},
+		{"private params", "\x1b[?25hshown", "shown", 0},
+		{"mixed text", "one\x1b[32mtwo\x1b[0mthree", "onetwothree", 0},
+		{"truncated params at end", "abc\x1b[12", "abc", 0},
+		{"bare introducer at end", "abc\x1b[", "abc", 0},
+		{"malformed interior abort", "\x1b[12\x1b[31mxyz", "xyz", 0},
+		{"embedded c0 control continues sequence", "a\x1b[31\x08mb", "ab", 0},
+		{"embedded esc aborts sequence", "a\x1b[31\x1b[32mb", "ab", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Strip(tc.input); got != tc.want {
 				t.Fatalf("Strip(%q) = %q, want %q", tc.input, got, tc.want)
 			}
-			wantWidth := len([]rune(tc.want))
+			wantWidth := tc.width
+			if wantWidth == 0 {
+				wantWidth = len([]rune(tc.want))
+			}
 			if got := VisibleWidth(tc.input); got != wantWidth {
 				t.Fatalf("VisibleWidth(%q) = %d, want %d", tc.input, got, wantWidth)
 			}
@@ -57,40 +61,86 @@ func TestStripAndVisibleWidthNonCSISequences(t *testing.T) {
 		name  string
 		input string
 		want  string
+		width int // 0 -> default len([]rune(want))
 	}{
-		{"keypad modes", "a\x1b=b\x1b>c", "abc"},
-		{"ris", "\x1bcx", "x"},
-		{"save restore cursor", "\x1b7hi\x1b8", "hi"},
-		{"charset designations", "\x1b(Bhello\x1b)0", "hello"},
-		{"decaln", "\x1b#8x", "x"},
-		{"ss3 key", "\x1bOPdone", "done"},
-		{"ss2 shifted char", "a\x1bNxb", "ab"},
-		{"ss3 multibyte rune not split", "\x1bO日x", "x"},
-		{"osc bel", "\x1b]0;title\x07text", "text"},
-		{"osc st", "\x1b]0;title\x1b\\text", "text"},
-		{"osc unterminated", "\x1b]0;title", ""},
-		{"osc aborted by csi", "\x1b]0;ti\x1b[31mred", "red"},
-		{"dcs st", "\x1bPq#0;2;0;0;0\x1b\\after", "after"},
-		{"dcs ignores bel", "\x1bPdata\x07more\x1b\\end", "end"},
-		{"dcs unterminated", "\x1bPdata", ""},
-		{"sos", "\x1bXpayload\x1b\\a", "a"},
-		{"pm", "\x1b^payload\x1b\\b", "b"},
-		{"apc", "\x1b_payload\x1b\\c", "c"},
-		{"bare esc at end", "abc\x1b", "abc"},
-		{"esc before control byte", "\x1b\x01x", "\x01x"},
-		{"ss3 at end", "abc\x1bO", "abc"},
-		{"charset truncated at end", "abc\x1b(", "abc"},
+		{"keypad modes", "a\x1b=b\x1b>c", "abc", 0},
+		{"ris", "\x1bcx", "x", 0},
+		{"save restore cursor", "\x1b7hi\x1b8", "hi", 0},
+		{"charset designations", "\x1b(Bhello\x1b)0", "hello", 0},
+		{"decaln", "\x1b#8x", "x", 0},
+		{"ss3 key", "\x1bOPdone", "done", 0},
+		{"ss2 shifted char", "a\x1bNxb", "ab", 0},
+		{"ss3 multibyte rune not split", "\x1bO日x", "x", 0},
+		{"osc bel", "\x1b]0;title\x07text", "text", 0},
+		{"osc st", "\x1b]0;title\x1b\\text", "text", 0},
+		{"osc unterminated", "\x1b]0;title", "", 0},
+		{"osc aborted by csi", "\x1b]0;ti\x1b[31mred", "red", 0},
+		{"dcs st", "\x1bPq#0;2;0;0;0\x1b\\after", "after", 0},
+		{"dcs ignores bel", "\x1bPdata\x07more\x1b\\end", "end", 0},
+		{"dcs unterminated", "\x1bPdata", "", 0},
+		{"sos", "\x1bXpayload\x1b\\a", "a", 0},
+		{"pm", "\x1b^payload\x1b\\b", "b", 0},
+		{"apc", "\x1b_payload\x1b\\c", "c", 0},
+		{"bare esc at end", "abc\x1b", "abc", 0},
+		{"esc before control byte", "\x1b\x01x", "\x01x", 1},
+		{"ss3 at end", "abc\x1bO", "abc", 0},
+		{"charset truncated at end", "abc\x1b(", "abc", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Strip(tc.input); got != tc.want {
 				t.Fatalf("Strip(%q) = %q, want %q", tc.input, got, tc.want)
 			}
-			wantWidth := len([]rune(tc.want))
+			wantWidth := tc.width
+			if wantWidth == 0 {
+				wantWidth = len([]rune(tc.want))
+			}
 			if got := VisibleWidth(tc.input); got != wantWidth {
 				t.Fatalf("VisibleWidth(%q) = %d, want %d", tc.input, got, wantWidth)
 			}
 		})
+	}
+}
+
+// TestBoxGlyphsStayWidthOne guards the locale landmine: the box/rule glyphs the
+// chrome draws must measure as a single cell so the borders can never tear.
+// The measure honors only RUNEWIDTH_EASTASIAN (not LANG), so this holds even
+// under a CJK locale.
+func TestTruncateWithMarker(t *testing.T) {
+	if got := TruncateWith("hello world", 6, "…"); got != "hello…" {
+		t.Fatalf("TruncateWith = %q, want hello…", got)
+	}
+	if w := VisibleWidth(TruncateWith("hello world", 6, "…")); w != 6 {
+		t.Fatalf("TruncateWith width = %d, want 6", w)
+	}
+	if got := TruncateWith("日本語表記", 3, "…"); VisibleWidth(got) > 3 {
+		t.Fatalf("TruncateWith wide = %q exceeds 3 cells", got)
+	}
+}
+
+func TestBoxGlyphsStayWidthOne(t *testing.T) {
+	for _, g := range []string{"╭", "╮", "╰", "╯", "├", "┤", "─", "│"} {
+		if got := VisibleWidth(g); got != 1 {
+			t.Errorf("VisibleWidth(%q) = %d, want 1 (box glyph must be one cell)", g, got)
+		}
+	}
+}
+
+func TestVisibleWidthCellAccurate(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"abc", 3},
+		{"日本語", 6},
+		{"a日b", 4},
+		{"🔐", 2},
+		{Apply(false, "1;31", "日本"), 4},
+		{"╭───╮", 5},
+	} {
+		if got := VisibleWidth(tc.in); got != tc.want {
+			t.Errorf("VisibleWidth(%q) = %d, want %d", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -135,7 +185,8 @@ func TestTruncate(t *testing.T) {
 		{"plain cut", "hello world", 8, "hello w~"},
 		{"width one", "hello", 1, "h"},
 		{"empty", "", 4, ""},
-		{"multibyte cut", "日本語表記", 3, "日本~"},
+		{"multibyte cut", "日本語表記", 3, "日~"},
+		{"wide rune not split", "日本語", 4, "日~"},
 		{"styled fits", "\x1b[1;36mhi\x1b[0m", 5, "\x1b[1;36mhi\x1b[0m"},
 		{"styled cut appends reset", "\x1b[1;36mhello world\x1b[0m", 8, "\x1b[1;36mhello w~\x1b[0m"},
 		{"styled width one", "\x1b[1;36mhello\x1b[0m", 1, "\x1b[1;36mh\x1b[0m"},
