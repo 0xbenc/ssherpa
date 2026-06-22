@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 
+	"github.com/0xbenc/ssherpa/internal/chrome"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
@@ -100,31 +101,15 @@ func joinWorkflowProgress(theme pickerTheme, parts []string) string {
 }
 
 func workflowEdge(theme pickerTheme, left string, right string, label string, width int) string {
-	inner := max(0, width-2)
-	if inner == 0 {
-		return theme.theme.Style(termstyle.RoleBorder, left+right)
-	}
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return theme.theme.Style(termstyle.RoleBorder, left+strings.Repeat("─", inner)+right)
-	}
-	label = " " + truncateStyled(label, max(0, inner-2)) + " "
-	remaining := inner - termstyle.VisibleWidth(label)
-	if remaining < 0 {
-		remaining = 0
-	}
-	return theme.theme.Style(termstyle.RoleBorder, left) + label + theme.theme.Style(termstyle.RoleBorder, strings.Repeat("─", remaining)+right)
+	return chrome.Edge(theme.theme, left, right, label, width, truncateStyled)
 }
 
 func workflowDivider(theme pickerTheme, width int) string {
-	inner := max(0, width-2)
-	return theme.theme.Style(termstyle.RoleBorder, "├"+strings.Repeat("─", inner)+"┤")
+	return chrome.Divider(theme.theme, width)
 }
 
 func workflowLine(theme pickerTheme, line string, width int) string {
-	inner := max(0, width-4)
-	content := termstyle.PadRight(truncateStyled(line, inner), inner)
-	return theme.theme.Style(termstyle.RoleBorder, "│ ") + content + theme.theme.Style(termstyle.RoleBorder, " │")
+	return chrome.Line(theme.theme, line, width, truncateStyled)
 }
 
 func workflowBodyLines(b *strings.Builder) []string {

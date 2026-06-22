@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/0xbenc/ssherpa/internal/chrome"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 	"github.com/0xbenc/ssherpa/internal/transcript"
@@ -1941,40 +1942,24 @@ func compactStatePath(path string) string {
 	return filepath.ToSlash(path)
 }
 
+// The box builders now render through the shared internal/chrome geometry, so
+// the map overlay and the picker can never disagree on border drawing. The
+// raw-transcript truncation policy is preserved by passing truncateVisible (it
+// Strips, not Sanitizes — see S2) as the Truncator.
 func boxTop(theme termstyle.Theme, label string, width int) string {
-	return boxEdge(theme, "╭", "╮", label, width)
+	return chrome.Top(theme, label, width, truncateVisible)
 }
 
 func boxDivider(theme termstyle.Theme, width int) string {
-	return boxEdge(theme, "├", "┤", "", width)
+	return chrome.Divider(theme, width)
 }
 
 func boxBottom(theme termstyle.Theme, width int) string {
-	return boxEdge(theme, "╰", "╯", "", width)
-}
-
-func boxEdge(theme termstyle.Theme, left string, right string, label string, width int) string {
-	inner := max(0, width-2)
-	if inner == 0 {
-		return theme.Style(termstyle.RoleBorder, left+right)
-	}
-	fill := strings.Repeat("─", inner)
-	label = strings.TrimSpace(label)
-	if label != "" {
-		label = " " + truncateVisible(label, max(0, inner-2)) + " "
-		if termstyle.VisibleWidth(label) < inner {
-			fill = label + strings.Repeat("─", inner-termstyle.VisibleWidth(label))
-		} else {
-			fill = truncateVisible(label, inner)
-		}
-	}
-	return theme.Style(termstyle.RoleBorder, left) + fill + theme.Style(termstyle.RoleBorder, right)
+	return chrome.Bottom(theme, width)
 }
 
 func boxLine(theme termstyle.Theme, line string, width int) string {
-	inner := max(0, width-4)
-	content := termstyle.PadRight(truncateVisible(line, inner), inner)
-	return theme.Style(termstyle.RoleBorder, "│ ") + content + theme.Style(termstyle.RoleBorder, " │")
+	return chrome.Line(theme, line, width, truncateVisible)
 }
 
 func joinVisible(left string, right string, width int) string {
