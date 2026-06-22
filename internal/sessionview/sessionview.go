@@ -1472,8 +1472,32 @@ func sessionSummaryLine(prefix string, record state.SessionRecord, currentID str
 	if kind := KindBadge(record); kind != "" {
 		left += " " + theme.Style(termstyle.RoleInfo, kind)
 	}
+	left += livenessBadges(record, theme)
 	right := theme.Style(termstyle.RoleMuted, fmt.Sprintf("depth %d  id %s", record.Depth, ShortSessionID(record.ID)))
 	return truncateVisible(joinVisible(left, right, width), width)
+}
+
+// livenessBadges appends compact per-node liveness markers read synchronously
+// at paint time — only where the record actually carries the data, so no badge
+// is ever fabricated. tmux/screen hold comes from the muxer spec; REC reports
+// only that a recording exists (disk-derived, conservative) — never a
+// transcript byte. Each field is cleanField'd, never raw.
+func livenessBadges(record state.SessionRecord, theme termstyle.Theme) string {
+	var parts []string
+	if record.Muxer != nil && strings.TrimSpace(record.Muxer.Type) != "" {
+		label := cleanField(record.Muxer.Type)
+		if record.Muxer.Detached {
+			label += "·detached"
+		}
+		parts = append(parts, theme.Style(termstyle.RoleInfo, label))
+	}
+	if record.RecordedBy != nil {
+		parts = append(parts, theme.Style(termstyle.RoleWarning, "REC"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
 }
 
 func statusMarker(record state.SessionRecord, currentID string) string {
