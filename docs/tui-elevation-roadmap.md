@@ -273,6 +273,21 @@ Port existing window tests as ListView tests **before** migrating. Per the hard 
 constraint, land S7 ranking + ListView in the **same commit per screen** so two scroll
 engines never coexist. Standardize the single `>` cursor here.
 
+**SHIPPED (engine-only extraction).** `internal/chrome/listview.go` now holds the three
+genuinely-triplicated pieces — `WindowContainsCursor` (the variable-height group-cost predicate),
+`ClampWindow` (the `ensureCursorVisible` skeleton), and `JumpSection` — as pure index math driven
+by a per-screen `groupAt(i) (group string, ok bool)` callback. The picker, host chooser, and
+transfer browser each delegate to them and dropped their private copies (**−270 net lines** across
+the three files). Behavior is byte-identical: the predicate is copied verbatim and the screens'
+golden/border-integrity tests are unchanged. Two refinements to the original plan: (1) the cursor
+glyph was *already* uniform (`>>` via `theme.cursor`), so no glyph change was made — changing it
+would have churned every golden frame for no functional gain; (2) `moveCursor` (a 3-line
+clamp+ensure) and per-screen `listWindowBudget`/row rendering stayed local, since they encode
+genuine per-screen layout, not duplicated engine logic. Engine covered by `listview_test.go`
+(flat + grouped window math, scroll-into-view, section jump). The S7-ranking-coupling constraint
+was moot: S7 had already landed in the picker, and the other two screens carry no fuzzy ranking,
+so there was never a two-engine coexistence window to guard against.
+
 ### Phase 3 — Motion & Feedback (only inside standalone alt-screen programs that own their terminal)
 
 | id | What | Why | Files | Effort | Risk | Feasibility |

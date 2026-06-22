@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/0xbenc/ssherpa/internal/chrome"
 	"github.com/0xbenc/ssherpa/internal/fuzzy"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
@@ -848,49 +849,9 @@ func (m *pickerModel) moveCursor(delta int) {
 }
 
 func (m *pickerModel) jumpSection(delta int) {
-	if len(m.filtered) == 0 || delta == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
-		return
-	}
-
-	currentGroup := m.filteredGroup(m.cursor)
-	if delta > 0 {
-		currentEnd := m.cursor
-		for i := m.cursor + 1; i < len(m.filtered); i++ {
-			if m.filteredGroup(i) != currentGroup {
-				m.cursor = i
-				m.ensureCursorVisible()
-				return
-			}
-			currentEnd = i
-		}
-		if currentEnd > m.cursor {
-			m.cursor = currentEnd
-			m.ensureCursorVisible()
-		}
-		return
-	}
-
-	currentStart := m.cursor
-	for currentStart > 0 && m.filteredGroup(currentStart-1) == currentGroup {
-		currentStart--
-	}
-	if currentStart < m.cursor {
-		m.cursor = currentStart
+	if next := chrome.JumpSection(len(m.filtered), m.cursor, delta, m.filteredGroup); next != m.cursor {
+		m.cursor = next
 		m.ensureCursorVisible()
-		return
-	}
-
-	for i := currentStart - 1; i >= 0; i-- {
-		group := m.filteredGroup(i)
-		if group == currentGroup {
-			continue
-		}
-		for i > 0 && m.filteredGroup(i-1) == group {
-			i--
-		}
-		m.cursor = i
-		m.ensureCursorVisible()
-		return
 	}
 }
 
@@ -906,34 +867,24 @@ func (m pickerModel) filteredGroup(pos int) string {
 }
 
 func (m *pickerModel) ensureCursorVisible() {
-	if len(m.filtered) == 0 {
-		m.cursor = 0
-		m.scrollOffset = 0
-		return
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor >= len(m.filtered) {
-		m.cursor = len(m.filtered) - 1
-	}
-	if m.scrollOffset < 0 {
-		m.scrollOffset = 0
-	}
-	if m.scrollOffset >= len(m.filtered) {
-		m.scrollOffset = len(m.filtered) - 1
-	}
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
-	}
-
 	budget := listBudget(m.height, len(m.summary))
-	for m.scrollOffset < m.cursor && !listWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
-		m.scrollOffset++
+	contains := func(start, cursor int) bool {
+		return chrome.WindowContainsCursor(len(m.filtered), start, cursor, budget, m.groupAt)
 	}
-	if !listWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
-		m.scrollOffset = m.cursor
+	m.cursor, m.scrollOffset = chrome.ClampWindow(len(m.filtered), m.cursor, m.scrollOffset, contains)
+}
+
+// groupAt is the chrome.ListView callback: the group label of filtered row i,
+// ok=false for stale indices (skipped from the line budget).
+func (m pickerModel) groupAt(i int) (string, bool) {
+	if i < 0 || i >= len(m.filtered) {
+		return "", false
 	}
+	index := m.filtered[i]
+	if index < 0 || index >= len(m.items) {
+		return "", false
+	}
+	return m.items[index].Group, true
 }
 
 func (m pickerModel) normalizedScrollOffset() int {
@@ -944,49 +895,6 @@ func (m pickerModel) normalizedScrollOffset() int {
 		return len(m.filtered) - 1
 	}
 	return m.scrollOffset
-}
-
-func listWindowContainsCursor(items []Item, filtered []int, start int, cursor int, budget int) bool {
-	if len(filtered) == 0 || cursor < start || cursor < 0 || cursor >= len(filtered) {
-		return false
-	}
-	lines := 0
-	if start > 0 {
-		lines++ // "N more above"
-	}
-	lastGroup := ""
-	rendered := 0
-	for i := start; i < len(filtered); i++ {
-		index := filtered[i]
-		if index < 0 || index >= len(items) {
-			continue
-		}
-		item := items[index]
-		groupCost := 0
-		newGroup := item.Group != "" && item.Group != lastGroup
-		if newGroup {
-			groupCost = 1
-			if rendered > 0 {
-				groupCost++
-			}
-		}
-		reserve := 0
-		if len(filtered)-i-1 > 0 {
-			reserve = 1
-		}
-		if lines+groupCost+1+reserve > budget {
-			return false
-		}
-		if i == cursor {
-			return true
-		}
-		lines += groupCost + 1
-		if newGroup {
-			lastGroup = item.Group
-		}
-		rendered++
-	}
-	return false
 }
 
 // highlightTitle cell-truncates display to width and styles it: matched runes

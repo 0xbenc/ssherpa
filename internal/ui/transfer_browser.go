@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/0xbenc/ssherpa/internal/chrome"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 )
 
@@ -503,49 +504,9 @@ func (m *transferBrowserModel) moveCursor(delta int) {
 }
 
 func (m *transferBrowserModel) jumpSection(delta int) {
-	if len(m.filtered) == 0 || delta == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
-		return
-	}
-
-	currentGroup := m.filteredGroup(m.cursor)
-	if delta > 0 {
-		currentEnd := m.cursor
-		for i := m.cursor + 1; i < len(m.filtered); i++ {
-			if m.filteredGroup(i) != currentGroup {
-				m.cursor = i
-				m.ensureCursorVisible()
-				return
-			}
-			currentEnd = i
-		}
-		if currentEnd > m.cursor {
-			m.cursor = currentEnd
-			m.ensureCursorVisible()
-		}
-		return
-	}
-
-	currentStart := m.cursor
-	for currentStart > 0 && m.filteredGroup(currentStart-1) == currentGroup {
-		currentStart--
-	}
-	if currentStart < m.cursor {
-		m.cursor = currentStart
+	if next := chrome.JumpSection(len(m.filtered), m.cursor, delta, m.filteredGroup); next != m.cursor {
+		m.cursor = next
 		m.ensureCursorVisible()
-		return
-	}
-
-	for i := currentStart - 1; i >= 0; i-- {
-		group := m.filteredGroup(i)
-		if group == currentGroup {
-			continue
-		}
-		for i > 0 && m.filteredGroup(i-1) == group {
-			i--
-		}
-		m.cursor = i
-		m.ensureCursorVisible()
-		return
 	}
 }
 
@@ -560,35 +521,25 @@ func (m transferBrowserModel) filteredGroup(pos int) string {
 	return m.items[index].Group
 }
 
-func (m *transferBrowserModel) ensureCursorVisible() {
-	if len(m.filtered) == 0 {
-		m.cursor = 0
-		m.scrollOffset = 0
-		return
+// groupAt is the chrome.ListView callback: the group label of filtered row i,
+// ok=false for stale indices (skipped from the line budget).
+func (m transferBrowserModel) groupAt(i int) (string, bool) {
+	if i < 0 || i >= len(m.filtered) {
+		return "", false
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
+	index := m.filtered[i]
+	if index < 0 || index >= len(m.items) {
+		return "", false
 	}
-	if m.cursor >= len(m.filtered) {
-		m.cursor = len(m.filtered) - 1
-	}
-	if m.scrollOffset < 0 {
-		m.scrollOffset = 0
-	}
-	if m.scrollOffset >= len(m.filtered) {
-		m.scrollOffset = len(m.filtered) - 1
-	}
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
-	}
+	return m.items[index].Group, true
+}
 
+func (m *transferBrowserModel) ensureCursorVisible() {
 	budget := m.listWindowBudget()
-	for m.scrollOffset < m.cursor && !transferBrowserWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
-		m.scrollOffset++
+	contains := func(start, cursor int) bool {
+		return chrome.WindowContainsCursor(len(m.filtered), start, cursor, budget, m.groupAt)
 	}
-	if !transferBrowserWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
-		m.scrollOffset = m.cursor
-	}
+	m.cursor, m.scrollOffset = chrome.ClampWindow(len(m.filtered), m.cursor, m.scrollOffset, contains)
 }
 
 func (m transferBrowserModel) normalizedScrollOffset() int {
@@ -613,47 +564,4 @@ func (m transferBrowserModel) listWindowBudget() int {
 		budget = 4
 	}
 	return budget
-}
-
-func transferBrowserWindowContainsCursor(items []Item, filtered []int, start int, cursor int, budget int) bool {
-	if len(filtered) == 0 || cursor < start || cursor < 0 || cursor >= len(filtered) {
-		return false
-	}
-	lines := 0
-	if start > 0 {
-		lines++
-	}
-	lastGroup := ""
-	rendered := 0
-	for i := start; i < len(filtered); i++ {
-		index := filtered[i]
-		if index < 0 || index >= len(items) {
-			continue
-		}
-		item := items[index]
-		groupCost := 0
-		newGroup := item.Group != "" && item.Group != lastGroup
-		if newGroup {
-			groupCost = 1
-			if rendered > 0 {
-				groupCost++
-			}
-		}
-		reserve := 0
-		if len(filtered)-i-1 > 0 {
-			reserve = 1
-		}
-		if lines+groupCost+1+reserve > budget {
-			return false
-		}
-		if i == cursor {
-			return true
-		}
-		lines += groupCost + 1
-		if newGroup {
-			lastGroup = item.Group
-		}
-		rendered++
-	}
-	return false
 }

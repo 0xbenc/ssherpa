@@ -733,43 +733,9 @@ func (m *hostChooserModel) moveCursor(delta int) {
 }
 
 func (m *hostChooserModel) jumpSection(delta int) {
-	if len(m.filtered) == 0 || delta == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
-		return
-	}
-	currentGroup := m.filteredGroup(m.cursor)
-	if delta > 0 {
-		currentEnd := m.cursor
-		for i := m.cursor + 1; i < len(m.filtered); i++ {
-			if m.filteredGroup(i) != currentGroup {
-				m.cursor = i
-				m.ensureCursorVisible()
-				return
-			}
-			currentEnd = i
-		}
-		if currentEnd > m.cursor {
-			m.cursor = currentEnd
-			m.ensureCursorVisible()
-		}
-		return
-	}
-	currentStart := m.cursor
-	for currentStart > 0 && m.filteredGroup(currentStart-1) == currentGroup {
-		currentStart--
-	}
-	if currentStart < m.cursor {
-		m.cursor = currentStart
+	if next := chrome.JumpSection(len(m.filtered), m.cursor, delta, m.filteredGroup); next != m.cursor {
+		m.cursor = next
 		m.ensureCursorVisible()
-		return
-	}
-	for i := currentStart - 1; i >= 0; i-- {
-		group := m.filteredGroup(i)
-		for i > 0 && m.filteredGroup(i-1) == group {
-			i--
-		}
-		m.cursor = i
-		m.ensureCursorVisible()
-		return
 	}
 }
 
@@ -784,34 +750,25 @@ func (m hostChooserModel) filteredGroup(pos int) string {
 	return m.items[index].Group
 }
 
+// groupAt is the chrome.ListView callback: the group label of filtered row i,
+// ok=false for stale indices (skipped from the line budget).
+func (m hostChooserModel) groupAt(i int) (string, bool) {
+	if i < 0 || i >= len(m.filtered) {
+		return "", false
+	}
+	index := m.filtered[i]
+	if index < 0 || index >= len(m.items) {
+		return "", false
+	}
+	return m.items[index].Group, true
+}
+
 func (m *hostChooserModel) ensureCursorVisible() {
-	if len(m.filtered) == 0 {
-		m.cursor = 0
-		m.scrollOffset = 0
-		return
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor >= len(m.filtered) {
-		m.cursor = len(m.filtered) - 1
-	}
-	if m.scrollOffset < 0 {
-		m.scrollOffset = 0
-	}
-	if m.scrollOffset >= len(m.filtered) {
-		m.scrollOffset = len(m.filtered) - 1
-	}
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
-	}
 	budget := m.listWindowBudget()
-	for m.scrollOffset < m.cursor && !hostChooserWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
-		m.scrollOffset++
+	contains := func(start, cursor int) bool {
+		return chrome.WindowContainsCursor(len(m.filtered), start, cursor, budget, m.groupAt)
 	}
-	if !hostChooserWindowContainsCursor(m.items, m.filtered, m.scrollOffset, m.cursor, budget) {
-		m.scrollOffset = m.cursor
-	}
+	m.cursor, m.scrollOffset = chrome.ClampWindow(len(m.filtered), m.cursor, m.scrollOffset, contains)
 }
 
 func (m hostChooserModel) currentItem() (hostChooserItem, bool) {
@@ -869,49 +826,6 @@ func (m hostChooserModel) listWindowBudget() int {
 		budget = 4
 	}
 	return budget
-}
-
-func hostChooserWindowContainsCursor(items []hostChooserItem, filtered []int, start int, cursor int, budget int) bool {
-	if len(filtered) == 0 || cursor < start || cursor < 0 || cursor >= len(filtered) {
-		return false
-	}
-	lines := 0
-	if start > 0 {
-		lines++
-	}
-	lastGroup := ""
-	rendered := 0
-	for i := start; i < len(filtered); i++ {
-		index := filtered[i]
-		if index < 0 || index >= len(items) {
-			continue
-		}
-		item := items[index]
-		groupCost := 0
-		newGroup := item.Group != "" && item.Group != lastGroup
-		if newGroup {
-			groupCost = 1
-			if rendered > 0 {
-				groupCost++
-			}
-		}
-		reserve := 0
-		if len(filtered)-i-1 > 0 {
-			reserve = 1
-		}
-		if lines+groupCost+1+reserve > budget {
-			return false
-		}
-		if i == cursor {
-			return true
-		}
-		lines += groupCost + 1
-		if newGroup {
-			lastGroup = item.Group
-		}
-		rendered++
-	}
-	return false
 }
 
 func jumpHopMode(destination string, hops []string) string {
