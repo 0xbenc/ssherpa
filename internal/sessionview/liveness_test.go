@@ -16,7 +16,7 @@ func TestMapViewShowsLivenessBadges(t *testing.T) {
 		Route: []string{"laptop", "prod-db1"}, StartedAt: time.Unix(1_500_000_000, 0),
 		LocalPID:   os.Getpid(),
 		Muxer:      &state.MuxerSpec{Type: "tmux"},
-		RecordedBy: &state.RecordingOrigin{},
+		Transcript: &state.TranscriptSpec{Format: "asciicast"},
 	}
 	view := MapView(ViewOptions{
 		Title: "ssherpa session map", StateDir: "/tmp/x",
@@ -36,5 +36,32 @@ func TestLivenessBadgesEmptyWithoutData(t *testing.T) {
 	plain := termstyle.TerminalTheme().WithNoColor(true)
 	if got := livenessBadges(state.SessionRecord{ID: "x"}, plain); got != "" {
 		t.Fatalf("no muxer/recording -> no badge, got %q", got)
+	}
+}
+
+// A paused transcript shows REC·paused rather than the active REC badge.
+func TestLivenessBadgesPausedTranscript(t *testing.T) {
+	plain := termstyle.TerminalTheme().WithNoColor(true)
+	rec := state.SessionRecord{
+		ID:         "c",
+		Transcript: &state.TranscriptSpec{Format: "asciicast", Paused: true},
+	}
+	got := livenessBadges(rec, plain)
+	if !strings.Contains(got, "REC·paused") {
+		t.Fatalf("paused transcript should show REC·paused, got %q", got)
+	}
+}
+
+// RecordedBy is provenance and is set on every session (proxies included),
+// so it must not light the REC badge — only a transcript does.
+func TestLivenessBadgesRecordedByDoesNotShowREC(t *testing.T) {
+	plain := termstyle.TerminalTheme().WithNoColor(true)
+	rec := state.SessionRecord{
+		ID:         "p",
+		Kind:       state.KindProxy,
+		RecordedBy: &state.RecordingOrigin{MachineID: "m1", SSHerpaVersion: "test"},
+	}
+	if got := livenessBadges(rec, plain); strings.Contains(got, "REC") {
+		t.Fatalf("RecordedBy alone must not show REC, got %q", got)
 	}
 }

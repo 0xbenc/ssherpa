@@ -2337,6 +2337,7 @@ type transcriptWriter interface {
 	WriteMarker(at time.Time, message string)
 	Close(ended time.Time) (state.TranscriptSpec, error)
 	StopReason() string
+	Snapshot() state.TranscriptSpec
 }
 
 type sessionRecorder struct {
@@ -2385,11 +2386,22 @@ func (r *sessionRecorder) Toggle() (string, error) {
 	if r.active {
 		r.active = false
 		r.writer.WriteMarker(r.now().UTC(), "recording paused from session overlay")
+		r.persistPausedLocked(true)
 		return "recording paused", nil
 	}
 	r.active = true
 	r.writer.WriteMarker(r.now().UTC(), "recording resumed from session overlay")
+	r.persistPausedLocked(false)
 	return "recording resumed", nil
+}
+
+// persistPausedLocked mirrors the recorder's active/paused state into the
+// on-disk record so the session map can distinguish REC from a paused
+// recording. Called with r.mu held; the writer is guaranteed non-nil here.
+func (r *sessionRecorder) persistPausedLocked(paused bool) {
+	spec := r.writer.Snapshot()
+	spec.Paused = paused
+	r.updateRecord(spec)
 }
 
 func (r *sessionRecorder) HelpAction() string {

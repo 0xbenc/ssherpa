@@ -2124,9 +2124,10 @@ type failingTranscriptWriter struct {
 	err  error
 }
 
-func (w *failingTranscriptWriter) WriteOutput(time.Time, []byte) {}
-func (w *failingTranscriptWriter) WriteMarker(time.Time, string) {}
-func (w *failingTranscriptWriter) StopReason() string            { return "write error: disk full" }
+func (w *failingTranscriptWriter) WriteOutput(time.Time, []byte)  {}
+func (w *failingTranscriptWriter) WriteMarker(time.Time, string)  {}
+func (w *failingTranscriptWriter) StopReason() string             { return "write error: disk full" }
+func (w *failingTranscriptWriter) Snapshot() state.TranscriptSpec { return w.spec }
 func (w *failingTranscriptWriter) Close(ended time.Time) (state.TranscriptSpec, error) {
 	spec := w.spec
 	endedUTC := ended.UTC()

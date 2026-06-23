@@ -187,6 +187,11 @@ type TranscriptSpec struct {
 	MaxBytes  int64      `json:"max_bytes,omitempty"`
 	Truncated bool       `json:"truncated,omitempty"`
 	Input     bool       `json:"input,omitempty"`
+	// Paused is true while an open transcript is paused via the session
+	// overlay (the writer stays open but stops capturing). It is cleared
+	// on resume and on close; the session map uses it to show REC vs a
+	// paused badge. Additive/omitempty, so older binaries ignore it.
+	Paused bool `json:"paused,omitempty"`
 	// StopReason records why the transcript writer stopped early
 	// ("size limit reached", "write error: ..."); empty when the
 	// recording ran to a clean close. Mirrors
