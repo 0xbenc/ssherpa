@@ -1597,8 +1597,12 @@ func sessionSummaryLine(prefix string, record state.SessionRecord, currentID str
 // livenessBadges appends compact per-node liveness markers read synchronously
 // at paint time — only where the record actually carries the data, so no badge
 // is ever fabricated. tmux/screen hold comes from the muxer spec; REC reports
-// only that a recording exists (disk-derived, conservative) — never a
-// transcript byte. Each field is cleanField'd, never raw.
+// only that a transcript exists (set when recording actually starts), and
+// reflects the transcript's paused flag (REC·paused) — never a transcript
+// byte. RecordedBy is deliberately not used here: it is provenance (which
+// machine/version produced the record) and is set on every session, including
+// proxies, so it would light REC for sessions that aren't recorded. Each field
+// is cleanField'd, never raw.
 func livenessBadges(record state.SessionRecord, theme termstyle.Theme) string {
 	var parts []string
 	if record.Muxer != nil && strings.TrimSpace(record.Muxer.Type) != "" {
@@ -1608,8 +1612,12 @@ func livenessBadges(record state.SessionRecord, theme termstyle.Theme) string {
 		}
 		parts = append(parts, theme.Style(termstyle.RoleInfo, label))
 	}
-	if record.RecordedBy != nil {
-		parts = append(parts, theme.Style(termstyle.RoleWarning, "REC"))
+	if record.Transcript != nil {
+		if record.Transcript.Paused {
+			parts = append(parts, theme.Style(termstyle.RoleMuted, "REC·paused"))
+		} else {
+			parts = append(parts, theme.Style(termstyle.RoleWarning, "REC"))
+		}
 	}
 	if len(parts) == 0 {
 		return ""
@@ -1778,14 +1786,17 @@ func sessionDetailLines(prefix string, record state.SessionRecord, theme termsty
 }
 
 func dotJoinLines(prefix string, parts []string, theme termstyle.Theme, width int) []string {
-	sep := theme.Style(termstyle.RoleMuted, " · ")
+	// The session-map status line ("supervised · started … · proxy …") is
+	// painted in RoleForeground so it reads at the same weight as the target
+	// alias on the summary line above it, rather than fading into RoleMuted.
+	sep := theme.Style(termstyle.RoleForeground, " · ")
 	lines := []string{}
-	current := prefix + theme.Style(termstyle.RoleMuted, parts[0])
+	current := prefix + theme.Style(termstyle.RoleForeground, parts[0])
 	for _, part := range parts[1:] {
-		next := sep + theme.Style(termstyle.RoleMuted, part)
+		next := sep + theme.Style(termstyle.RoleForeground, part)
 		if termstyle.VisibleWidth(current+next) > width && termstyle.VisibleWidth(current) > termstyle.VisibleWidth(prefix) {
 			lines = append(lines, truncateVisible(current, width))
-			current = prefix + theme.Style(termstyle.RoleMuted, part)
+			current = prefix + theme.Style(termstyle.RoleForeground, part)
 			continue
 		}
 		current += next
