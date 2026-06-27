@@ -78,6 +78,12 @@ Import your own SSH keypair into ~/.ssh: validate the private key, derive its
 public half, copy both in with safe permissions (dir 0700, private 0600, public
 0644), and print the SHA256 fingerprint. The source is left untouched. --register adds the key as the default identity (Host * IdentityFile) in
 ~/.ssh/config, idempotent and backed up.
+.B --add-to-agent
+loads the key into the running ssh-agent (a missing agent is skipped, not an
+error);
+.B --agent-ttl
+D caps its lifetime in the agent (a Go duration, e.g. 8h) and implies
+.BR --add-to-agent .
 An
 encrypted key's passphrase comes from
 .B SSHERPA_KEY_PASSPHRASE ,
@@ -85,6 +91,10 @@ encrypted key's passphrase comes from
 or an interactive prompt. Flags:
 .BR --from ,
 .BR --name ,
+.BR --register ,
+.BR --add-to-agent ,
+.BR --agent-ttl ,
+.BR --ssh-add ,
 .BR --force ,
 .BR --dry-run ,
 .BR --yes ,
@@ -99,11 +109,22 @@ passphrase unless
 .B SSHERPA_KEY_PASSPHRASE
 or
 .B --passphrase-fd
-is set. Flags:
+is set. It also accepts
+.BR --register ,
+.BR --add-to-agent ,
+and
+.B --agent-ttl
+with the same meaning as
+.BR "key import" .
+Flags:
 .BR --name ,
 .BR --type ,
 .BR --comment ,
 .BR --bits ,
+.BR --register ,
+.BR --add-to-agent ,
+.BR --agent-ttl ,
+.BR --ssh-add ,
 .BR --force ,
 .BR --dry-run ,
 .BR --yes ,

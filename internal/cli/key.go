@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/x/term"
 
@@ -17,8 +19,8 @@ import (
 )
 
 const keyUsage = `Usage:
-  ssherpa key import --from PATH [--name NAME] [--register] [--force] [--dry-run] [--yes] [--json] [--ssh-keygen PATH]
-  ssherpa key generate [--name NAME] [--type ed25519|rsa|ecdsa] [--comment C] [--register] [--force] [--dry-run] [--yes] [--json]
+  ssherpa key import --from PATH [--name NAME] [--register] [--add-to-agent] [--agent-ttl D] [--force] [--dry-run] [--yes] [--json] [--ssh-keygen PATH]
+  ssherpa key generate [--name NAME] [--type ed25519|rsa|ecdsa] [--comment C] [--register] [--add-to-agent] [--agent-ttl D] [--force] [--dry-run] [--yes] [--json]
 
 Set up your OWN SSH keypair in ~/.ssh with safe permissions (the directory
 0700, private 0600, public 0644 — ssh refuses a loose-perm private key) and
@@ -34,6 +36,11 @@ print its SHA256 fingerprint.
 --register adds the key as the default identity (Host * IdentityFile, absolute
 path) in ~/.ssh/config — idempotent and backed up. For a single host, set the
 identity on that alias with "ssherpa edit" instead.
+
+--add-to-agent loads the key into your running ssh-agent (ssh-add). With no
+agent running it is skipped with a notice, not an error. --agent-ttl D (a Go
+duration like 8h or 30m) caps the key's lifetime in the agent and implies
+--add-to-agent.
 
 Re-importing the same key is a no-op; a different key with the same name is
 refused unless --force.
@@ -64,6 +71,9 @@ type keyImportFlags struct {
 	Name          string
 	Force         bool
 	Register      bool
+	AddToAgent    bool
+	AgentTTL      string
+	SSHAddPath    string
 	DryRun        bool
 	Yes           bool
 	JSON          bool
@@ -111,6 +121,24 @@ func parseKeyImportFlags(args []string, stderr io.Writer) (keyImportFlags, bool)
 				return flags, false
 			}
 			flags.PassphraseFD = fd
+		case arg == "--add-to-agent":
+			flags.AddToAgent = true
+		case arg == "--agent-ttl":
+			value, ok := nextArg(args, &i, stderr, "--agent-ttl")
+			if !ok {
+				return flags, false
+			}
+			flags.AgentTTL = value
+		case strings.HasPrefix(arg, "--agent-ttl="):
+			flags.AgentTTL = strings.TrimPrefix(arg, "--agent-ttl=")
+		case arg == "--ssh-add":
+			value, ok := nextArg(args, &i, stderr, "--ssh-add")
+			if !ok {
+				return flags, false
+			}
+			flags.SSHAddPath = value
+		case strings.HasPrefix(arg, "--ssh-add="):
+			flags.SSHAddPath = strings.TrimPrefix(arg, "--ssh-add=")
 		case arg == "--force":
 			flags.Force = true
 		case arg == "--register":
@@ -130,16 +158,18 @@ func parseKeyImportFlags(args []string, stderr io.Writer) (keyImportFlags, bool)
 }
 
 type keyImportOutput struct {
-	Fingerprint string `json:"fingerprint"`
-	Type        string `json:"type"`
-	Comment     string `json:"comment,omitempty"`
-	Name        string `json:"name"`
-	PrivatePath string `json:"private_path"`
-	PublicPath  string `json:"public_path"`
-	DryRun      bool   `json:"dry_run"`
-	Imported    bool   `json:"imported"`
-	Skipped     bool   `json:"skipped,omitempty"`
-	Registered  bool   `json:"registered,omitempty"`
+	Fingerprint  string `json:"fingerprint"`
+	Type         string `json:"type"`
+	Comment      string `json:"comment,omitempty"`
+	Name         string `json:"name"`
+	PrivatePath  string `json:"private_path"`
+	PublicPath   string `json:"public_path"`
+	DryRun       bool   `json:"dry_run"`
+	Imported     bool   `json:"imported"`
+	Skipped      bool   `json:"skipped,omitempty"`
+	Registered   bool   `json:"registered,omitempty"`
+	AddedToAgent bool   `json:"added_to_agent,omitempty"`
+	AgentSkipped bool   `json:"agent_skipped,omitempty"`
 }
 
 func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -155,6 +185,12 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 		if !validateExplicitSSHKeygen(authkeysFlags{SSHKeygenPath: flags.SSHKeygenPath}, stderr) {
 			return 1
 		}
+	}
+	if strings.TrimSpace(flags.AgentTTL) != "" {
+		flags.AddToAgent = true
+	}
+	if flags.AddToAgent && !validateAgentOptions(flags.SSHAddPath, flags.AgentTTL, stderr) {
+		return 1
 	}
 
 	src, err := expandUserPath(flags.From)
@@ -175,12 +211,14 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	kg := sshkeys.Keygen{Path: flags.SSHKeygenPath}
 	ctx := context.Background()
+	var keyPassphrase string
 	info, err := kg.DeriveBytes(ctx, data, "")
 	if err == sshkeys.ErrEncrypted {
 		pass, ok := readKeyPassphrase(flags, stderr)
 		if !ok {
 			return 1
 		}
+		keyPassphrase = pass
 		info, err = kg.DeriveBytes(ctx, data, pass)
 	}
 	if err != nil {
@@ -212,6 +250,9 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 		printKeyImportPreview(stderr, info, privDest, flags.DryRun)
 		if flags.Register {
 			fmt.Fprintf(stderr, "  register    default identity in ~/.ssh/config\n")
+		}
+		if flags.AddToAgent {
+			fmt.Fprintf(stderr, "  agent       %s\n", agentPreviewDetail(flags.AgentTTL))
 		}
 	}
 	if flags.DryRun {
@@ -251,6 +292,16 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 		out.Registered = registered
 	}
 
+	if flags.AddToAgent {
+		added, skipped, agErr := addKeyToAgent(res.PrivatePath, keyPassphrase, flags.AgentTTL, flags.SSHAddPath, stderr)
+		if agErr != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", agErr)
+			return 1
+		}
+		out.AddedToAgent = added
+		out.AgentSkipped = skipped
+	}
+
 	if flags.JSON {
 		writeJSON(stdout, out)
 		return 0
@@ -273,6 +324,64 @@ func registerKeyIdentity(keyPath string, stderr io.Writer) (bool, error) {
 	return registerGlobalIdentity(configPath, keyPath, stderr)
 }
 
+// parseAgentTTL turns the --agent-ttl flag (a Go duration, e.g. "8h") into a
+// lifetime for ssh-add. Empty means no expiry; a negative duration is rejected.
+func parseAgentTTL(raw string) (time.Duration, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --agent-ttl %q: %v", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid --agent-ttl %q: must not be negative", raw)
+	}
+	return d, nil
+}
+
+// validateAgentOptions fails fast on a bad --agent-ttl or an unusable ssh-add
+// binary, before any key material is touched.
+func validateAgentOptions(sshAddPath, ttl string, stderr io.Writer) bool {
+	if _, err := parseAgentTTL(ttl); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return false
+	}
+	return validateSSHAdd(sshAddPath, stderr)
+}
+
+func agentPreviewDetail(ttl string) string {
+	if t := strings.TrimSpace(ttl); t != "" {
+		return "load into ssh-agent (ttl " + t + ")"
+	}
+	return "load into ssh-agent"
+}
+
+// addKeyToAgent loads the placed key into the running ssh-agent. A missing agent
+// is a soft skip (notice + skipped=true), not an error: the import/generation
+// itself already succeeded.
+func addKeyToAgent(privPath, passphrase, ttlRaw, sshAddPath string, stderr io.Writer) (added bool, skipped bool, err error) {
+	ttl, err := parseAgentTTL(ttlRaw)
+	if err != nil {
+		return false, false, err
+	}
+	agent := sshkeys.Agent{Path: resolveSSHAddPath(sshAddPath)}
+	if addErr := agent.Add(context.Background(), privPath, passphrase, ttl); addErr != nil {
+		if errors.Is(addErr, sshkeys.ErrNoAgent) {
+			fmt.Fprintln(stderr, "No ssh-agent running (SSH_AUTH_SOCK unset); skipped --add-to-agent.")
+			return false, true, nil
+		}
+		return false, false, addErr
+	}
+	if ttl > 0 {
+		fmt.Fprintf(stderr, "Added to ssh-agent (expires in %s).\n", ttl)
+	} else {
+		fmt.Fprintln(stderr, "Added to ssh-agent.")
+	}
+	return true, false, nil
+}
+
 type keyGenerateFlags struct {
 	Name          string
 	Type          string
@@ -280,6 +389,9 @@ type keyGenerateFlags struct {
 	Bits          int
 	Force         bool
 	Register      bool
+	AddToAgent    bool
+	AgentTTL      string
+	SSHAddPath    string
 	DryRun        bool
 	Yes           bool
 	JSON          bool
@@ -346,6 +458,24 @@ func parseKeyGenerateFlags(args []string, stderr io.Writer) (keyGenerateFlags, b
 				return flags, false
 			}
 			flags.PassphraseFD = fd
+		case arg == "--add-to-agent":
+			flags.AddToAgent = true
+		case arg == "--agent-ttl":
+			value, ok := nextArg(args, &i, stderr, "--agent-ttl")
+			if !ok {
+				return flags, false
+			}
+			flags.AgentTTL = value
+		case strings.HasPrefix(arg, "--agent-ttl="):
+			flags.AgentTTL = strings.TrimPrefix(arg, "--agent-ttl=")
+		case arg == "--ssh-add":
+			value, ok := nextArg(args, &i, stderr, "--ssh-add")
+			if !ok {
+				return flags, false
+			}
+			flags.SSHAddPath = value
+		case strings.HasPrefix(arg, "--ssh-add="):
+			flags.SSHAddPath = strings.TrimPrefix(arg, "--ssh-add=")
 		case arg == "--force":
 			flags.Force = true
 		case arg == "--register":
@@ -365,15 +495,17 @@ func parseKeyGenerateFlags(args []string, stderr io.Writer) (keyGenerateFlags, b
 }
 
 type keyGenerateOutput struct {
-	Fingerprint string `json:"fingerprint,omitempty"`
-	Type        string `json:"type"`
-	Comment     string `json:"comment,omitempty"`
-	Name        string `json:"name"`
-	PrivatePath string `json:"private_path"`
-	PublicPath  string `json:"public_path"`
-	DryRun      bool   `json:"dry_run"`
-	Generated   bool   `json:"generated"`
-	Registered  bool   `json:"registered,omitempty"`
+	Fingerprint  string `json:"fingerprint,omitempty"`
+	Type         string `json:"type"`
+	Comment      string `json:"comment,omitempty"`
+	Name         string `json:"name"`
+	PrivatePath  string `json:"private_path"`
+	PublicPath   string `json:"public_path"`
+	DryRun       bool   `json:"dry_run"`
+	Generated    bool   `json:"generated"`
+	Registered   bool   `json:"registered,omitempty"`
+	AddedToAgent bool   `json:"added_to_agent,omitempty"`
+	AgentSkipped bool   `json:"agent_skipped,omitempty"`
 }
 
 func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -390,6 +522,12 @@ func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if flags.SSHKeygenPath != "" && !validateExplicitSSHKeygen(authkeysFlags{SSHKeygenPath: flags.SSHKeygenPath}, stderr) {
+		return 1
+	}
+	if strings.TrimSpace(flags.AgentTTL) != "" {
+		flags.AddToAgent = true
+	}
+	if flags.AddToAgent && !validateAgentOptions(flags.SSHAddPath, flags.AgentTTL, stderr) {
 		return 1
 	}
 
@@ -427,6 +565,9 @@ func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  ~/.ssh dir  0700\n")
 		if flags.Register {
 			fmt.Fprintf(stderr, "  register    default identity in ~/.ssh/config\n")
+		}
+		if flags.AddToAgent {
+			fmt.Fprintf(stderr, "  agent       %s\n", agentPreviewDetail(flags.AgentTTL))
 		}
 	}
 	if flags.DryRun {
@@ -470,6 +611,16 @@ func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		out.Registered = registered
+	}
+
+	if flags.AddToAgent {
+		added, skipped, agErr := addKeyToAgent(res.PrivatePath, passphrase, flags.AgentTTL, flags.SSHAddPath, stderr)
+		if agErr != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", agErr)
+			return 1
+		}
+		out.AddedToAgent = added
+		out.AgentSkipped = skipped
 	}
 
 	if flags.JSON {

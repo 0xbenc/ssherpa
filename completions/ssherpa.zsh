@@ -239,6 +239,9 @@ _ssherpa() {
             '--comment[key comment]:comment' \
             '--bits[rsa key size]:bits' \
             '--register[register as the default identity in ~/.ssh/config]' \
+            '--add-to-agent[load the key into the running ssh-agent]' \
+            '--agent-ttl[agent key lifetime, e.g. 8h (implies --add-to-agent)]:duration' \
+            '--ssh-add[use this ssh-add binary]:path:_files' \
             '--force[overwrite an existing key with the same name]' \
             '--ssh-keygen[use this ssh-keygen binary]:path:_files' \
             '--passphrase-fd[read passphrase from this fd]:fd' \

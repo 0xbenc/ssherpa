@@ -13,6 +13,7 @@ const (
 	OpenSSHClientInstallHint = "install an OpenSSH client, or pass --ssh-binary PATH / set SSHERPA_SSH_BINARY"
 	OpenSFTPInstallHint      = "install an OpenSSH SFTP client, or pass --sftp-binary PATH / set SSHERPA_SFTP_BINARY"
 	SSHKeygenInstallHint     = "install OpenSSH ssh-keygen, or pass a valid --ssh-keygen path"
+	SSHAddInstallHint        = "install OpenSSH ssh-add, or pass --ssh-add PATH / set SSHERPA_SSH_ADD_BINARY"
 )
 
 type BinaryRequirement struct {

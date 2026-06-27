@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
 )
@@ -36,6 +37,10 @@ import (
 // passphrase and none (or an empty one) was supplied, so a caller can prompt
 // and retry.
 var ErrEncrypted = errors.New("private key is encrypted; a passphrase is required")
+
+// ErrNoAgent is returned by Agent.Add when no ssh-agent is reachable
+// (SSH_AUTH_SOCK is unset), so a caller can skip with a notice rather than fail.
+var ErrNoAgent = errors.New("no ssh-agent is running (SSH_AUTH_SOCK is not set)")
 
 const (
 	dirMode  = 0o700
@@ -139,13 +144,24 @@ const askpassEnvKey = "SSHERPA_ASKPASS_VALUE"
 // askpassHelper writes a tiny SSH_ASKPASS program that echoes the passphrase
 // read from its environment (never embedded in the file body, never on argv).
 // It lives 0700 in a private temp dir; the returned cleanup deletes it.
+//
+// The helper is SINGLE-SHOT: it emits the passphrase on its first invocation
+// and then refuses (exit 1) on every subsequent one. This matters for ssh-add,
+// which loops re-prompting on a wrong passphrase and only stops when the prompt
+// is cancelled — a robot that returned the same wrong value forever would spin
+// it at 100% CPU. ssh-keygen -y prompts just once, so the guard is harmless
+// there.
 func askpassHelper(_ string) (string, func(), error) {
 	dir, err := os.MkdirTemp("", "ssherpa-askpass-")
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create askpass dir: %w", err)
 	}
 	path := filepath.Join(dir, "askpass.sh")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$" + askpassEnvKey + "\"\n"
+	used := filepath.Join(dir, ".used")
+	script := "#!/bin/sh\n" +
+		"if [ -e '" + used + "' ]; then exit 1; fi\n" +
+		": > '" + used + "'\n" +
+		"printf '%s\\n' \"$" + askpassEnvKey + "\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		os.RemoveAll(dir)
 		return "", func() {}, fmt.Errorf("write askpass helper: %w", err)
@@ -155,6 +171,67 @@ func askpassHelper(_ string) (string, func(), error) {
 
 func mentionsPassphrase(stderr string) bool {
 	return strings.Contains(strings.ToLower(stderr), "passphrase")
+}
+
+// Agent runs ssh-add against the user's running ssh-agent. An empty Path
+// resolves "ssh-add" via PATH.
+type Agent struct {
+	Path string
+}
+
+func (a Agent) bin() string {
+	if strings.TrimSpace(a.Path) != "" {
+		return a.Path
+	}
+	return "ssh-add"
+}
+
+// Add loads the private key at path into the running ssh-agent. It returns
+// ErrNoAgent when SSH_AUTH_SOCK is unset so the caller can skip with a notice.
+// For an encrypted key it feeds the passphrase via the same env-backed
+// SSH_ASKPASS helper used for Derive (so the passphrase never appears on argv),
+// and forces askpass (SSH_ASKPASS_REQUIRE=force) so ssh-add never blocks on a
+// terminal prompt. When ttl > 0 the key is given that lifetime in the agent
+// (ssh-add -t seconds, rounded up to whole seconds).
+func (a Agent) Add(ctx context.Context, path, passphrase string, ttl time.Duration) error {
+	if strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")) == "" {
+		return ErrNoAgent
+	}
+
+	var args []string
+	if ttl > 0 {
+		secs := int((ttl + time.Second - 1) / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		args = append(args, "-t", strconv.Itoa(secs))
+	}
+	args = append(args, path)
+
+	// Always route any passphrase prompt through the env-backed askpass helper
+	// (empty value for an unencrypted key, which ssh-add never consults). This
+	// keeps the call strictly non-interactive: an encrypted key with no/ wrong
+	// passphrase fails fast instead of hanging on a tty prompt.
+	helper, cleanup, err := askpassHelper(passphrase)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	env := append(os.Environ(),
+		"SSH_ASKPASS="+helper,
+		"SSH_ASKPASS_REQUIRE=force",
+		askpassEnvKey+"="+passphrase,
+	)
+
+	cmd := exec.CommandContext(ctx, a.bin(), args...)
+	cmd.Env = env
+	cmd.Stdin = nil
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh-add failed: %s", firstLine(strings.TrimSpace(stderr.String())))
+	}
+	return nil
 }
 
 func firstLine(s string) string {

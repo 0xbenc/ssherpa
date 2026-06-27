@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func genTestKey(t *testing.T, path, passphrase, comment string) {
@@ -154,6 +156,131 @@ func TestKeyImportRegisterGlobalIdentity(t *testing.T) {
 	after, _ := os.ReadFile(cfg)
 	if n := bytes.Count(after, []byte("IdentityFile")); n != 1 {
 		t.Fatalf("expected exactly one IdentityFile line, got %d:\n%s", n, after)
+	}
+}
+
+func TestParseAgentTTL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"", 0, true},
+		{"0", 0, true},
+		{"8h", 8 * time.Hour, true},
+		{"30m", 30 * time.Minute, true},
+		{"90s", 90 * time.Second, true},
+		{"-5m", 0, false},
+		{"banana", 0, false},
+	}
+	for _, c := range cases {
+		got, err := parseAgentTTL(c.in)
+		if c.ok {
+			if err != nil {
+				t.Errorf("parseAgentTTL(%q) unexpected error %v", c.in, err)
+				continue
+			}
+			if got != c.want {
+				t.Errorf("parseAgentTTL(%q) = %v, want %v", c.in, got, c.want)
+			}
+		} else if err == nil {
+			t.Errorf("parseAgentTTL(%q) expected an error", c.in)
+		}
+	}
+}
+
+func TestKeyImportAddToAgentNoAgentSoftSkips(t *testing.T) {
+	src := t.TempDir()
+	priv := filepath.Join(src, "k")
+	genTestKey(t, priv, "", "x")
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SSH_AUTH_SOCK", "") // no agent reachable
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"key", "import", "--from", priv, "--name", "id_a", "--add-to-agent", "--yes", "--json"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("a missing agent must be a soft skip (exit 0), got %d; %s", code, stderr.String())
+	}
+	var out keyImportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if !out.Imported {
+		t.Fatalf("the import itself must still succeed: %#v", out)
+	}
+	if out.AddedToAgent || !out.AgentSkipped {
+		t.Fatalf("expected agent skipped, got %#v", out)
+	}
+}
+
+// startTestAgent boots a throwaway ssh-agent for the test and points
+// SSH_AUTH_SOCK at it. It skips when no agent can be started.
+func startTestAgent(t *testing.T) func() {
+	t.Helper()
+	if _, err := exec.LookPath("ssh-agent"); err != nil {
+		t.Skip("ssh-agent not installed")
+	}
+	if _, err := exec.LookPath("ssh-add"); err != nil {
+		t.Skip("ssh-add not installed")
+	}
+	out, err := exec.Command("ssh-agent", "-s").Output()
+	if err != nil {
+		t.Skipf("ssh-agent unavailable here: %v", err)
+	}
+	var sock, pid string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		for _, kv := range []struct {
+			key string
+			dst *string
+		}{{"SSH_AUTH_SOCK=", &sock}, {"SSH_AGENT_PID=", &pid}} {
+			if strings.HasPrefix(line, kv.key) {
+				rest := strings.TrimPrefix(line, kv.key)
+				if i := strings.IndexByte(rest, ';'); i >= 0 {
+					rest = rest[:i]
+				}
+				*kv.dst = rest
+			}
+		}
+	}
+	if sock == "" {
+		t.Skipf("could not parse SSH_AUTH_SOCK from: %s", out)
+	}
+	t.Setenv("SSH_AUTH_SOCK", sock)
+	return func() {
+		if pid != "" {
+			_ = exec.Command("kill", pid).Run()
+		}
+	}
+}
+
+func TestKeyImportAddToAgentLoadsKey(t *testing.T) {
+	src := t.TempDir()
+	priv := filepath.Join(src, "agentkey")
+	genTestKey(t, priv, "", "agent-test")
+
+	stop := startTestAgent(t)
+	defer stop()
+
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"key", "import", "--from", priv, "--name", "id_agent", "--add-to-agent", "--agent-ttl", "10m", "--yes", "--json"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("import --add-to-agent = %d; %s", code, stderr.String())
+	}
+	var out keyImportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if !out.AddedToAgent || out.AgentSkipped {
+		t.Fatalf("expected key added to agent, got %#v", out)
+	}
+	listed, err := exec.Command("ssh-add", "-l").CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh-add -l: %v: %s", err, listed)
+	}
+	if !bytes.Contains(listed, []byte(out.Fingerprint)) {
+		t.Fatalf("agent does not list %s:\n%s", out.Fingerprint, listed)
 	}
 }
 

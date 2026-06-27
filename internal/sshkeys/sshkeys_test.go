@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // genKey creates a keypair with ssh-keygen, skipping the test when generation
@@ -212,5 +213,112 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 	if st.Mode().Perm() != want {
 		t.Fatalf("%s mode = %o, want %o", path, st.Mode().Perm(), want)
+	}
+}
+
+// startAgent boots a throwaway ssh-agent, points SSH_AUTH_SOCK at it for the
+// duration of the test, and returns a stop func. It skips (not fails) when no
+// agent can be started — e.g. macOS CI where a long $TMPDIR overruns the unix
+// socket path limit.
+func startAgent(t *testing.T) func() {
+	t.Helper()
+	if _, err := exec.LookPath("ssh-agent"); err != nil {
+		t.Skip("ssh-agent not installed")
+	}
+	if _, err := exec.LookPath("ssh-add"); err != nil {
+		t.Skip("ssh-add not installed")
+	}
+	out, err := exec.Command("ssh-agent", "-s").Output()
+	if err != nil {
+		t.Skipf("ssh-agent unavailable here: %v", err)
+	}
+	sock := parseAgentEnv(string(out), "SSH_AUTH_SOCK")
+	pid := parseAgentEnv(string(out), "SSH_AGENT_PID")
+	if sock == "" {
+		t.Skipf("could not parse SSH_AUTH_SOCK from: %s", out)
+	}
+	t.Setenv("SSH_AUTH_SOCK", sock)
+	return func() {
+		if pid != "" {
+			_ = exec.Command("kill", pid).Run()
+		}
+	}
+}
+
+func parseAgentEnv(out, key string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, key+"=") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, key+"=")
+		if i := strings.IndexByte(rest, ';'); i >= 0 {
+			rest = rest[:i]
+		}
+		return rest
+	}
+	return ""
+}
+
+func agentLists(t *testing.T, fingerprint string) bool {
+	t.Helper()
+	out, err := exec.Command("ssh-add", "-l").CombinedOutput()
+	if err != nil {
+		// exit 1 = no identities; treat as "not listed" rather than fatal.
+		return false
+	}
+	return strings.Contains(string(out), fingerprint)
+}
+
+func TestAgentAddNoAgent(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	err := Agent{}.Add(context.Background(), filepath.Join(t.TempDir(), "nope"), "", 0)
+	if err != ErrNoAgent {
+		t.Fatalf("Add with no agent = %v, want ErrNoAgent", err)
+	}
+}
+
+func TestAgentAddUnencrypted(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "id")
+	genKey(t, priv, "", "agent-plain")
+	info, err := Keygen{}.Derive(context.Background(), priv, "")
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+
+	stop := startAgent(t)
+	defer stop()
+
+	if err := (Agent{}).Add(context.Background(), priv, "", 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !agentLists(t, info.Fingerprint) {
+		t.Fatalf("agent does not list %s after Add", info.Fingerprint)
+	}
+}
+
+func TestAgentAddEncryptedViaAskpass(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "id")
+	genKey(t, priv, "s3cret", "agent-enc")
+	info, err := Keygen{}.Derive(context.Background(), priv, "s3cret")
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+
+	stop := startAgent(t)
+	defer stop()
+
+	// Wrong passphrase must fail (and never hang on a tty prompt).
+	if err := (Agent{}).Add(context.Background(), priv, "wrong", 0); err == nil {
+		t.Fatal("Add with wrong passphrase should fail")
+	}
+	// Right passphrase, fed via the env-backed askpass helper, loads the key.
+	if err := (Agent{}).Add(context.Background(), priv, "s3cret", 30*time.Minute); err != nil {
+		t.Fatalf("Add with right passphrase: %v", err)
+	}
+	if !agentLists(t, info.Fingerprint) {
+		t.Fatalf("agent does not list %s after Add", info.Fingerprint)
 	}
 }

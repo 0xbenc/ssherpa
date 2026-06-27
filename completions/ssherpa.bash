@@ -169,15 +169,15 @@ _ssherpa()
         key)
             case "${words[2]}" in
                 import)
-                    COMPREPLY=( $(compgen -W "--from --name --register --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--from --name --register --add-to-agent --agent-ttl --ssh-add --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
                     return
                     ;;
                 generate|gen)
-                    COMPREPLY=( $(compgen -W "--name --type --comment --bits --register --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--name --type --comment --bits --register --add-to-agent --agent-ttl --ssh-add --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
                     return
                     ;;
                 *)
-                    COMPREPLY=( $(compgen -W "import generate --from --name --type --comment --bits --register --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "import generate --from --name --type --comment --bits --register --add-to-agent --agent-ttl --ssh-add --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
                     return
                     ;;
             esac
