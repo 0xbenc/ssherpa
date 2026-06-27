@@ -706,28 +706,13 @@ func authkeysRevokeSourceItems() []ui.ManagementItem {
 }
 
 func pickAuthkeysRevokeFile(stderr io.Writer) (string, bool, error) {
-	cwd, err := expandLocalPath(".")
-	if err != nil {
-		return "", false, err
+	opts := transferBrowserOptions(stderr, filePickerOptions{}, "SSHERPA AUTHKEYS REMOVE FILE", "local-file", "LOCAL", ".", []string{"source", "key", "hosts", "routes", "confirm", "report"}, 1)
+	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	out, ok, err := ui.BrowseTransfer(context.Background(), localFileSource(), opts)
+	if err != nil || !ok {
+		return "", ok, err
 	}
-	for {
-		items, err := localFilePickerItems(cwd)
-		if err != nil {
-			return "", false, err
-		}
-		opts := transferBrowserOptions(stderr, filePickerOptions{}, "SSHERPA AUTHKEYS REMOVE FILE", "local-file", "LOCAL", cwd, []string{"source", "key", "hosts", "routes", "confirm", "report"}, 1)
-		opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, opts)
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case filePickerParent, filePickerDir:
-			cwd = item.Token
-		case filePickerFile:
-			return item.Token, true, nil
-		}
-	}
+	return out.Token(), true, nil
 }
 
 func runAuthkeysRevokeInteractiveTargets(flags authkeysRevokeFlags, stdout io.Writer, stderr io.Writer) int {

@@ -21,6 +21,8 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
+	"github.com/0xbenc/termnav"
+	"github.com/0xbenc/termnav/source"
 )
 
 const (
@@ -1179,7 +1181,7 @@ func transferBrowserOptions(output io.Writer, opts filePickerOptions, title stri
 		Title:         title,
 		Mode:          mode,
 		LocationLabel: locationLabel,
-		Location:      location,
+		Start:         location,
 		Steps:         steps,
 		CurrentStep:   currentStep,
 	}
@@ -1202,206 +1204,49 @@ func pickLocalFile(stderr io.Writer, opts filePickerOptions, start string) (stri
 // outside the send-transfer flow (e.g. importing a config or transcript
 // bundle) without duplicating the navigation loop.
 func pickLocalFileWith(stderr io.Writer, opts filePickerOptions, start string, title string, mode string, locationLabel string, steps []string, currentStep int) (string, bool, error) {
-	cwd, err := expandLocalPath(start)
-	if err != nil {
-		return "", false, err
+	browserOpts := transferBrowserOptions(stderr, opts, title, mode, locationLabel, start, steps, currentStep)
+	out, ok, err := ui.BrowseTransfer(context.Background(), localFileSource(), browserOpts)
+	if err != nil || !ok {
+		return "", ok, err
 	}
-	info, err := os.Stat(cwd)
-	if err != nil {
-		return "", false, err
-	}
-	if !info.IsDir() {
-		cwd = filepath.Dir(cwd)
-	}
+	return out.Token(), true, nil
+}
 
-	for {
-		items, err := localFilePickerItems(cwd)
-		if err != nil {
-			return "", false, err
-		}
-		browserOpts := transferBrowserOptions(stderr, opts, title, mode, locationLabel, cwd, steps, currentStep)
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case filePickerParent, filePickerDir:
-			cwd = item.Token
-		case filePickerFile:
-			return item.Token, true, nil
-		}
-	}
+// localFileSource lists the local filesystem for a single-file pick: directories
+// to descend into and files to select, hidden entries included (the transfer
+// browser has always shown them), with size+mtime descriptions.
+func localFileSource() *source.LocalSource {
+	return source.NewLocal(source.LocalOptions{
+		SelectFiles: true,
+		DirSuffix:   string(os.PathSeparator),
+		DirGroup:    "Directories", FileGroup: "Files", UpGroup: "Directories",
+		DirBadge: "dir", FileBadge: "file", UpBadge: "up",
+		DirKind: string(filePickerDir), FileKind: string(filePickerFile), UpKind: string(filePickerParent),
+		Describe: filePickerDescription,
+	})
+}
+
+// localDirSource lists the local filesystem for a folder pick: directories to
+// descend into plus a "Use this folder" row that commits the current directory.
+func localDirSource() *source.LocalSource {
+	return source.NewLocal(source.LocalOptions{
+		DirsOnly: true, UseRow: true, UseTitle: "Use this folder",
+		DirSuffix: string(os.PathSeparator),
+		UseGroup:  "Current", DirGroup: "Directories", UpGroup: "Directories",
+		UseBadge: "use", DirBadge: "dir", UpBadge: "up",
+		UseKind: string(filePickerHere), DirKind: string(filePickerDir), UpKind: string(filePickerParent),
+	})
 }
 
 func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
-	cwd, err := expandLocalPath(start)
-	if err != nil {
-		return "", false, err
+	src := localDirSource()
+	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE TARGET", "local-folder", "LOCAL", start, receiveTransferSteps(), 3)
+	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
+	if err != nil || !ok {
+		return "", ok, err
 	}
-	info, err := os.Stat(cwd)
-	if err != nil {
-		return "", false, err
-	}
-	if !info.IsDir() {
-		cwd = filepath.Dir(cwd)
-	}
-
-	for {
-		items, err := localDirectoryPickerItems(cwd)
-		if err != nil {
-			return "", false, err
-		}
-		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE TARGET", "local-folder", "LOCAL", cwd, receiveTransferSteps(), 3)
-		browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case filePickerHere:
-			return item.Token, true, nil
-		case filePickerParent, filePickerDir:
-			cwd = item.Token
-		}
-	}
-}
-
-func localFilePickerItems(dir string) ([]ui.Item, error) {
-	dir, err := expandLocalPath(dir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read directory %s: %w", dir, err)
-	}
-
-	items := []ui.Item{}
-	parent := filepath.Dir(dir)
-	if parent != dir {
-		items = append(items, ui.Item{
-			Kind:        filePickerParent,
-			Token:       parent,
-			Title:       "..",
-			Description: parent,
-			Group:       "Directories",
-			Badge:       "up",
-		})
-	}
-
-	type fileEntry struct {
-		item  ui.Item
-		isDir bool
-		name  string
-	}
-	files := make([]fileEntry, 0, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		name := entry.Name()
-		path := filepath.Join(dir, name)
-		if info.IsDir() {
-			files = append(files, fileEntry{
-				isDir: true,
-				name:  strings.ToLower(name),
-				item: ui.Item{
-					Kind:        filePickerDir,
-					Token:       path,
-					Title:       name + string(os.PathSeparator),
-					Description: path,
-					Group:       "Directories",
-					Badge:       "dir",
-				},
-			})
-			continue
-		}
-		files = append(files, fileEntry{
-			name: strings.ToLower(name),
-			item: ui.Item{
-				Kind:        filePickerFile,
-				Token:       path,
-				Title:       name,
-				Description: filePickerDescription(info),
-				Detail:      path,
-				Group:       "Files",
-				Badge:       "file",
-			},
-		})
-	}
-	sort.SliceStable(files, func(i, j int) bool {
-		if files[i].isDir != files[j].isDir {
-			return files[i].isDir
-		}
-		return files[i].name < files[j].name
-	})
-	for _, file := range files {
-		items = append(items, file.item)
-	}
-	return items, nil
-}
-
-func localDirectoryPickerItems(dir string) ([]ui.Item, error) {
-	dir, err := expandLocalPath(dir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read directory %s: %w", dir, err)
-	}
-
-	items := []ui.Item{{
-		Kind:        filePickerHere,
-		Token:       dir,
-		Title:       "Use this folder",
-		Description: dir,
-		Group:       "Current",
-		Badge:       "use",
-	}}
-	parent := filepath.Dir(dir)
-	if parent != dir {
-		items = append(items, ui.Item{
-			Kind:        filePickerParent,
-			Token:       parent,
-			Title:       "..",
-			Description: parent,
-			Group:       "Directories",
-			Badge:       "up",
-		})
-	}
-
-	type dirEntry struct {
-		item ui.Item
-		name string
-	}
-	dirs := make([]dirEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		path := filepath.Join(dir, name)
-		dirs = append(dirs, dirEntry{
-			name: strings.ToLower(name),
-			item: ui.Item{
-				Kind:        filePickerDir,
-				Token:       path,
-				Title:       name + string(os.PathSeparator),
-				Description: path,
-				Group:       "Directories",
-				Badge:       "dir",
-			},
-		})
-	}
-	sort.SliceStable(dirs, func(i, j int) bool {
-		return dirs[i].name < dirs[j].name
-	})
-	for _, dir := range dirs {
-		items = append(items, dir.item)
-	}
-	return items, nil
+	return out.Token(), true, nil
 }
 
 func filePickerDescription(info os.FileInfo) string {
@@ -1433,11 +1278,6 @@ func humanBytes(size int64) string {
 	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
-type remoteDirectoryListing struct {
-	CWD  string
-	Dirs []string
-}
-
 type remoteListing struct {
 	CWD     string
 	Entries []remoteEntry
@@ -1450,74 +1290,99 @@ type remoteEntry struct {
 }
 
 func pickRemoteFile(stderr io.Writer, opts filePickerOptions, flags transferFlags, alias string, start string) (string, bool, error) {
-	current := strings.TrimSpace(start)
-	if current == "" {
-		current = "."
+	src := &sftpSource{flags: flags, alias: alias, selectFiles: true}
+	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE SOURCE", "remote-file", alias, start, receiveTransferSteps(), 2)
+	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
+	if err != nil || !ok {
+		return "", ok, err
 	}
-	for {
-		listing, err := listRemoteEntries(flags, alias, current)
-		if err != nil {
-			return "", false, err
-		}
-		if listing.CWD != "" {
-			current = listing.CWD
-		}
-		items := remoteFilePickerItems(current, listing.Entries)
-		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE SOURCE", "remote-file", alias, current, receiveTransferSteps(), 2)
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case remotePickerFile:
-			return item.Token, true, nil
-		case remotePickerUp, remotePickerDir:
-			current = item.Token
-		}
-	}
+	return out.Token(), true, nil
 }
 
 func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transferFlags, alias string, start string) (string, bool, error) {
-	current := strings.TrimSpace(start)
-	if current == "" {
-		current = "."
+	src := &sftpSource{flags: flags, alias: alias, dirsOnly: true, useRow: true}
+	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND TARGET", "remote-folder", alias, start, sendTransferSteps(), 3)
+	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
+	if err != nil || !ok {
+		return "", ok, err
 	}
-	for {
-		listing, err := listRemoteDirectories(flags, alias, current)
-		if err != nil {
-			return "", false, err
-		}
-		if listing.CWD != "" {
-			current = listing.CWD
-		}
-		items := remoteDirectoryPickerItems(current, listing.Dirs)
-		browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND TARGET", "remote-folder", alias, current, sendTransferSteps(), 3)
-		browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, browserOpts)
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case remotePickerHere:
-			return item.Token, true, nil
-		case remotePickerUp, remotePickerDir:
-			current = item.Token
-		}
-	}
+	return out.Token(), true, nil
 }
 
-func listRemoteDirectories(flags transferFlags, alias string, dir string) (remoteDirectoryListing, error) {
-	listing, err := listRemoteEntries(flags, alias, dir)
+// sftpSource is ssherpa's remote FileSource: it lists one directory per call by
+// shelling out to sftp (reusing listRemoteEntries), the divergent-transport
+// analogue of an app's builtin palette. It is intentionally NOT a SyncLister, so
+// the browser shows a loading state for the network round trip instead of
+// freezing. Each List honors the context so a rapid navigation can abort.
+type sftpSource struct {
+	flags       transferFlags
+	alias       string
+	dirsOnly    bool // omit files (the send-target folder picker)
+	selectFiles bool // files are selectable leaves (the receive-source file picker)
+	useRow      bool // inject a "Use this folder" row (the folder picker)
+}
+
+func (s *sftpSource) Resolve(_ context.Context, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ".", nil
+	}
+	return path, nil
+}
+
+func (s *sftpSource) List(ctx context.Context, dir string) (termnav.Listing, error) {
+	if err := ctx.Err(); err != nil {
+		return termnav.Listing{}, err
+	}
+	listing, err := listRemoteEntries(s.flags, s.alias, dir)
 	if err != nil {
-		return remoteDirectoryListing{}, err
+		return termnav.Listing{}, err
 	}
-	dirs := make([]string, 0, len(listing.Entries))
-	for _, entry := range listing.Entries {
-		if entry.IsDir {
-			dirs = append(dirs, entry.Name)
+	cwd := listing.CWD
+	if cwd == "" {
+		cwd = dir
+	}
+	return remoteListingRows(cwd, listing.Entries, s.dirsOnly, s.selectFiles, s.useRow), nil
+}
+
+// remoteListingRows turns one sftp directory listing into browser rows: child
+// directories to descend into and (unless dirsOnly) files as selectable leaves
+// or dimmed reference rows, plus the synthetic "Use this folder" and ".." rows.
+// It is pure (no IO), so the row construction is unit-tested without sftp.
+func remoteListingRows(cwd string, entries []remoteEntry, dirsOnly, selectFiles, useRow bool) termnav.Listing {
+	children := make([]termnav.Row, 0, len(entries))
+	for _, e := range entries {
+		path := remoteJoin(cwd, e.Name)
+		if e.IsDir {
+			children = append(children, termnav.Row{
+				Token: path, Title: e.Name + "/", Description: path,
+				Group: "Directories", Badge: "dir", Kind: string(remotePickerDir),
+				Intent: termnav.IntentDescend, Selectable: true, IsContainer: true,
+			})
+			continue
 		}
+		if dirsOnly {
+			continue
+		}
+		row := termnav.Row{
+			Token: path, Title: e.Name, Description: remoteFileDescription(e), Detail: path,
+			Group: "Files", Badge: "file", Kind: string(remotePickerFile),
+			Intent: termnav.IntentSelectLeaf, Selectable: selectFiles,
+		}
+		if !selectFiles {
+			row.Intent = termnav.IntentReference
+		}
+		children = append(children, row)
 	}
-	return remoteDirectoryListing{CWD: listing.CWD, Dirs: dirs}, nil
+	parent := remoteParent(cwd)
+	nav := termnav.Nav{
+		Parent:   parent,
+		UseRow:   useRow,
+		UseTitle: "Use this folder", UseGroup: "Current", UseBadge: "use", UseKind: string(remotePickerHere),
+		UpGroup: "Directories", UpBadge: "up", UpKind: string(remotePickerUp),
+	}
+	return termnav.Listing{Dir: cwd, Parent: parent, Rows: termnav.InjectNav(cwd, children, nav)}
 }
 
 func listRemoteEntries(flags transferFlags, alias string, dir string) (remoteListing, error) {
@@ -1548,17 +1413,6 @@ func listRemoteEntries(flags transferFlags, alias string, dir string) (remoteLis
 	return listing, nil
 }
 
-func parseRemoteDirectoryListing(output string) remoteDirectoryListing {
-	listing := parseRemoteListing(output)
-	dirs := make([]string, 0, len(listing.Entries))
-	for _, entry := range listing.Entries {
-		if entry.IsDir {
-			dirs = append(dirs, entry.Name)
-		}
-	}
-	return remoteDirectoryListing{CWD: listing.CWD, Dirs: dirs}
-}
-
 func parseRemoteListing(output string) remoteListing {
 	var cwd string
 	entries := []remoteEntry{}
@@ -1586,14 +1440,6 @@ func parseRemoteListing(output string) remoteListing {
 	return remoteListing{CWD: cwd, Entries: entries}
 }
 
-func parseSFTPLongDirectoryName(line string) (string, bool) {
-	entry, ok := parseSFTPLongEntry(line)
-	if !ok || !entry.IsDir {
-		return "", false
-	}
-	return entry.Name, true
-}
-
 func parseSFTPLongEntry(line string) (remoteEntry, bool) {
 	if line == "" {
 		return remoteEntry{}, false
@@ -1614,45 +1460,6 @@ func parseSFTPLongEntry(line string) (remoteEntry, bool) {
 		return remoteEntry{}, false
 	}
 	return remoteEntry{Name: name, IsDir: kind == 'd', Size: fields[4]}, true
-}
-
-func remoteFilePickerItems(cwd string, entries []remoteEntry) []ui.Item {
-	items := []ui.Item{}
-	parent := remoteParent(cwd)
-	if parent != cwd {
-		items = append(items, ui.Item{
-			Kind:        remotePickerUp,
-			Token:       parent,
-			Title:       "..",
-			Description: parent,
-			Group:       "Directories",
-			Badge:       "up",
-		})
-	}
-	for _, entry := range entries {
-		path := remoteJoin(cwd, entry.Name)
-		if entry.IsDir {
-			items = append(items, ui.Item{
-				Kind:        remotePickerDir,
-				Token:       path,
-				Title:       entry.Name + "/",
-				Description: path,
-				Group:       "Directories",
-				Badge:       "dir",
-			})
-			continue
-		}
-		items = append(items, ui.Item{
-			Kind:        remotePickerFile,
-			Token:       path,
-			Title:       entry.Name,
-			Description: remoteFileDescription(entry),
-			Detail:      path,
-			Group:       "Files",
-			Badge:       "file",
-		})
-	}
-	return items
 }
 
 func remoteFileDescription(entry remoteEntry) string {
@@ -1691,39 +1498,6 @@ func localNameForRemote(remotePath string) string {
 		return base
 	}
 	return "download"
-}
-
-func remoteDirectoryPickerItems(cwd string, dirs []string) []ui.Item {
-	items := []ui.Item{{
-		Kind:        remotePickerHere,
-		Token:       cwd,
-		Title:       "Use this folder",
-		Description: cwd,
-		Group:       "Current",
-		Badge:       "use",
-	}}
-	parent := remoteParent(cwd)
-	if parent != cwd {
-		items = append(items, ui.Item{
-			Kind:        remotePickerUp,
-			Token:       parent,
-			Title:       "..",
-			Description: parent,
-			Group:       "Directories",
-			Badge:       "up",
-		})
-	}
-	for _, dir := range dirs {
-		items = append(items, ui.Item{
-			Kind:        remotePickerDir,
-			Token:       remoteJoin(cwd, dir),
-			Title:       dir + "/",
-			Description: remoteJoin(cwd, dir),
-			Group:       "Directories",
-			Badge:       "dir",
-		})
-	}
-	return items
 }
 
 func remoteParent(dir string) string {
