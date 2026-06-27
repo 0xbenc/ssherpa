@@ -33,6 +33,15 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   overwrite protection and picker-driven paths.
 - **Remote key seeding:** install or remove validated public keys on many saved
   SSH aliases, including hosts reached through ProxyJump routes, without sudo.
+- **Set up your own key:** `ssherpa key import --from PATH` brings a private+public
+  keypair into `~/.ssh` with the correct permissions (dir 0700, private 0600,
+  public 0644 — ssh refuses a loose-perm key) and prints its fingerprint; handy
+  on a fresh machine restoring a backup. `ssherpa key generate` makes a fresh
+  keypair instead. Add `--register` to set it as the default identity
+  (`Host * IdentityFile`) in `~/.ssh/config`, and `--add-to-agent`
+  (with optional `--agent-ttl 8h`) to load it into your running `ssh-agent`.
+  The "Set up your own SSH key" home-menu tile drives the whole flow
+  interactively, with a masked passphrase prompt for encrypted keys.
 - **Escape rope:** `Ctrl-^`, `X`, `X` disconnects every supervised layer below
   you and returns to the outer shell. Mash `Ctrl-^` three times for the
   no-questions-asked panic rope. A layer running inside `tmux` would normally

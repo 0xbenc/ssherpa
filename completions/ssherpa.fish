@@ -11,6 +11,7 @@ complete -c ssherpa -f -n '__fish_use_subcommand' -a recv -d 'Receive a remote f
 complete -c ssherpa -f -n '__fish_use_subcommand' -a check -d 'Test SSH aliases and saved forwards'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a incoming -d 'Inspect incoming SSH sessions'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a authkeys -d 'Manage authorized_keys'
+complete -c ssherpa -f -n '__fish_use_subcommand' -a key -d 'Import and set up your own SSH keypair'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a theme -d 'Build and save UI colors'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a session -d 'Inspect session records'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a export -d 'Export aliases and presets to a JSON bundle'
@@ -19,6 +20,25 @@ complete -c ssherpa -f -n '__fish_use_subcommand' -a list -d 'List SSH aliases'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a show -d 'Show one SSH alias'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a version -d 'Print build version'
 complete -c ssherpa -f -n '__fish_use_subcommand' -a help -d 'Show help'
+
+# key subcommands + flags
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -a import -d 'Import your SSH keypair into ~/.ssh'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -a generate -d 'Generate a fresh SSH keypair'
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l from -d 'Private key path or folder' -r
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l name -d 'Destination key name in ~/.ssh' -r
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l type -d 'Key type (ed25519/rsa/ecdsa)' -a 'ed25519 rsa ecdsa'
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l comment -d 'Key comment' -r
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l bits -d 'RSA key size' -r
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l force -d 'Overwrite a different same-name key'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l register -d 'Register as default identity in ~/.ssh/config'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l add-to-agent -d 'Load the key into the running ssh-agent'
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l agent-ttl -d 'Agent key lifetime, e.g. 8h (implies --add-to-agent)' -r
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l ssh-add -d 'Use this ssh-add binary' -r
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l dry-run -d 'Preview without writing'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l yes -d 'Skip confirmation'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l json -d 'Emit JSON'
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l ssh-keygen -d 'Use this ssh-keygen binary' -r
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l passphrase-fd -d 'Read passphrase from this fd' -r
 
 # Connect-mode flags (before a command or alias)
 complete -c ssherpa -n '__fish_use_subcommand' -l json -d 'Emit JSON output'

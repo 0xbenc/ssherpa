@@ -23,7 +23,7 @@ import (
 // including the recv alias.
 var completionTopLevelCommands = []string{
 	"add", "edit", "jump", "proxy", "forward", "send", "receive", "recv",
-	"check", "incoming", "authkeys", "theme", "session", "export", "import",
+	"check", "incoming", "authkeys", "key", "theme", "session", "export", "import",
 	"list", "show", "version", "help",
 }
 

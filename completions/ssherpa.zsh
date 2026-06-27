@@ -14,6 +14,7 @@ _ssherpa() {
     'check:Test SSH aliases and saved forwards'
     'incoming:Inspect incoming SSH sessions'
     'authkeys:Manage authorized_keys'
+    'key:Import and set up your own SSH keypair'
     'theme:Build and save the terminal UI color schema'
     'session:Inspect supervised session records'
     'export:Export aliases and presets to a JSON bundle'
@@ -228,6 +229,25 @@ _ssherpa() {
             '--ssh-keygen[use this ssh-keygen binary]:path:_files' \
             '--dry-run[preview without writing]' \
             '--yes[skip confirmation]'
+          ;;
+        key)
+          _arguments \
+            '1:subcommand:(import generate)' \
+            '--from[private key path or folder]:path:_files' \
+            '--name[destination key name in ~/.ssh]:name' \
+            '--type[key type to generate]:type:(ed25519 rsa ecdsa)' \
+            '--comment[key comment]:comment' \
+            '--bits[rsa key size]:bits' \
+            '--register[register as the default identity in ~/.ssh/config]' \
+            '--add-to-agent[load the key into the running ssh-agent]' \
+            '--agent-ttl[agent key lifetime, e.g. 8h (implies --add-to-agent)]:duration' \
+            '--ssh-add[use this ssh-add binary]:path:_files' \
+            '--force[overwrite an existing key with the same name]' \
+            '--ssh-keygen[use this ssh-keygen binary]:path:_files' \
+            '--passphrase-fd[read passphrase from this fd]:fd' \
+            '--dry-run[preview without writing]' \
+            '--yes[skip confirmation]' \
+            '--json[emit JSON]'
           ;;
         theme)
           _arguments \
