@@ -58,8 +58,8 @@ func TestAuthkeysDirectoryBrowserOptionsUseTransferPickerShape(t *testing.T) {
 	if opts.Title != "SSHERPA AUTHKEYS REPLACE SOURCE" || opts.Mode != "local-folder" {
 		t.Fatalf("title/mode = %q / %q", opts.Title, opts.Mode)
 	}
-	if opts.LocationLabel != "LOCAL" || opts.Location != "/home/test/keys" {
-		t.Fatalf("location = %q / %q", opts.LocationLabel, opts.Location)
+	if opts.LocationLabel != "LOCAL" || opts.Start != "/home/test/keys" {
+		t.Fatalf("location = %q / %q", opts.LocationLabel, opts.Start)
 	}
 	if strings.Join(opts.Steps, "\x00") != "action\x00directory\x00confirm" || opts.CurrentStep != 1 {
 		t.Fatalf("steps/current = %#v / %d", opts.Steps, opts.CurrentStep)

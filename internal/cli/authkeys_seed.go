@@ -911,28 +911,13 @@ func authkeysSeedSourceItems() []ui.ManagementItem {
 }
 
 func pickAuthkeysSeedFile(stderr io.Writer) (string, bool, error) {
-	cwd, err := expandLocalPath(".")
-	if err != nil {
-		return "", false, err
+	opts := transferBrowserOptions(stderr, filePickerOptions{}, "SSHERPA AUTHKEYS SEED FILE", "local-file", "LOCAL", ".", []string{"source", "keys", "hosts", "routes", "confirm"}, 1)
+	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	out, ok, err := ui.BrowseTransfer(context.Background(), localFileSource(), opts)
+	if err != nil || !ok {
+		return "", ok, err
 	}
-	for {
-		items, err := localFilePickerItems(cwd)
-		if err != nil {
-			return "", false, err
-		}
-		opts := transferBrowserOptions(stderr, filePickerOptions{}, "SSHERPA AUTHKEYS SEED FILE", "local-file", "LOCAL", cwd, []string{"source", "keys", "hosts", "routes", "confirm"}, 1)
-		opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, opts)
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case filePickerParent, filePickerDir:
-			cwd = item.Token
-		case filePickerFile:
-			return item.Token, true, nil
-		}
-	}
+	return out.Token(), true, nil
 }
 
 func runAuthkeysSeedInteractiveTargets(flags authkeysSeedFlags, stdout io.Writer, stderr io.Writer) int {

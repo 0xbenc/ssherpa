@@ -470,27 +470,11 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 }
 
 func pickAuthkeysDirectory(stderr io.Writer, title string) (string, bool, error) {
-	cwd, err := expandLocalPath(".")
-	if err != nil {
-		return "", false, err
+	out, ok, err := ui.BrowseTransfer(context.Background(), localDirSource(), authkeysDirectoryBrowserOptions(stderr, title, "."))
+	if err != nil || !ok {
+		return "", ok, err
 	}
-
-	for {
-		items, err := localDirectoryPickerItems(cwd)
-		if err != nil {
-			return "", false, err
-		}
-		item, ok, err := ui.BrowseTransfer(context.Background(), items, authkeysDirectoryBrowserOptions(stderr, title, cwd))
-		if err != nil || !ok {
-			return "", ok, err
-		}
-		switch item.Kind {
-		case filePickerHere:
-			return item.Token, true, nil
-		case filePickerParent, filePickerDir:
-			cwd = item.Token
-		}
-	}
+	return out.Token(), true, nil
 }
 
 func authkeysDirectoryBrowserOptions(stderr io.Writer, title string, cwd string) ui.TransferBrowserOptions {

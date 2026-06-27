@@ -4,14 +4,21 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/0xbenc/ssherpa/internal/chrome"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/termnav"
+	"github.com/0xbenc/termnav/teax"
 )
 
+// TransferBrowserOptions configures the file-transfer browser. The browser
+// itself is now termnav-driven: navigation, async listing (a slow SFTP round
+// trip shows a loading state instead of freezing), filtering, and cancelation
+// all happen inside one program. The caller supplies the transport as a
+// termnav.FileSource (a local lister or ssherpa's SFTP source).
 type TransferBrowserOptions struct {
 	Input         io.Reader
 	Output        io.Writer
@@ -23,13 +30,15 @@ type TransferBrowserOptions struct {
 	Title         string
 	Mode          string
 	LocationLabel string
-	Location      string
+	Start         string
 	Steps         []string
 	CurrentStep   int
 	Footer        string
 }
 
-func BrowseTransfer(ctx context.Context, items []Item, opts TransferBrowserOptions) (Item, bool, error) {
+// BrowseTransfer drives the file-transfer browser over src and returns the
+// committed selection (a chosen file or a "use this folder"). ok=false on cancel.
+func BrowseTransfer(ctx context.Context, src termnav.FileSource, opts TransferBrowserOptions) (termnav.Outcome, bool, error) {
 	theme, err := resolvePickTheme(PickOptions{
 		Output:    opts.Output,
 		NoColor:   opts.NoColor,
@@ -38,161 +47,86 @@ func BrowseTransfer(ctx context.Context, items []Item, opts TransferBrowserOptio
 		ThemeFile: opts.ThemeFile,
 	})
 	if err != nil {
-		return Item{}, false, err
+		return termnav.Outcome{}, false, err
 	}
-	model := newTransferBrowserModel(items, opts, theme)
-	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
-	if opts.Input != nil {
-		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	theme = theme.WithNoColor(theme.NoColor || opts.NoColor)
+	pt := pickerTheme{theme: theme}
+
+	reserve := 4 + 5 + 1 // chrome + fixed body (meta/filter/blank/...) + safety
+	if len(opts.Steps) > 0 {
+		reserve += 2
 	}
-	if opts.Output != nil {
-		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	navOpts := termnav.Options{
+		Matcher:            termnav.Fuzzy{},
+		MatchText:          transferMatchText,
+		ReserveRows:        reserve,
+		MinRows:            4,
+		KeepCursorOnFilter: true,
 	}
 
-	finalModel, err := tea.NewProgram(model, programOptions...).Run()
-	if err != nil {
-		return Item{}, false, err
+	render := func(m termnav.Model) tea.View {
+		v := tea.NewView(renderTransferBrowser(m, opts, pt))
+		v.AltScreen = !opts.NoAltScreen
+		return v
 	}
-	browser, ok := finalModel.(transferBrowserModel)
-	if !ok || browser.canceled || browser.selected < 0 {
-		return Item{}, false, nil
+	input := opts.Input
+	if input == nil {
+		input = os.Stdin
 	}
-	return browser.items[browser.selected], true, nil
+	return teax.Run(ctx, teax.Config{
+		Source: src,
+		Start:  opts.Start,
+		Render: render,
+		KeyMap: transferKeyMap,
+	}, navOpts, teax.ProgramIO{Input: input, Output: opts.Output})
 }
 
-type transferBrowserModel struct {
-	items         []Item
-	filtered      []int
-	cursor        int
-	scrollOffset  int
-	query         string
-	selected      int
-	canceled      bool
-	noAltScreen   bool
-	theme         termstyle.Theme
-	title         string
-	mode          string
-	locationLabel string
-	location      string
-	steps         []string
-	currentStep   int
-	footer        string
-	width         int
-	height        int
+// transferKeyMap adds ssherpa's uppercase-Q cancel to the shared key profile.
+func transferKeyMap(msg tea.KeyPressMsg) (termnav.KeyEvent, bool) {
+	if msg.String() == "Q" {
+		return termnav.KeyEvent{Key: "cancel"}, true
+	}
+	return teax.DefaultKey(msg)
 }
 
-func newTransferBrowserModel(items []Item, opts TransferBrowserOptions, theme termstyle.Theme) transferBrowserModel {
-	model := transferBrowserModel{
-		items:         append([]Item(nil), items...),
-		selected:      -1,
-		noAltScreen:   opts.NoAltScreen,
-		theme:         theme.WithNoColor(theme.NoColor || opts.NoColor),
-		title:         strings.TrimSpace(opts.Title),
-		mode:          strings.TrimSpace(opts.Mode),
-		locationLabel: strings.TrimSpace(opts.LocationLabel),
-		location:      strings.TrimSpace(opts.Location),
-		steps:         append([]string(nil), opts.Steps...),
-		currentStep:   opts.CurrentStep,
-		footer:        opts.Footer,
-		width:         96,
-		height:        24,
-	}
-	if model.title == "" {
-		model.title = "SSHERPA FILE TRANSFER"
-	}
-	if model.locationLabel == "" {
-		model.locationLabel = "PATH"
-	}
-	model.applyFilter()
-	return model
+// transferMatchText is the string a row is fuzzy-filtered against — the same
+// fields the old browser joined.
+func transferMatchText(r termnav.Row) string {
+	return strings.Join([]string{r.Title, r.Description, r.Detail, r.Token, r.Group, r.Badge}, "\t")
 }
 
-func (m transferBrowserModel) Init() tea.Cmd {
-	return tea.RequestWindowSize
-}
-
-func (m transferBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		if msg.Width > 0 {
-			m.width = msg.Width
-		}
-		if msg.Height > 0 {
-			m.height = msg.Height
-		}
-		m.ensureCursorVisible()
-	case tea.KeyPressMsg:
-		key := msg.String()
-		keystroke := msg.Key().Keystroke()
-		switch {
-		case key == "ctrl+c" || key == "esc" || key == "Q":
-			m.canceled = true
-			return m, tea.Quit
-		case key == "enter":
-			if len(m.filtered) == 0 {
-				return m, nil
-			}
-			m.selected = m.filtered[m.cursor]
-			return m, tea.Quit
-		case key == "backspace":
-			if m.query != "" {
-				m.query = m.query[:len(m.query)-1]
-				m.applyFilter()
-			}
-		case key == "home":
-			m.cursor = 0
-			m.ensureCursorVisible()
-		case key == "end":
-			if len(m.filtered) > 0 {
-				m.cursor = len(m.filtered) - 1
-			}
-			m.ensureCursorVisible()
-		case key == "pgup":
-			m.moveCursor(-max(4, m.listWindowBudget()/2))
-		case key == "pgdown":
-			m.moveCursor(max(4, m.listWindowBudget()/2))
-		case keystroke == "shift+up" || keystroke == "shift+left":
-			m.jumpSection(-1)
-		case keystroke == "shift+down" || keystroke == "shift+right":
-			m.jumpSection(1)
-		case key == "up" || key == "ctrl+p":
-			m.moveCursor(-1)
-		case key == "down" || key == "ctrl+n":
-			m.moveCursor(1)
-		case msg.Text != "" && !isControlKey(key):
-			m.query += msg.Text
-			m.applyFilter()
-		}
+func renderTransferBrowser(m termnav.Model, opts TransferBrowserOptions, theme pickerTheme) string {
+	width := max(64, m.Width())
+	title := strings.TrimSpace(opts.Title)
+	if title == "" {
+		title = "SSHERPA FILE TRANSFER"
 	}
-	return m, nil
-}
-
-func (m transferBrowserModel) View() tea.View {
-	width := max(64, m.width)
-	theme := pickerTheme{theme: m.theme}
-	body := m.renderBody(width, theme)
-	footer := m.footer
+	body := transferBody(m, opts, width, theme)
+	footer := opts.Footer
 	if footer == "" {
 		footer = "enter open/select / type filter / arrows move / shift+arrows section / Q cancel"
 	}
-
-	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
-		Title:   m.title,
-		Steps:   m.steps,
-		Current: m.currentStep,
+	return renderWorkflowShell(theme, width, workflowShell{
+		Title:   title,
+		Steps:   opts.Steps,
+		Current: opts.CurrentStep,
 		Body:    body,
 		Footer:  footer,
-	}))
-	view.AltScreen = !m.noAltScreen
-	return view
+	})
 }
 
-func (m transferBrowserModel) renderBody(width int, theme pickerTheme) []string {
+func transferBody(m termnav.Model, opts TransferBrowserOptions, width int, theme pickerTheme) []string {
 	inner := max(20, width-4)
 	lines := []string{
-		m.metaLine(inner, theme),
-		m.filterLine(inner, theme),
+		transferMetaLine(m, opts, inner, theme),
+		transferFilterLine(m, inner, theme),
 		"",
+	}
+	if m.State() == termnav.Loading {
+		return append(lines, "  "+theme.muted("loading…"))
+	}
+	if m.State() == termnav.Error {
+		return append(lines, "  "+theme.empty("listing failed: "+termstyle.Sanitize(m.Notice())))
 	}
 
 	listWidth := inner
@@ -201,18 +135,17 @@ func (m transferBrowserModel) renderBody(width int, theme pickerTheme) []string 
 		listWidth = clamp(inner*62/100, 54, 78)
 		previewWidth = inner - listWidth - 3
 	}
-	listLines := m.renderListLines(listWidth, theme)
+	listLines := transferListLines(m, listWidth, theme)
 	if previewWidth <= 0 {
 		lines = append(lines, listLines...)
-		if item, ok := m.currentItem(); ok {
+		if item, ok := m.FocusedRow(); ok {
 			lines = append(lines, "")
-			lines = append(lines, m.compactSelectionLine(item, inner, theme))
+			lines = append(lines, theme.subtle(termstyle.Truncate(transferActionLabel(item)+"  "+transferPath(item), inner)))
 		}
 		return lines
 	}
 
-	previewLines := m.renderPreviewLines(previewWidth, theme)
-	previewLines = clipTransferBrowserLines(previewLines, m.listWindowBudget(), previewWidth, theme)
+	previewLines := transferPreviewLines(m, previewWidth, theme)
 	rowCount := max(len(listLines), len(previewLines))
 	divider := theme.muted("│")
 	for i := 0; i < rowCount; i++ {
@@ -229,43 +162,35 @@ func (m transferBrowserModel) renderBody(width int, theme pickerTheme) []string 
 	return lines
 }
 
-func clipTransferBrowserLines(lines []string, budget int, width int, theme pickerTheme) []string {
-	if budget <= 0 || len(lines) <= budget {
-		return lines
-	}
-	if budget == 1 {
-		return []string{theme.muted(termstyle.Truncate("more hidden", width))}
-	}
-	clipped := append([]string(nil), lines[:budget-1]...)
-	clipped = append(clipped, theme.muted(termstyle.Truncate(fmt.Sprintf("%d more hidden", len(lines)-len(clipped)), width)))
-	return clipped
-}
-
-func (m transferBrowserModel) metaLine(width int, theme pickerTheme) string {
-	mode := transferBrowserModeLabel(m.mode)
-	count := fmt.Sprintf("%d item%s", len(m.items), pluralSuffix(len(m.items)))
-	location := m.location
+func transferMetaLine(m termnav.Model, opts TransferBrowserOptions, width int, theme pickerTheme) string {
+	mode := transferBrowserModeLabel(opts.Mode)
+	count := fmt.Sprintf("%d item%s", len(m.Rows()), pluralSuffix(len(m.Rows())))
+	location := m.Cwd()
 	if location == "" {
 		location = "."
 	}
+	label := opts.LocationLabel
+	if label == "" {
+		label = "PATH"
+	}
 	labelWidth := clamp(width/5, 7, 18)
-	prefix := theme.label(termstyle.PadRight(termstyle.Truncate(strings.ToUpper(m.locationLabel), labelWidth), labelWidth))
+	prefix := theme.label(termstyle.PadRight(termstyle.Truncate(strings.ToUpper(label), labelWidth), labelWidth))
 	meta := theme.summary(termstyle.Truncate(mode+"  "+count, max(0, width-termstyle.VisibleWidth(prefix)-4)))
 	pathWidth := max(0, width-termstyle.VisibleWidth(prefix)-termstyle.VisibleWidth(meta)-4)
-	path := theme.rowDesc(termstyle.Truncate(location, pathWidth), false)
+	path := theme.rowDesc(termstyle.Truncate(termstyle.Sanitize(location), pathWidth), false)
 	return prefix + "  " + path + "  " + meta
 }
 
-func (m transferBrowserModel) filterLine(width int, theme pickerTheme) string {
+func transferFilterLine(m termnav.Model, width int, theme pickerTheme) string {
 	label := theme.label(termstyle.PadRight("FILTER", 7))
-	counter := theme.counter(fmt.Sprintf("%d/%d", len(m.filtered), len(m.items)))
-	query := m.query
+	counter := theme.counter(fmt.Sprintf("%d/%d", len(m.Filtered()), len(m.Rows())))
+	query := termstyle.Sanitize(m.Query())
 	if query == "" {
 		query = "type to filter"
 	}
 	fieldWidth := max(8, width-termstyle.VisibleWidth(label)-termstyle.VisibleWidth(counter)-6)
 	field := "[" + termstyle.PadRight(termstyle.Truncate(query, fieldWidth), fieldWidth) + "]"
-	if m.query == "" {
+	if m.Query() == "" {
 		field = theme.muted(field)
 	} else {
 		field = theme.search(field)
@@ -273,28 +198,34 @@ func (m transferBrowserModel) filterLine(width int, theme pickerTheme) string {
 	return label + "  " + field + "  " + counter
 }
 
-func (m transferBrowserModel) renderListLines(width int, theme pickerTheme) []string {
-	if len(m.filtered) == 0 {
+func transferListLines(m termnav.Model, width int, theme pickerTheme) []string {
+	filtered := m.Filtered()
+	rows := m.Rows()
+	if len(filtered) == 0 {
+		if m.State() == termnav.Empty {
+			return []string{"  " + theme.empty("empty folder")}
+		}
 		return []string{"  " + theme.empty("No matching files")}
 	}
-
-	budget := m.listWindowBudget()
+	budget := m.Budget()
 	lines := make([]string, 0, budget)
-	start := m.normalizedScrollOffset()
+	start := m.Scroll()
+	if start < 0 {
+		start = 0
+	}
 	if start > 0 {
 		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more above", start)))
 	}
-
 	lastGroup := ""
 	rendered := 0
 	renderedUntil := start
-	for i := start; i < len(m.filtered); i++ {
-		index := m.filtered[i]
-		if index < 0 || index >= len(m.items) {
+	for i := start; i < len(filtered); i++ {
+		index := filtered[i]
+		if index < 0 || index >= len(rows) {
 			continue
 		}
-		item := m.items[index]
-		newGroup := item.Group != "" && item.Group != lastGroup
+		row := rows[index]
+		newGroup := row.Group != "" && row.Group != lastGroup
 		groupCost := 0
 		if newGroup {
 			groupCost = 1
@@ -303,7 +234,7 @@ func (m transferBrowserModel) renderListLines(width int, theme pickerTheme) []st
 			}
 		}
 		reserve := 0
-		if len(m.filtered)-i-1 > 0 {
+		if len(filtered)-i-1 > 0 {
 			reserve = 1
 		}
 		if len(lines)+groupCost+1+reserve > budget {
@@ -313,27 +244,27 @@ func (m transferBrowserModel) renderListLines(width int, theme pickerTheme) []st
 			if rendered > 0 {
 				lines = append(lines, "")
 			}
-			lines = append(lines, theme.groupHeader(item.Group, width))
-			lastGroup = item.Group
+			lines = append(lines, theme.groupHeader(row.Group, width))
+			lastGroup = row.Group
 		}
-		lines = append(lines, transferBrowserRow(item, i == m.cursor, width, theme))
+		lines = append(lines, transferRow(row, i == m.Cursor(), width, theme))
 		rendered++
 		renderedUntil = i + 1
 	}
-	if renderedUntil < len(m.filtered) {
-		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more below", len(m.filtered)-renderedUntil)))
+	if renderedUntil < len(filtered) {
+		lines = append(lines, "  "+theme.muted(fmt.Sprintf("%d more below", len(filtered)-renderedUntil)))
 	}
 	return lines
 }
 
-func transferBrowserRow(item Item, selected bool, width int, theme pickerTheme) string {
+func transferRow(row termnav.Row, selected bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
 		cursor = ">>"
 	}
-	badge := strings.ToUpper(strings.TrimSpace(item.Badge))
+	badge := strings.ToUpper(strings.TrimSpace(row.Badge))
 	if badge == "" {
-		badge = strings.ToUpper(string(item.Kind))
+		badge = strings.ToUpper(transferIntentLabel(row.Intent))
 	}
 	if len([]rune(badge)) > 6 {
 		badge = termstyle.Truncate(badge, 6)
@@ -344,114 +275,115 @@ func transferBrowserRow(item Item, selected bool, width int, theme pickerTheme) 
 		nameWidth = max(12, width-18)
 	}
 	metaWidth := max(0, width-2-2-8-nameWidth-2)
-	title := termstyle.Truncate(item.Title, nameWidth)
-	meta := transferBrowserRowMeta(item)
+	title := termstyle.Truncate(termstyle.Sanitize(row.Title), nameWidth)
+	meta := transferRowMeta(row)
 	line := theme.cursor(cursor, selected) + " " +
-		termstyle.PadRight(theme.badge(item.Kind, "["+badge+"]"), 8) + " " +
+		termstyle.PadRight(transferBadge(theme, row.Intent, "["+badge+"]"), 8) + " " +
 		termstyle.PadRight(theme.rowTitle(title, selected), nameWidth)
 	if metaWidth > 0 {
-		line += "  " + theme.rowDesc(termstyle.Truncate(meta, metaWidth), selected)
+		line += "  " + theme.rowDesc(termstyle.Truncate(termstyle.Sanitize(meta), metaWidth), selected)
 	}
 	return termstyle.PadRight(line, width)
 }
 
-func transferBrowserRowMeta(item Item) string {
-	if strings.TrimSpace(item.Description) != "" {
-		return item.Description
+// transferBadge colors a row's badge by its canonical NavIntent (never by an app
+// Kind literal), preserving the old per-kind colors: a leaf reads foreground, a
+// directory info, the parent secondary, and "use this folder" success.
+func transferBadge(theme pickerTheme, intent termnav.NavIntent, value string) string {
+	role := termstyle.RoleForeground
+	switch intent {
+	case termnav.IntentDescend:
+		role = termstyle.RoleInfo
+	case termnav.IntentAscend:
+		role = termstyle.RoleSecondary
+	case termnav.IntentUseContainer:
+		role = termstyle.RoleSuccess
+	case termnav.IntentSelectLeaf, termnav.IntentReference:
+		role = termstyle.RoleForeground
 	}
-	if strings.TrimSpace(item.Detail) != "" {
-		return item.Detail
+	return theme.theme.Style(role, value)
+}
+
+func transferRowMeta(row termnav.Row) string {
+	if strings.TrimSpace(row.Description) != "" {
+		return row.Description
 	}
-	if strings.TrimSpace(item.Token) != "" && item.Token != item.Title {
-		return item.Token
+	if strings.TrimSpace(row.Detail) != "" {
+		return row.Detail
+	}
+	if strings.TrimSpace(row.Token) != "" && row.Token != row.Title {
+		return row.Token
 	}
 	return ""
 }
 
-func (m transferBrowserModel) renderPreviewLines(width int, theme pickerTheme) []string {
-	item, ok := m.currentItem()
+func transferPreviewLines(m termnav.Model, width int, theme pickerTheme) []string {
+	row, ok := m.FocusedRow()
 	if !ok {
 		return nil
 	}
 	lines := []string{
 		theme.groupHeader("Selection", width),
-		theme.previewTitle(termstyle.Truncate(item.Title, width)),
+		theme.previewTitle(termstyle.Truncate(termstyle.Sanitize(row.Title), width)),
 	}
-	lines = append(lines, previewKVLines(theme, width, "Type", transferBrowserTypeLabel(item), 3)...)
-	if path := transferBrowserPath(item); path != "" {
-		lines = append(lines, previewKVLines(theme, width, "Path", path, 4)...)
+	lines = append(lines, previewKVLines(theme, width, "Type", transferTypeLabel(row), 3)...)
+	if path := transferPath(row); path != "" {
+		lines = append(lines, previewKVLines(theme, width, "Path", termstyle.Sanitize(path), 4)...)
 	}
-	if item.Description != "" && item.Description != transferBrowserPath(item) {
-		lines = append(lines, previewKVLines(theme, width, "Info", item.Description, 2)...)
+	if row.Description != "" && row.Description != transferPath(row) {
+		lines = append(lines, previewKVLines(theme, width, "Info", termstyle.Sanitize(row.Description), 2)...)
 	}
-	lines = append(lines, previewKVLines(theme, width, "Action", transferBrowserActionLabel(item), 3)...)
+	lines = append(lines, previewKVLines(theme, width, "Action", transferActionLabel(row), 3)...)
 	return lines
 }
 
-func (m transferBrowserModel) compactSelectionLine(item Item, width int, theme pickerTheme) string {
-	path := transferBrowserPath(item)
-	if path == "" {
-		path = item.Title
+func transferIntentLabel(intent termnav.NavIntent) string {
+	switch intent {
+	case termnav.IntentDescend:
+		return "dir"
+	case termnav.IntentAscend:
+		return "up"
+	case termnav.IntentUseContainer:
+		return "use"
+	default:
+		return "file"
 	}
-	text := transferBrowserActionLabel(item) + "  " + path
-	return theme.subtle(termstyle.Truncate(text, width))
 }
 
-func (m transferBrowserModel) currentItem() (Item, bool) {
-	if len(m.filtered) == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
-		return Item{}, false
+func transferTypeLabel(row termnav.Row) string {
+	if b := strings.TrimSpace(row.Badge); b != "" {
+		return strings.ToUpper(b)
 	}
-	index := m.filtered[m.cursor]
-	if index < 0 || index >= len(m.items) {
-		return Item{}, false
+	if row.Group != "" {
+		return row.Group
 	}
-	return m.items[index], true
+	return transferIntentLabel(row.Intent)
 }
 
-func transferBrowserTypeLabel(item Item) string {
-	badge := strings.TrimSpace(item.Badge)
-	if badge != "" {
-		return strings.ToUpper(badge)
+func transferPath(row termnav.Row) string {
+	if strings.TrimSpace(row.Detail) != "" {
+		return row.Detail
 	}
-	if item.Group != "" {
-		return item.Group
+	if strings.TrimSpace(row.Description) != "" && strings.ContainsAny(row.Description, `/\`) {
+		return row.Description
 	}
-	return string(item.Kind)
-}
-
-func transferBrowserPath(item Item) string {
-	if strings.TrimSpace(item.Detail) != "" {
-		return item.Detail
-	}
-	if strings.TrimSpace(item.Description) != "" && strings.ContainsAny(item.Description, `/\`) {
-		return item.Description
-	}
-	if strings.TrimSpace(item.Token) != "" {
-		return item.Token
+	if strings.TrimSpace(row.Token) != "" {
+		return row.Token
 	}
 	return ""
 }
 
-func transferBrowserActionLabel(item Item) string {
-	switch strings.ToLower(strings.TrimSpace(item.Badge)) {
-	case "use":
+func transferActionLabel(row termnav.Row) string {
+	switch row.Intent {
+	case termnav.IntentUseContainer:
 		return "Use the current folder"
-	case "up":
+	case termnav.IntentAscend:
 		return "Move up one folder"
-	case "dir":
+	case termnav.IntentDescend:
 		return "Open this folder"
-	case "file":
+	case termnav.IntentSelectLeaf:
 		return "Select this file"
 	default:
-		if strings.EqualFold(item.Title, "Use this folder") {
-			return "Use the current folder"
-		}
-		if item.Title == ".." {
-			return "Move up one folder"
-		}
-		if strings.HasSuffix(item.Title, "/") {
-			return "Open this folder"
-		}
 		return "Select this entry"
 	}
 }
@@ -481,87 +413,17 @@ func pluralSuffix(count int) string {
 	return "s"
 }
 
-func (m *transferBrowserModel) applyFilter() {
-	m.filtered = m.filtered[:0]
-	for i, item := range m.items {
-		value := strings.Join([]string{item.Title, item.Description, item.Detail, item.Token, item.Group, item.Badge}, "\t")
-		if m.query == "" || fuzzyMatch(value, m.query) {
-			m.filtered = append(m.filtered, i)
-		}
+// clipTransferBrowserLines caps a block of rendered lines to budget, replacing
+// the overflow with a "N more hidden" marker. Shared with the host chooser's
+// preview pane.
+func clipTransferBrowserLines(lines []string, budget int, width int, theme pickerTheme) []string {
+	if budget <= 0 || len(lines) <= budget {
+		return lines
 	}
-	if m.cursor >= len(m.filtered) {
-		m.cursor = max(0, len(m.filtered)-1)
+	if budget == 1 {
+		return []string{theme.muted(termstyle.Truncate("more hidden", width))}
 	}
-	m.ensureCursorVisible()
-}
-
-func (m *transferBrowserModel) moveCursor(delta int) {
-	if len(m.filtered) == 0 || delta == 0 {
-		return
-	}
-	m.cursor = clamp(m.cursor+delta, 0, len(m.filtered)-1)
-	m.ensureCursorVisible()
-}
-
-func (m *transferBrowserModel) jumpSection(delta int) {
-	if next := chrome.JumpSection(len(m.filtered), m.cursor, delta, m.filteredGroup); next != m.cursor {
-		m.cursor = next
-		m.ensureCursorVisible()
-	}
-}
-
-func (m transferBrowserModel) filteredGroup(pos int) string {
-	if pos < 0 || pos >= len(m.filtered) {
-		return ""
-	}
-	index := m.filtered[pos]
-	if index < 0 || index >= len(m.items) {
-		return ""
-	}
-	return m.items[index].Group
-}
-
-// groupAt is the chrome.ListView callback: the group label of filtered row i,
-// ok=false for stale indices (skipped from the line budget).
-func (m transferBrowserModel) groupAt(i int) (string, bool) {
-	if i < 0 || i >= len(m.filtered) {
-		return "", false
-	}
-	index := m.filtered[i]
-	if index < 0 || index >= len(m.items) {
-		return "", false
-	}
-	return m.items[index].Group, true
-}
-
-func (m *transferBrowserModel) ensureCursorVisible() {
-	budget := m.listWindowBudget()
-	contains := func(start, cursor int) bool {
-		return chrome.WindowContainsCursor(len(m.filtered), start, cursor, budget, m.groupAt)
-	}
-	m.cursor, m.scrollOffset = chrome.ClampWindow(len(m.filtered), m.cursor, m.scrollOffset, contains)
-}
-
-func (m transferBrowserModel) normalizedScrollOffset() int {
-	if len(m.filtered) == 0 || m.scrollOffset < 0 {
-		return 0
-	}
-	if m.scrollOffset >= len(m.filtered) {
-		return len(m.filtered) - 1
-	}
-	return m.scrollOffset
-}
-
-func (m transferBrowserModel) listWindowBudget() int {
-	chrome := 4
-	if len(m.steps) > 0 {
-		chrome += 2
-	}
-	fixedBody := 5
-	safety := 1
-	budget := m.height - chrome - fixedBody - safety
-	if budget < 4 {
-		budget = 4
-	}
-	return budget
+	clipped := append([]string(nil), lines[:budget-1]...)
+	clipped = append(clipped, theme.muted(termstyle.Truncate(fmt.Sprintf("%d more hidden", len(lines)-len(clipped)), width)))
+	return clipped
 }

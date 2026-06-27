@@ -10,6 +10,7 @@ import (
 
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
+	"github.com/0xbenc/termnav"
 )
 
 // writeDirAwareFakeSFTP drops a fake sftp binary (same pattern as
@@ -288,7 +289,7 @@ func assertNoPartFiles(t *testing.T, dir string) {
 	}
 }
 
-func TestLocalFilePickerItemsSortsDirectoriesBeforeFiles(t *testing.T) {
+func TestLocalFileSourceSortsDirectoriesBeforeFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "z-dir"), 0o700); err != nil {
 		t.Fatalf("mkdir z-dir: %v", err)
@@ -303,25 +304,26 @@ func TestLocalFilePickerItemsSortsDirectoriesBeforeFiles(t *testing.T) {
 		t.Fatalf("write a.txt: %v", err)
 	}
 
-	items, err := localFilePickerItems(dir)
+	listing, err := localFileSource().ListSync(dir)
 	if err != nil {
-		t.Fatalf("localFilePickerItems returned error: %v", err)
+		t.Fatalf("localFileSource.ListSync returned error: %v", err)
 	}
-	if len(items) != 5 {
-		t.Fatalf("items = %#v, want parent plus four entries", items)
+	rows := listing.Rows
+	if len(rows) != 5 {
+		t.Fatalf("rows = %#v, want parent plus four entries", rows)
 	}
 	wantTitles := []string{"..", "a-dir" + string(os.PathSeparator), "z-dir" + string(os.PathSeparator), "a.txt", "z.txt"}
 	for i, want := range wantTitles {
-		if items[i].Title != want {
-			t.Fatalf("items[%d].Title = %q, want %q; items=%#v", i, items[i].Title, want, items)
+		if rows[i].Title != want {
+			t.Fatalf("rows[%d].Title = %q, want %q; rows=%#v", i, rows[i].Title, want, rows)
 		}
 	}
-	if items[1].Kind != filePickerDir || items[3].Kind != filePickerFile {
-		t.Fatalf("item kinds = %#v, want directories before files", items)
+	if rows[1].Intent != termnav.IntentDescend || rows[3].Intent != termnav.IntentSelectLeaf {
+		t.Fatalf("row intents = %#v, want directories before files", rows)
 	}
 }
 
-func TestLocalDirectoryPickerItemsOmitsFiles(t *testing.T) {
+func TestLocalDirSourceOmitsFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "z-dir"), 0o700); err != nil {
 		t.Fatalf("mkdir z-dir: %v", err)
@@ -333,21 +335,22 @@ func TestLocalDirectoryPickerItemsOmitsFiles(t *testing.T) {
 		t.Fatalf("write a.txt: %v", err)
 	}
 
-	items, err := localDirectoryPickerItems(dir)
+	listing, err := localDirSource().ListSync(dir)
 	if err != nil {
-		t.Fatalf("localDirectoryPickerItems returned error: %v", err)
+		t.Fatalf("localDirSource.ListSync returned error: %v", err)
 	}
+	rows := listing.Rows
 	wantTitles := []string{"Use this folder", "..", "a-dir" + string(os.PathSeparator), "z-dir" + string(os.PathSeparator)}
-	if len(items) != len(wantTitles) {
-		t.Fatalf("items = %#v, want %d entries", items, len(wantTitles))
+	if len(rows) != len(wantTitles) {
+		t.Fatalf("rows = %#v, want %d entries", rows, len(wantTitles))
 	}
 	for i, want := range wantTitles {
-		if items[i].Title != want {
-			t.Fatalf("items[%d].Title = %q, want %q; items=%#v", i, items[i].Title, want, items)
+		if rows[i].Title != want {
+			t.Fatalf("rows[%d].Title = %q, want %q; rows=%#v", i, rows[i].Title, want, rows)
 		}
 	}
-	if items[0].Kind != filePickerHere || items[2].Kind != filePickerDir {
-		t.Fatalf("item kinds = %#v, want here then directories", items)
+	if rows[0].Intent != termnav.IntentUseContainer || rows[2].Intent != termnav.IntentDescend {
+		t.Fatalf("row intents = %#v, want use then directories", rows)
 	}
 }
 
@@ -366,31 +369,6 @@ func TestHumanBytes(t *testing.T) {
 	for _, tt := range tests {
 		if got := humanBytes(tt.size); got != tt.want {
 			t.Fatalf("humanBytes(%d) = %q, want %q", tt.size, got, tt.want)
-		}
-	}
-}
-
-func TestParseRemoteDirectoryListing(t *testing.T) {
-	output := strings.Join([]string{
-		"Remote working directory: /srv/app",
-		"drwxr-xr-x    2 deploy deploy      4096 May 29 10:10 logs",
-		"-rw-r--r--    1 deploy deploy       120 May 29 10:11 app.txt",
-		"drwxr-xr-x    2 deploy deploy      4096 May 29 10:12 config files",
-		"drwxr-xr-x    2 deploy deploy      4096 May 29 10:13 .",
-		"drwxr-xr-x    2 deploy deploy      4096 May 29 10:14 ..",
-	}, "\n")
-
-	listing := parseRemoteDirectoryListing(output)
-	if listing.CWD != "/srv/app" {
-		t.Fatalf("CWD = %q, want /srv/app", listing.CWD)
-	}
-	want := []string{"config files", "logs"}
-	if len(listing.Dirs) != len(want) {
-		t.Fatalf("Dirs = %#v, want %#v", listing.Dirs, want)
-	}
-	for i := range want {
-		if listing.Dirs[i] != want[i] {
-			t.Fatalf("Dirs = %#v, want %#v", listing.Dirs, want)
 		}
 	}
 }
@@ -424,38 +402,45 @@ func TestParseRemoteListingIncludesFilesAndDirectories(t *testing.T) {
 	}
 }
 
-func TestRemoteDirectoryPickerItems(t *testing.T) {
-	items := remoteDirectoryPickerItems("/srv/app", []string{"logs"})
-	if len(items) != 3 {
-		t.Fatalf("items = %#v, want here, parent, child", items)
+func TestRemoteListingRowsFolderMode(t *testing.T) {
+	// Folder picker: "Use this folder" + ".." + child directories only.
+	listing := remoteListingRows("/srv/app", []remoteEntry{
+		{Name: "logs", IsDir: true, Size: "4096"},
+		{Name: "app.txt", Size: "120"},
+	}, true, false, true)
+	rows := listing.Rows
+	if len(rows) != 3 {
+		t.Fatalf("rows = %#v, want use, parent, dir", rows)
 	}
-	if items[0].Kind != remotePickerHere || items[0].Token != "/srv/app" {
-		t.Fatalf("here item = %#v", items[0])
+	if rows[0].Intent != termnav.IntentUseContainer || rows[0].Token != "/srv/app" || rows[0].Kind != string(remotePickerHere) {
+		t.Fatalf("use row = %#v", rows[0])
 	}
-	if items[1].Kind != remotePickerUp || items[1].Token != "/srv" {
-		t.Fatalf("parent item = %#v", items[1])
+	if rows[1].Intent != termnav.IntentAscend || rows[1].Token != "/srv" || rows[1].Kind != string(remotePickerUp) {
+		t.Fatalf("parent row = %#v", rows[1])
 	}
-	if items[2].Kind != remotePickerDir || items[2].Token != "/srv/app/logs" {
-		t.Fatalf("dir item = %#v", items[2])
+	if rows[2].Intent != termnav.IntentDescend || rows[2].Token != "/srv/app/logs" || rows[2].Kind != string(remotePickerDir) {
+		t.Fatalf("dir row = %#v", rows[2])
 	}
 }
 
-func TestRemoteFilePickerItems(t *testing.T) {
-	items := remoteFilePickerItems("/srv/app", []remoteEntry{
+func TestRemoteListingRowsFileMode(t *testing.T) {
+	// File picker: ".." + child directories + selectable files with descriptions.
+	listing := remoteListingRows("/srv/app", []remoteEntry{
 		{Name: "logs", IsDir: true, Size: "4096"},
 		{Name: "app.txt", Size: "120"},
-	})
-	if len(items) != 3 {
-		t.Fatalf("items = %#v, want parent, dir, file", items)
+	}, false, true, false)
+	rows := listing.Rows
+	if len(rows) != 3 {
+		t.Fatalf("rows = %#v, want parent, dir, file", rows)
 	}
-	if items[0].Kind != remotePickerUp || items[0].Token != "/srv" {
-		t.Fatalf("parent item = %#v", items[0])
+	if rows[0].Intent != termnav.IntentAscend || rows[0].Token != "/srv" {
+		t.Fatalf("parent row = %#v", rows[0])
 	}
-	if items[1].Kind != remotePickerDir || items[1].Token != "/srv/app/logs" {
-		t.Fatalf("dir item = %#v", items[1])
+	if rows[1].Intent != termnav.IntentDescend || rows[1].Token != "/srv/app/logs" {
+		t.Fatalf("dir row = %#v", rows[1])
 	}
-	if items[2].Kind != remotePickerFile || items[2].Token != "/srv/app/app.txt" || items[2].Description != "120 B" {
-		t.Fatalf("file item = %#v", items[2])
+	if rows[2].Intent != termnav.IntentSelectLeaf || !rows[2].Selectable || rows[2].Token != "/srv/app/app.txt" || rows[2].Description != "120 B" {
+		t.Fatalf("file row = %#v", rows[2])
 	}
 }
 
