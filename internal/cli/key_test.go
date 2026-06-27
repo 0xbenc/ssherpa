@@ -120,6 +120,43 @@ func TestKeyGenerate(t *testing.T) {
 	}
 }
 
+func TestKeyImportRegisterGlobalIdentity(t *testing.T) {
+	src := t.TempDir()
+	priv := filepath.Join(src, "k")
+	genTestKey(t, priv, "", "me")
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(sshDir, "config")
+	if err := os.WriteFile(cfg, []byte("Host existing\n  HostName 1.2.3.4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"key", "import", "--from", priv, "--name", "id_def", "--register", "--yes"}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("import --register = %d; %s", code, stderr.String())
+	}
+	got, _ := os.ReadFile(cfg)
+	wantLine := "IdentityFile " + filepath.Join(sshDir, "id_def")
+	if !bytes.Contains(got, []byte(wantLine)) {
+		t.Fatalf("config missing %q:\n%s", wantLine, got)
+	}
+	if !bytes.Contains(got, []byte("Host existing")) {
+		t.Fatalf("registration clobbered the existing stanza:\n%s", got)
+	}
+	// Idempotent: re-register adds no second IdentityFile line.
+	stderr.Reset()
+	Run([]string{"key", "import", "--from", priv, "--name", "id_def", "--register", "--yes"}, &stdout, &stderr, BuildInfo{})
+	after, _ := os.ReadFile(cfg)
+	if n := bytes.Count(after, []byte("IdentityFile")); n != 1 {
+		t.Fatalf("expected exactly one IdentityFile line, got %d:\n%s", n, after)
+	}
+}
+
 func TestKeyImportNoClobber(t *testing.T) {
 	src := t.TempDir()
 	a := filepath.Join(src, "a")

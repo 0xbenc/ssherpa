@@ -17,8 +17,8 @@ import (
 )
 
 const keyUsage = `Usage:
-  ssherpa key import --from PATH [--name NAME] [--force] [--dry-run] [--yes] [--json] [--ssh-keygen PATH]
-  ssherpa key generate [--name NAME] [--type ed25519|rsa|ecdsa] [--comment C] [--force] [--dry-run] [--yes] [--json]
+  ssherpa key import --from PATH [--name NAME] [--register] [--force] [--dry-run] [--yes] [--json] [--ssh-keygen PATH]
+  ssherpa key generate [--name NAME] [--type ed25519|rsa|ecdsa] [--comment C] [--register] [--force] [--dry-run] [--yes] [--json]
 
 Set up your OWN SSH keypair in ~/.ssh with safe permissions (the directory
 0700, private 0600, public 0644 — ssh refuses a loose-perm private key) and
@@ -30,6 +30,10 @@ print its SHA256 fingerprint.
             terminal to be prompted.
   generate  Create a fresh keypair with ssh-keygen (default ed25519). It has no
             passphrase unless SSHERPA_KEY_PASSPHRASE / --passphrase-fd is set.
+
+--register adds the key as the default identity (Host * IdentityFile, absolute
+path) in ~/.ssh/config — idempotent and backed up. For a single host, set the
+identity on that alias with "ssherpa edit" instead.
 
 Re-importing the same key is a no-op; a different key with the same name is
 refused unless --force.
@@ -59,6 +63,7 @@ type keyImportFlags struct {
 	From          string
 	Name          string
 	Force         bool
+	Register      bool
 	DryRun        bool
 	Yes           bool
 	JSON          bool
@@ -108,6 +113,8 @@ func parseKeyImportFlags(args []string, stderr io.Writer) (keyImportFlags, bool)
 			flags.PassphraseFD = fd
 		case arg == "--force":
 			flags.Force = true
+		case arg == "--register":
+			flags.Register = true
 		case arg == "--dry-run":
 			flags.DryRun = true
 		case arg == "--yes":
@@ -132,6 +139,7 @@ type keyImportOutput struct {
 	DryRun      bool   `json:"dry_run"`
 	Imported    bool   `json:"imported"`
 	Skipped     bool   `json:"skipped,omitempty"`
+	Registered  bool   `json:"registered,omitempty"`
 }
 
 func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -202,6 +210,9 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	if !flags.JSON {
 		printKeyImportPreview(stderr, info, privDest, flags.DryRun)
+		if flags.Register {
+			fmt.Fprintf(stderr, "  register    default identity in ~/.ssh/config\n")
+		}
 	}
 	if flags.DryRun {
 		if flags.JSON {
@@ -231,6 +242,15 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 	out.PrivatePath = res.PrivatePath
 	out.PublicPath = res.PublicPath
 
+	if flags.Register {
+		registered, regErr := registerKeyIdentity(res.PrivatePath, stderr)
+		if regErr != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", regErr)
+			return 1
+		}
+		out.Registered = registered
+	}
+
 	if flags.JSON {
 		writeJSON(stdout, out)
 		return 0
@@ -243,12 +263,23 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+// registerKeyIdentity registers an absolute key path as the global default
+// identity in ~/.ssh/config.
+func registerKeyIdentity(keyPath string, stderr io.Writer) (bool, error) {
+	configPath, err := defaultSSHConfigPath()
+	if err != nil {
+		return false, err
+	}
+	return registerGlobalIdentity(configPath, keyPath, stderr)
+}
+
 type keyGenerateFlags struct {
 	Name          string
 	Type          string
 	Comment       string
 	Bits          int
 	Force         bool
+	Register      bool
 	DryRun        bool
 	Yes           bool
 	JSON          bool
@@ -317,6 +348,8 @@ func parseKeyGenerateFlags(args []string, stderr io.Writer) (keyGenerateFlags, b
 			flags.PassphraseFD = fd
 		case arg == "--force":
 			flags.Force = true
+		case arg == "--register":
+			flags.Register = true
 		case arg == "--dry-run":
 			flags.DryRun = true
 		case arg == "--yes":
@@ -340,6 +373,7 @@ type keyGenerateOutput struct {
 	PublicPath  string `json:"public_path"`
 	DryRun      bool   `json:"dry_run"`
 	Generated   bool   `json:"generated"`
+	Registered  bool   `json:"registered,omitempty"`
 }
 
 func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -391,6 +425,9 @@ func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  private     %s  (0600)\n", privDest)
 		fmt.Fprintf(stderr, "  public      %s  (0644)\n", privDest+".pub")
 		fmt.Fprintf(stderr, "  ~/.ssh dir  0700\n")
+		if flags.Register {
+			fmt.Fprintf(stderr, "  register    default identity in ~/.ssh/config\n")
+		}
 	}
 	if flags.DryRun {
 		if flags.JSON {
@@ -425,6 +462,15 @@ func runKeyGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
 	out.PrivatePath = res.PrivatePath
 	out.PublicPath = res.PublicPath
 	out.Generated = true
+
+	if flags.Register {
+		registered, regErr := registerKeyIdentity(res.PrivatePath, stderr)
+		if regErr != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", regErr)
+			return 1
+		}
+		out.Registered = registered
+	}
 
 	if flags.JSON {
 		writeJSON(stdout, out)
@@ -470,6 +516,67 @@ func printKeyImportPreview(stderr io.Writer, info sshkeys.KeyInfo, privDest stri
 func fsutilWriteFunc(path string, data []byte, mode os.FileMode, backup bool) (string, error) {
 	res, err := fsutil.AtomicWriteFile(path, data, fsutil.WriteOptions{Mode: mode, Backup: backup})
 	return res.BackupPath, err
+}
+
+func defaultSSHConfigPath() (string, error) {
+	dir, err := defaultSSHDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config"), nil
+}
+
+// registerGlobalIdentity appends a `Host * / IdentityFile <abs>` stanza to the
+// ssh config so the key is offered to every host (the "default identity" the
+// new machine should use). It is idempotent — a no-op when that absolute path
+// is already an IdentityFile anywhere in the config — and keeps a backup.
+// IdentityFile must be an ABSOLUTE path: ssh expands ~ via getpwuid, not $HOME.
+func registerGlobalIdentity(configPath, keyPath string, stderr io.Writer) (bool, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read %s: %w", configPath, err)
+	}
+	if identityLinePresent(data, keyPath) {
+		fmt.Fprintf(stderr, "Identity already registered in %s\n", configPath)
+		return false, nil
+	}
+	value := keyPath
+	if strings.ContainsAny(value, " \t") {
+		value = strconv.Quote(value)
+	}
+	var b []byte
+	b = append(b, data...)
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		b = append(b, '\n')
+	}
+	b = append(b, []byte(fmt.Sprintf("\n# Added by ssherpa key — default identity\nHost *\n    IdentityFile %s\n", value))...)
+	res, err := fsutil.AtomicWriteFile(configPath, b, fsutil.WriteOptions{Mode: 0o600, Backup: true})
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", configPath, err)
+	}
+	fmt.Fprintf(stderr, "Registered as default identity in %s\n", configPath)
+	if res.BackupPath != "" {
+		fmt.Fprintf(stderr, "  backup: %s\n", res.BackupPath)
+	}
+	return res.Changed, nil
+}
+
+func identityLinePresent(data []byte, keyPath string) bool {
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "IdentityFile") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+		if unquoted, err := strconv.Unquote(val); err == nil {
+			val = unquoted
+		}
+		if val == keyPath {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultSSHDir() (string, error) {

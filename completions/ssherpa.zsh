@@ -238,6 +238,7 @@ _ssherpa() {
             '--type[key type to generate]:type:(ed25519 rsa ecdsa)' \
             '--comment[key comment]:comment' \
             '--bits[rsa key size]:bits' \
+            '--register[register as the default identity in ~/.ssh/config]' \
             '--force[overwrite an existing key with the same name]' \
             '--ssh-keygen[use this ssh-keygen binary]:path:_files' \
             '--passphrase-fd[read passphrase from this fd]:fd' \

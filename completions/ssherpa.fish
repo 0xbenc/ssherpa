@@ -30,6 +30,7 @@ complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l type -d 'Key type
 complete -c ssherpa -n '__fish_seen_subcommand_from key' -l comment -d 'Key comment' -r
 complete -c ssherpa -n '__fish_seen_subcommand_from key' -l bits -d 'RSA key size' -r
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l force -d 'Overwrite a different same-name key'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l register -d 'Register as default identity in ~/.ssh/config'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l dry-run -d 'Preview without writing'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l yes -d 'Skip confirmation'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l json -d 'Emit JSON'
