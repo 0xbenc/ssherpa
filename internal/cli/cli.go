@@ -493,6 +493,12 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 				continue
 			}
 			return code
+		case ui.ItemImportKey:
+			code := runKeyInteractive(stdout, stderr)
+			if code == 0 && flags.Select == "" {
+				continue
+			}
+			return code
 		case ui.ItemIncoming:
 			code := runIncomingList(nil, stdout, stderr)
 			if code == 0 && flags.Select == "" {

@@ -22,6 +22,7 @@ const (
 	ItemAdd           ItemKind = "add"
 	ItemEdit          ItemKind = "edit"
 	ItemAuthkeys      ItemKind = "authkeys"
+	ItemImportKey     ItemKind = "import_key"
 	ItemProxy         ItemKind = "proxy"
 	ItemJump          ItemKind = "jump"
 	ItemForward       ItemKind = "forward"
@@ -237,6 +238,7 @@ func BuildItemsWithOptions(aliases []hostlist.Alias, opts BuildItemsOptions) []I
 		Item{Kind: ItemTransferFile, Token: "TRANSFER_FILE", Title: "Transfer file", Group: "Actions", Badge: "transfer"},
 		Item{Kind: ItemCheck, Token: "CHECK", Title: "Check reachability", Group: "Actions", Badge: "check"},
 		Item{Kind: ItemAuthkeys, Token: "AUTHKEYS", Title: "Manage authorized_keys", Group: "Actions", Badge: "keys"},
+		Item{Kind: ItemImportKey, Token: "IMPORT_KEY", Title: "Set up your own SSH key", Group: "Actions", Badge: "mykey"},
 		Item{Kind: ItemSessions, Token: "SESSIONS", Title: "Sessions and route map", Group: "Actions", Badge: "map"},
 		Item{Kind: ItemPorting, Token: "PORTING", Title: "Import / Export aliases and presets", Group: "Actions", Badge: "io"},
 		Item{Kind: ItemTheme, Token: "THEME", Title: "Theme and colors", Group: "Actions", Badge: "theme"},
@@ -1099,6 +1101,8 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleInfo
 	case ItemAuthkeys:
 		role = termstyle.RoleWarning
+	case ItemImportKey:
+		role = termstyle.RoleWarning
 	case ItemSessions:
 		role = termstyle.RoleSecondary
 	case ItemPorting:
@@ -1237,6 +1241,8 @@ func selectionHint(item Item) string {
 		return "Runs SSH and ICMP reachability checks for hosts or saved forwards."
 	case ItemAuthkeys:
 		return "Manages authorized_keys on this device."
+	case ItemImportKey:
+		return "Imports or generates your own SSH keypair in ~/.ssh."
 	case ItemSessions:
 		return "Opens the active session route map."
 	case ItemPorting:

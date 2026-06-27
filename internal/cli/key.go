@@ -16,6 +16,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/authkeys"
 	"github.com/0xbenc/ssherpa/internal/fsutil"
 	"github.com/0xbenc/ssherpa/internal/sshkeys"
+	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
 const keyUsage = `Usage:
@@ -52,8 +53,14 @@ func runKey(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprint(stdout, keyUsage)
-		return 1
+		// The bare command opens the interactive setup, but only on a real
+		// terminal; otherwise fall back to usage so scripts get a clear message
+		// instead of a TUI error.
+		if !term.IsTerminal(os.Stdin.Fd()) {
+			fmt.Fprint(stdout, keyUsage)
+			return 1
+		}
+		return runKeyInteractive(stdout, stderr)
 	}
 	switch args[0] {
 	case "import":
@@ -745,6 +752,434 @@ func defaultKeyName(src string) string {
 		return "id_imported"
 	}
 	return name
+}
+
+// runKeyInteractive drives the home-menu "set up your own SSH key" flow: a
+// small management menu that branches into the import or generate workflow,
+// reusing the same primitives as the verbs (DeriveBytes, Place, register,
+// agent). It loops back to the menu after each action until the user backs out.
+func runKeyInteractive(stdout io.Writer, stderr io.Writer) int {
+	sshDir, err := defaultSSHDir()
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	for {
+		item, ok, err := ui.ChooseManagement(context.Background(), keyMenuItems(), ui.ManagementChooserOptions{
+			Input:       os.Stdin,
+			Output:      stderr,
+			NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+			Title:       "SSH key setup",
+			Mode:        "set up your own SSH key",
+			Steps:       []string{"action", "input", "confirm"},
+			CurrentStep: 0,
+			Summary:     sshDir,
+			Footer:      "enter select / type filter / arrows move / Q back",
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: key picker failed: %v\n", err)
+			return 1
+		}
+		if !ok || item.Token == "back" {
+			fmt.Fprintln(stdout, "[skipped] key setup cancelled")
+			return 0
+		}
+		switch item.Token {
+		case "import":
+			if code := importKeyInteractive(sshDir, stdout, stderr); code != 0 {
+				return code
+			}
+		case "generate":
+			if code := generateKeyInteractive(sshDir, stdout, stderr); code != 0 {
+				return code
+			}
+		}
+	}
+}
+
+func keyMenuItems() []ui.ManagementItem {
+	return []ui.ManagementItem{
+		{Kind: ui.ItemImportKey, Token: "import", Title: "Import an existing key", Description: "copy a private+public key from a backup/USB into ~/.ssh", Group: "Set up", Badge: "import", Action: "Browse for a private key and place it with safe permissions"},
+		{Kind: ui.ItemImportKey, Token: "generate", Title: "Generate a new key", Description: "create a fresh keypair with ssh-keygen", Group: "Set up", Badge: "gen", Action: "Create a new keypair in ~/.ssh"},
+		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the previous menu", Group: "Navigation", Badge: "back", Action: "Return without changing ~/.ssh"},
+	}
+}
+
+// importKeyInteractive walks the user through choosing a private key file,
+// unlocking it if needed, naming it, and optionally registering it / loading it
+// into the agent — then places it.
+func importKeyInteractive(sshDir string, stdout io.Writer, stderr io.Writer) int {
+	path, ok, err := pickLocalFileWith(stderr, filePickerOptions{}, ".", "SSHERPA IMPORT KEY", "import-key", "PRIVATE KEY", []string{"choose", "name", "confirm"}, 0)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] key import cancelled")
+		return 0
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: read %s: %v\n", path, err)
+		return 1
+	}
+	if _, _, perr := authkeys.ParseFirstKey(data, path, authkeys.Validator{SkipSSHKeygen: true}); perr == nil {
+		fmt.Fprintf(stderr, "ssherpa: %s looks like a PUBLIC key; choose the PRIVATE key\n", path)
+		return 1
+	}
+
+	ctx := context.Background()
+	kg := sshkeys.Keygen{}
+	var passphrase string
+	info, err := kg.DeriveBytes(ctx, data, "")
+	if err == sshkeys.ErrEncrypted {
+		pass, ok, perr := promptSecret(stderr, "Encrypted private key", "passphrase", nil)
+		if perr != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", perr)
+			return 1
+		}
+		if !ok {
+			fmt.Fprintln(stdout, "[skipped] key import cancelled")
+			return 0
+		}
+		passphrase = pass
+		info, err = kg.DeriveBytes(ctx, data, pass)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
+	name, ok, err := promptText(stderr, "Destination key name", "name", defaultKeyName(path), validateKeyNameInput)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] key import cancelled")
+		return 0
+	}
+	name = strings.TrimSpace(name)
+
+	register, addAgent, ok, code := promptKeyOptions(stdout, stderr)
+	if !ok {
+		return code
+	}
+
+	privDest := filepath.Join(sshDir, name)
+	if err := showKeyReview(ctx, stderr, "Import", info, privDest, register, addAgent); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
+	force, ok, code := confirmOverwriteIfPresent(stdout, stderr, privDest)
+	if !ok {
+		return code
+	}
+
+	yes, err := confirmActionChoice(stderr, "Import SSH key", fmt.Sprintf("%s into %s", info.Fingerprint, privDest))
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !yes {
+		fmt.Fprintln(stdout, "[skipped] key import cancelled")
+		return 0
+	}
+
+	res, err := sshkeys.Place(sshDir, name, data, info.PublicLine, force, fsutilWriteFunc)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if code := applyKeyExtras(res.PrivatePath, passphrase, register, addAgent, stderr); code != 0 {
+		return code
+	}
+	if res.Skipped {
+		fmt.Fprintf(stderr, "Already present (perms repaired): %s\n  %s\n", info.Fingerprint, res.PrivatePath)
+	} else {
+		fmt.Fprintf(stderr, "Imported %s (%s)\n  %s  (0600)\n  %s  (0644)\n", info.Fingerprint, info.Type, res.PrivatePath, res.PublicPath)
+	}
+	return 0
+}
+
+// generateKeyInteractive walks the user through creating a fresh keypair:
+// choosing the type, name, comment, and an optional passphrase, then the same
+// register/agent options as import.
+func generateKeyInteractive(sshDir string, stdout io.Writer, stderr io.Writer) int {
+	keyType, ok, err := chooseKeyType(stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] key generation cancelled")
+		return 0
+	}
+
+	name, ok, err := promptText(stderr, "New key name", "name", "id_"+keyType, validateKeyNameInput)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] key generation cancelled")
+		return 0
+	}
+	name = strings.TrimSpace(name)
+
+	comment, ok, err := promptText(stderr, "Comment (optional)", "comment", defaultKeyComment(), nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] key generation cancelled")
+		return 0
+	}
+
+	passphrase, ok := promptNewPassphrase(stderr)
+	if !ok {
+		fmt.Fprintln(stdout, "[skipped] key generation cancelled")
+		return 0
+	}
+
+	register, addAgent, ok, code := promptKeyOptions(stdout, stderr)
+	if !ok {
+		return code
+	}
+
+	ctx := context.Background()
+	privDest := filepath.Join(sshDir, name)
+	if err := showKeyReview(ctx, stderr, "Generate", sshkeys.KeyInfo{Type: keyType, Comment: comment}, privDest, register, addAgent); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+
+	force, ok, code := confirmOverwriteIfPresent(stdout, stderr, privDest)
+	if !ok {
+		return code
+	}
+
+	yes, err := confirmActionChoice(stderr, "Generate SSH key", fmt.Sprintf("%s into %s", keyType, privDest))
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if !yes {
+		fmt.Fprintln(stdout, "[skipped] key generation cancelled")
+		return 0
+	}
+
+	info, res, err := sshkeys.Keygen{}.Generate(ctx, sshDir, name, sshkeys.GenerateOptions{
+		Type:       keyType,
+		Comment:    comment,
+		Passphrase: passphrase,
+	}, force)
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return 1
+	}
+	if code := applyKeyExtras(res.PrivatePath, passphrase, register, addAgent, stderr); code != 0 {
+		return code
+	}
+	fmt.Fprintf(stderr, "Generated %s (%s)\n  %s  (0600)\n  %s  (0644)\n", info.Fingerprint, info.Type, res.PrivatePath, res.PublicPath)
+	return 0
+}
+
+// promptKeyOptions asks whether to register the key as the default identity and
+// (when an agent is reachable) whether to load it into the agent. The bool
+// reports whether to proceed; on cancellation it returns false with an exit
+// code for the caller to return.
+func promptKeyOptions(stdout io.Writer, stderr io.Writer) (register bool, addAgent bool, ok bool, code int) {
+	register, err := confirmActionChoice(stderr, "Default identity", "Add as the default identity (Host * IdentityFile) in ~/.ssh/config?")
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return false, false, false, 1
+	}
+	if sshAgentAvailable() {
+		addAgent, err = confirmActionChoice(stderr, "ssh-agent", "Load the key into your running ssh-agent now?")
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return false, false, false, 1
+		}
+	}
+	return register, addAgent, true, 0
+}
+
+// applyKeyExtras runs the register and agent steps shared by both interactive
+// flows, surfacing any hard error as a non-zero code.
+func applyKeyExtras(privPath, passphrase string, register, addAgent bool, stderr io.Writer) int {
+	if register {
+		if _, err := registerKeyIdentity(privPath, stderr); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
+	}
+	if addAgent {
+		if _, _, err := addKeyToAgent(privPath, passphrase, "", "", stderr); err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return 1
+		}
+	}
+	return 0
+}
+
+// confirmOverwriteIfPresent asks before reusing an existing key name. It returns
+// force=true (proceed, overwriting differing bytes) when the user confirms; ok
+// is false when they decline or the prompt errors.
+func confirmOverwriteIfPresent(stdout io.Writer, stderr io.Writer, privDest string) (force bool, ok bool, code int) {
+	if _, statErr := os.Stat(privDest); statErr != nil {
+		return false, true, 0
+	}
+	yes, err := confirmActionChoice(stderr, "Overwrite", fmt.Sprintf("%s already exists. Overwrite it?", privDest))
+	if err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+		return false, false, 1
+	}
+	if !yes {
+		fmt.Fprintln(stdout, "[skipped] key setup cancelled")
+		return false, false, 0
+	}
+	return true, true, 0
+}
+
+func showKeyReview(ctx context.Context, stderr io.Writer, verb string, info sshkeys.KeyInfo, privDest string, register, addAgent bool) error {
+	return ui.ShowTextView(ctx, ui.TextViewOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Review SSH key " + strings.ToLower(verb),
+		Steps:       []string{"choose", "name", "confirm"},
+		CurrentStep: 2,
+		Summary:     privDest,
+		Lines:       keyReviewLines(verb, info, privDest, register, addAgent),
+		Footer:      "enter continue / q back",
+	})
+}
+
+func keyReviewLines(verb string, info sshkeys.KeyInfo, privDest string, register, addAgent bool) []string {
+	lines := []string{verb + " SSH key:", ""}
+	if info.Type != "" {
+		lines = append(lines, "  type         "+info.Type)
+	}
+	if info.Fingerprint != "" {
+		lines = append(lines, "  fingerprint  "+info.Fingerprint)
+	}
+	if info.Comment != "" {
+		lines = append(lines, "  comment      "+info.Comment)
+	}
+	lines = append(lines,
+		"  private      "+privDest+"  (0600)",
+		"  public       "+privDest+".pub  (0644)",
+		"  ~/.ssh dir   0700",
+	)
+	if register {
+		lines = append(lines, "  register     default identity in ~/.ssh/config")
+	}
+	if addAgent {
+		lines = append(lines, "  agent        load into ssh-agent")
+	}
+	return lines
+}
+
+func chooseKeyType(stderr io.Writer) (string, bool, error) {
+	items := []ui.ManagementItem{
+		{Kind: ui.ItemImportKey, Token: "ed25519", Title: "ed25519", Description: "modern, fast — recommended", Group: "Key type", Badge: "ed"},
+		{Kind: ui.ItemImportKey, Token: "rsa", Title: "rsa 4096", Description: "widest compatibility", Group: "Key type", Badge: "rsa"},
+		{Kind: ui.ItemImportKey, Token: "ecdsa", Title: "ecdsa", Description: "NIST P-256 curve", Group: "Key type", Badge: "ec"},
+		{Kind: ui.ItemKind("back"), Token: "back", Title: "Back", Description: "return to the key menu", Group: "Navigation", Badge: "back"},
+	}
+	item, ok, err := ui.ChooseManagement(context.Background(), items, ui.ManagementChooserOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       "Generate SSH key",
+		Mode:        "choose a key type",
+		Steps:       []string{"type", "name", "confirm"},
+		CurrentStep: 0,
+		Footer:      "enter select / arrows move / Q back",
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || item.Token == "back" {
+		return "", false, nil
+	}
+	return item.Token, true, nil
+}
+
+// promptNewPassphrase reads a NEW passphrase for a generated key, confirming it
+// by re-entry. An empty first entry means "no passphrase". ok is false when the
+// user cancels or keeps mismatching.
+func promptNewPassphrase(stderr io.Writer) (string, bool) {
+	for attempt := 0; attempt < 3; attempt++ {
+		first, ok, err := promptSecret(stderr, "New passphrase (blank for none)", "passphrase", nil)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return "", false
+		}
+		if !ok {
+			return "", false
+		}
+		if first == "" {
+			return "", true
+		}
+		second, ok, err := promptSecret(stderr, "Confirm passphrase", "again", nil)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", err)
+			return "", false
+		}
+		if !ok {
+			return "", false
+		}
+		if first == second {
+			return first, true
+		}
+		fmt.Fprintln(stderr, "Passphrases did not match; try again.")
+	}
+	fmt.Fprintln(stderr, "Too many mismatches; cancelled.")
+	return "", false
+}
+
+func promptSecret(stderr io.Writer, title, label string, validate func(string) error) (string, bool, error) {
+	return ui.PromptSecret(context.Background(), ui.TextPromptOptions{
+		Input:       os.Stdin,
+		Output:      stderr,
+		NoAltScreen: envBool("SSHERPA_NO_ALT_SCREEN"),
+		Title:       title,
+		Label:       label,
+		Validate:    validate,
+	})
+}
+
+func validateKeyNameInput(value string) error {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return fmt.Errorf("a key name is required")
+	}
+	if strings.ContainsAny(v, "/\\") {
+		return fmt.Errorf("the name must not contain a path separator")
+	}
+	return nil
+}
+
+func sshAgentAvailable() bool {
+	return strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")) != ""
+}
+
+// defaultKeyComment mirrors ssh-keygen's default user@host comment.
+func defaultKeyComment() string {
+	host, _ := os.Hostname()
+	user := os.Getenv("USER")
+	if user == "" {
+		user = os.Getenv("LOGNAME")
+	}
+	if user != "" && host != "" {
+		return user + "@" + host
+	}
+	return ""
 }
 
 // readKeyPassphrase resolves the passphrase for an encrypted key from (in

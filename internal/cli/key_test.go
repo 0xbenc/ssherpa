@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/0xbenc/ssherpa/internal/sshkeys"
 )
 
 func genTestKey(t *testing.T, path, passphrase, comment string) {
@@ -156,6 +158,54 @@ func TestKeyImportRegisterGlobalIdentity(t *testing.T) {
 	after, _ := os.ReadFile(cfg)
 	if n := bytes.Count(after, []byte("IdentityFile")); n != 1 {
 		t.Fatalf("expected exactly one IdentityFile line, got %d:\n%s", n, after)
+	}
+}
+
+func TestValidateKeyNameInput(t *testing.T) {
+	ok := []string{"id_ed25519", "backup_key", "id-work"}
+	for _, n := range ok {
+		if err := validateKeyNameInput(n); err != nil {
+			t.Errorf("validateKeyNameInput(%q) = %v, want nil", n, err)
+		}
+	}
+	bad := []string{"", "   ", "a/b", "../escape", "dir\\name"}
+	for _, n := range bad {
+		if err := validateKeyNameInput(n); err == nil {
+			t.Errorf("validateKeyNameInput(%q) = nil, want error", n)
+		}
+	}
+}
+
+func TestKeyReviewLines(t *testing.T) {
+	info := sshkeys.KeyInfo{Type: "ssh-ed25519", Fingerprint: "SHA256:abc", Comment: "laptop"}
+	lines := strings.Join(keyReviewLines("Import", info, "/home/u/.ssh/id_x", true, true), "\n")
+	for _, want := range []string{"ssh-ed25519", "SHA256:abc", "laptop", "/home/u/.ssh/id_x", "(0600)", "(0644)", "default identity", "ssh-agent"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("review lines missing %q:\n%s", want, lines)
+		}
+	}
+
+	// No fingerprint yet (generate preview) and no extras: those lines drop out.
+	gen := strings.Join(keyReviewLines("Generate", sshkeys.KeyInfo{Type: "ed25519"}, "/p/id", false, false), "\n")
+	if strings.Contains(gen, "fingerprint") {
+		t.Errorf("generate preview should omit the fingerprint line:\n%s", gen)
+	}
+	if strings.Contains(gen, "default identity") || strings.Contains(gen, "ssh-agent") {
+		t.Errorf("preview should omit register/agent lines when not chosen:\n%s", gen)
+	}
+}
+
+func TestKeyMenuItems(t *testing.T) {
+	want := map[string]bool{"import": false, "generate": false, "back": false}
+	for _, it := range keyMenuItems() {
+		if _, ok := want[it.Token]; ok {
+			want[it.Token] = true
+		}
+	}
+	for tok, seen := range want {
+		if !seen {
+			t.Errorf("key menu missing %q action", tok)
+		}
 	}
 }
 
