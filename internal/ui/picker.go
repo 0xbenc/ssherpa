@@ -1077,14 +1077,6 @@ func (t pickerTheme) badge(kind ItemKind, value string) string {
 		role = termstyle.RoleDanger
 	case ItemForward, ItemSendFile, ItemReceiveFile:
 		role = termstyle.RolePrimary
-	case ItemKind("file"), ItemKind("remote_file"):
-		role = termstyle.RoleForeground
-	case ItemKind("file_dir"), ItemKind("remote_dir"):
-		role = termstyle.RoleInfo
-	case ItemKind("file_parent"), ItemKind("remote_up"):
-		role = termstyle.RoleSecondary
-	case ItemKind("file_here"), ItemKind("remote_here"):
-		role = termstyle.RoleSuccess
 	case ItemForwardSaved:
 		role = termstyle.RolePrimary
 	case ItemForwardActive, ItemProxyActive, ItemStopAllActive:
