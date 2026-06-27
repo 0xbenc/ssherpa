@@ -36,6 +36,7 @@ Available Commands:
   check      Test SSH aliases and saved forwards
   incoming   Inspect and mark incoming SSH sessions
   authkeys   Manage local authorized_keys or seed keys to SSH aliases
+  key        Import and set up your own SSH keypair in ~/.ssh
   theme      Build and save the terminal UI color schema
   session    Inspect supervised session records and transcripts
   export     Export SSH aliases and saved presets to a JSON bundle
@@ -308,6 +309,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, build BuildInfo) int
 		return runShow(args[1:], stdout, stderr)
 	case "authkeys":
 		return runAuthkeys(args[1:], stdout, stderr)
+	case "key":
+		return runKey(args[1:], stdout, stderr)
 	case "theme":
 		return runTheme(args[1:], stdout, stderr)
 	case "session":
@@ -1803,6 +1806,8 @@ func helpTopicUsage(name string) (string, bool) {
 		return showUsage, true
 	case "authkeys":
 		return authkeysUsage, true
+	case "key":
+		return keyUsage, true
 	case "theme":
 		return themeUsage, true
 	case "session":

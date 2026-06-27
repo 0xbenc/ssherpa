@@ -73,6 +73,22 @@ List incoming interactive SSH sessions, write per-login marker files, or print a
 .B authkeys
 Manage authorized_keys on this device, or seed/remove public keys on remote SSH aliases without sudo.
 .TP
+.B key import
+Import your own SSH keypair into ~/.ssh: validate the private key, derive its
+public half, copy both in with safe permissions (dir 0700, private 0600, public
+0644), and print the SHA256 fingerprint. The source is left untouched. An
+encrypted key's passphrase comes from
+.B SSHERPA_KEY_PASSPHRASE ,
+.BR --passphrase-fd ,
+or an interactive prompt. Flags:
+.BR --from ,
+.BR --name ,
+.BR --force ,
+.BR --dry-run ,
+.BR --yes ,
+.BR --json ,
+.BR --ssh-keygen .
+.TP
 .B theme
 Build and save the terminal UI color schema.
 .TP

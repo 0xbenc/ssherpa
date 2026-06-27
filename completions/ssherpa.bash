@@ -5,7 +5,7 @@ _ssherpa()
     local cur prev words cword
     _init_completion || return
 
-    local commands="add edit jump proxy forward send receive recv check incoming authkeys theme session export import list show version help"
+    local commands="add edit jump proxy forward send receive recv check incoming authkeys key theme session export import list show version help"
     local connect_flags="--json --all --filter --user --config --print --exec --select --ssh-binary --supervise --direct --state-dir --latency-warn --latency-disconnect --composer-key --no-composer --overlay-key --no-record --no-muxer-guard --record-max-bytes --no-kitty --no-color --theme-file --help"
 
     if [[ $cword -eq 1 ]]; then
@@ -162,6 +162,18 @@ _ssherpa()
                     ;;
                 *)
                     COMPREPLY=( $(compgen -W "list add merge replace delete seed revoke unseed --json --path --key --key-file --from-dir --target --hop --fingerprint --all-matching --dry-run --yes --ssh-keygen --ssh-binary --timeout" -- "$cur") )
+                    return
+                    ;;
+            esac
+            ;;
+        key)
+            case "${words[2]}" in
+                import)
+                    COMPREPLY=( $(compgen -W "--from --name --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
+                    return
+                    ;;
+                *)
+                    COMPREPLY=( $(compgen -W "import --from --name --force --dry-run --yes --json --ssh-keygen --passphrase-fd" -- "$cur") )
                     return
                     ;;
             esac
