@@ -158,6 +158,52 @@ func TestPlaceRejectsBadName(t *testing.T) {
 	}
 }
 
+func requireKeygen(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not installed")
+	}
+	probe := filepath.Join(t.TempDir(), "probe")
+	if out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-f", probe, "-N", "").CombinedOutput(); err != nil {
+		t.Skipf("ssh-keygen generation unavailable here: %v: %s", err, out)
+	}
+}
+
+func TestGenerate(t *testing.T) {
+	requireKeygen(t)
+	ssh := filepath.Join(t.TempDir(), ".ssh")
+	info, res, err := Keygen{}.Generate(context.Background(), ssh, "id_gen", GenerateOptions{Comment: "fresh"}, false)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if info.Type != "ssh-ed25519" || !strings.HasPrefix(info.Fingerprint, "SHA256:") {
+		t.Fatalf("info = %#v", info)
+	}
+	assertMode(t, ssh, 0o700)
+	assertMode(t, res.PrivatePath, 0o600)
+	assertMode(t, res.PublicPath, 0o644)
+
+	// No-clobber without force.
+	if _, _, err := (Keygen{}).Generate(context.Background(), ssh, "id_gen", GenerateOptions{}, false); err == nil {
+		t.Fatal("regenerate without force should refuse")
+	}
+	// Force overwrites and yields a different key.
+	info2, _, err := Keygen{}.Generate(context.Background(), ssh, "id_gen", GenerateOptions{}, true)
+	if err != nil {
+		t.Fatalf("forced regenerate: %v", err)
+	}
+	if info2.Fingerprint == info.Fingerprint {
+		t.Fatal("forced regenerate produced the same key")
+	}
+}
+
+func TestGenerateRejectsBadType(t *testing.T) {
+	ssh := filepath.Join(t.TempDir(), ".ssh")
+	if _, _, err := (Keygen{}).Generate(context.Background(), ssh, "id", GenerateOptions{Type: "dsa-bogus"}, false); err == nil {
+		t.Fatal("unsupported type should be rejected")
+	}
+}
+
 func assertMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	st, err := os.Stat(path)

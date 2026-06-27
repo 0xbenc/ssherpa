@@ -23,8 +23,12 @@ complete -c ssherpa -f -n '__fish_use_subcommand' -a help -d 'Show help'
 
 # key subcommands + flags
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -a import -d 'Import your SSH keypair into ~/.ssh'
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -a generate -d 'Generate a fresh SSH keypair'
 complete -c ssherpa -n '__fish_seen_subcommand_from key' -l from -d 'Private key path or folder' -r
 complete -c ssherpa -n '__fish_seen_subcommand_from key' -l name -d 'Destination key name in ~/.ssh' -r
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l type -d 'Key type (ed25519/rsa/ecdsa)' -a 'ed25519 rsa ecdsa'
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l comment -d 'Key comment' -r
+complete -c ssherpa -n '__fish_seen_subcommand_from key' -l bits -d 'RSA key size' -r
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l force -d 'Overwrite a different same-name key'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l dry-run -d 'Preview without writing'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l yes -d 'Skip confirmation'

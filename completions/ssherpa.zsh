@@ -232,10 +232,13 @@ _ssherpa() {
           ;;
         key)
           _arguments \
-            '1:subcommand:(import)' \
+            '1:subcommand:(import generate)' \
             '--from[private key path or folder]:path:_files' \
             '--name[destination key name in ~/.ssh]:name' \
-            '--force[overwrite a different key with the same name]' \
+            '--type[key type to generate]:type:(ed25519 rsa ecdsa)' \
+            '--comment[key comment]:comment' \
+            '--bits[rsa key size]:bits' \
+            '--force[overwrite an existing key with the same name]' \
             '--ssh-keygen[use this ssh-keygen binary]:path:_files' \
             '--passphrase-fd[read passphrase from this fd]:fd' \
             '--dry-run[preview without writing]' \

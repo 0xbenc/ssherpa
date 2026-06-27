@@ -91,6 +91,35 @@ func TestKeyImportRejectsPublicKey(t *testing.T) {
 	}
 }
 
+func TestKeyGenerate(t *testing.T) {
+	// Capability probe (skips on macOS CI where the agent socket path is too long).
+	probe := filepath.Join(t.TempDir(), "probe")
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not installed")
+	}
+	if out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-f", probe, "-N", "").CombinedOutput(); err != nil {
+		t.Skipf("ssh-keygen generation unavailable: %v: %s", err, out)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"key", "generate", "--name", "id_fresh", "--comment", "x", "--yes", "--json"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("key generate = %d; stderr=%s", code, stderr.String())
+	}
+	var out keyGenerateOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if !out.Generated || out.Type != "ed25519" || out.Fingerprint == "" {
+		t.Fatalf("output = %#v", out)
+	}
+	if keyMode(t, filepath.Join(home, ".ssh", "id_fresh")) != 0o600 {
+		t.Fatalf("generated private mode wrong")
+	}
+}
+
 func TestKeyImportNoClobber(t *testing.T) {
 	src := t.TempDir()
 	a := filepath.Join(src, "a")

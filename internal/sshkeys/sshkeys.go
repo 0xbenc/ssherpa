@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/0xbenc/ssherpa/internal/authkeys"
@@ -206,11 +207,8 @@ type PlaceResult struct {
 // caller's writer); it no-ops (Skipped) when the same key is already present,
 // still repairing perms and a missing .pub.
 func Place(dir, name string, priv []byte, pubLine string, force bool, write WriteFunc) (PlaceResult, error) {
-	if strings.TrimSpace(name) == "" {
-		return PlaceResult{}, errors.New("key name is required")
-	}
-	if strings.ContainsAny(name, "/\\") {
-		return PlaceResult{}, fmt.Errorf("key name %q must not contain a path separator", name)
+	if err := validKeyName(name); err != nil {
+		return PlaceResult{}, err
 	}
 	if err := EnsureDir(dir); err != nil {
 		return PlaceResult{}, err
@@ -247,6 +245,98 @@ func Place(dir, name string, priv []byte, pubLine string, force bool, write Writ
 		return PlaceResult{}, err
 	}
 	return PlaceResult{PrivatePath: privDest, PublicPath: pubDest}, nil
+}
+
+// GenerateOptions tunes a fresh keypair.
+type GenerateOptions struct {
+	Type       string // ed25519 (default), rsa, ecdsa
+	Comment    string
+	Passphrase string // empty = no passphrase
+	Bits       int    // rsa only; defaults to 4096
+}
+
+// SupportedGenerateType reports whether t is a key type Generate accepts.
+func SupportedGenerateType(t string) bool {
+	switch t {
+	case "", "ed25519", "rsa", "ecdsa":
+		return true
+	}
+	return false
+}
+
+// Generate creates a fresh keypair at dir/name (+ .pub) with ssh-keygen and
+// returns its info. It refuses to overwrite an existing key unless force is set.
+// A non-empty passphrase is passed via ssh-keygen's -N, which briefly appears in
+// the ssh-keygen process arguments — acceptable since it comes from a file
+// descriptor or env, not the shell.
+func (kg Keygen) Generate(ctx context.Context, dir, name string, opts GenerateOptions, force bool) (KeyInfo, PlaceResult, error) {
+	if err := validKeyName(name); err != nil {
+		return KeyInfo{}, PlaceResult{}, err
+	}
+	typ := opts.Type
+	if typ == "" {
+		typ = "ed25519"
+	}
+	if !SupportedGenerateType(typ) {
+		return KeyInfo{}, PlaceResult{}, fmt.Errorf("unsupported key type %q (use ed25519, rsa, or ecdsa)", typ)
+	}
+	if err := EnsureDir(dir); err != nil {
+		return KeyInfo{}, PlaceResult{}, err
+	}
+	priv := filepath.Join(dir, name)
+	pub := priv + ".pub"
+	if _, err := os.Stat(priv); err == nil {
+		if !force {
+			return KeyInfo{}, PlaceResult{}, fmt.Errorf("%s already exists; choose another name or pass --force", priv)
+		}
+		// ssh-keygen won't overwrite non-interactively; clear the way.
+		_ = os.Remove(priv)
+		_ = os.Remove(pub)
+	}
+
+	args := []string{"-t", typ, "-f", priv, "-N", opts.Passphrase, "-C", opts.Comment}
+	if typ == "rsa" {
+		bits := opts.Bits
+		if bits == 0 {
+			bits = 4096
+		}
+		args = append(args, "-b", strconv.Itoa(bits))
+	}
+	cmd := exec.CommandContext(ctx, kg.bin(), args...)
+	cmd.Stdin = nil
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return KeyInfo{}, PlaceResult{}, fmt.Errorf("ssh-keygen generate failed: %s", firstLine(strings.TrimSpace(stderr.String())))
+	}
+	if err := RepairKeyPerms(priv); err != nil {
+		return KeyInfo{}, PlaceResult{}, err
+	}
+
+	pubBytes, err := os.ReadFile(pub)
+	if err != nil {
+		return KeyInfo{}, PlaceResult{}, fmt.Errorf("read generated public key: %w", err)
+	}
+	key, err := authkeys.ParsePublicKeyLine(strings.TrimSpace(string(pubBytes)))
+	if err != nil {
+		return KeyInfo{}, PlaceResult{}, fmt.Errorf("generated public key did not parse: %w", err)
+	}
+	fp, err := key.SHA256Fingerprint()
+	if err != nil {
+		return KeyInfo{}, PlaceResult{}, err
+	}
+	return KeyInfo{PublicLine: strings.TrimSpace(string(pubBytes)), Type: key.Type, Comment: key.Comment, Fingerprint: fp},
+		PlaceResult{PrivatePath: priv, PublicPath: pub}, nil
+}
+
+func validKeyName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("key name is required")
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("key name %q must not contain a path separator", name)
+	}
+	return nil
 }
 
 // WriteFunc abstracts the atomic, permission-aware, backup-keeping writer so the

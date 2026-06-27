@@ -89,6 +89,24 @@ or an interactive prompt. Flags:
 .BR --json ,
 .BR --ssh-keygen .
 .TP
+.B key generate
+Create a fresh keypair with ssh-keygen (default
+.BR ed25519 )
+in ~/.ssh with the same safe permissions and fingerprint output. It has no
+passphrase unless
+.B SSHERPA_KEY_PASSPHRASE
+or
+.B --passphrase-fd
+is set. Flags:
+.BR --name ,
+.BR --type ,
+.BR --comment ,
+.BR --bits ,
+.BR --force ,
+.BR --dry-run ,
+.BR --yes ,
+.BR --json .
+.TP
 .B theme
 Build and save the terminal UI color schema.
 .TP
