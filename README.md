@@ -40,6 +40,9 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   keypair instead. Add `--register` to set it as the default identity
   (`Host * IdentityFile`) in `~/.ssh/config`, and `--add-to-agent`
   (with optional `--agent-ttl 8h`) to load it into your running `ssh-agent`.
+  Add `--delete-source` to clear the original key off the USB/download once it
+  has been copied in (the in-place copy in `~/.ssh` is never deleted); an
+  interactive import offers the same cleanup as a prompt.
   The "Set up your own SSH key" home-menu tile drives the whole flow
   interactively, with a masked passphrase prompt for encrypted keys.
 - **Escape rope:** `Ctrl-^`, `X`, `X` disconnects every supervised layer below

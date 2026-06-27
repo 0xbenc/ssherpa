@@ -20,7 +20,7 @@ import (
 )
 
 const keyUsage = `Usage:
-  ssherpa key import --from PATH [--name NAME] [--register] [--add-to-agent] [--agent-ttl D] [--force] [--dry-run] [--yes] [--json] [--ssh-keygen PATH]
+  ssherpa key import --from PATH [--name NAME] [--register] [--add-to-agent] [--agent-ttl D] [--delete-source] [--force] [--dry-run] [--yes] [--json] [--ssh-keygen PATH]
   ssherpa key generate [--name NAME] [--type ed25519|rsa|ecdsa] [--comment C] [--register] [--add-to-agent] [--agent-ttl D] [--force] [--dry-run] [--yes] [--json]
 
 Set up your OWN SSH keypair in ~/.ssh with safe permissions (the directory
@@ -28,9 +28,9 @@ Set up your OWN SSH keypair in ~/.ssh with safe permissions (the directory
 print its SHA256 fingerprint.
 
   import    Copy an existing keypair from PATH (a backup/USB). The source is
-            left untouched. An encrypted key needs its passphrase: set
-            SSHERPA_KEY_PASSPHRASE, pass --passphrase-fd N, or run from a
-            terminal to be prompted.
+            kept by default (see --delete-source). An encrypted key needs its
+            passphrase: set SSHERPA_KEY_PASSPHRASE, pass --passphrase-fd N, or
+            run from a terminal to be prompted.
   generate  Create a fresh keypair with ssh-keygen (default ed25519). It has no
             passphrase unless SSHERPA_KEY_PASSPHRASE / --passphrase-fd is set.
 
@@ -42,6 +42,12 @@ identity on that alias with "ssherpa edit" instead.
 agent running it is skipped with a notice, not an error. --agent-ttl D (a Go
 duration like 8h or 30m) caps the key's lifetime in the agent and implies
 --add-to-agent.
+
+--delete-source removes the original key file(s) pointed at by --from once the
+copy in ~/.ssh is in place (the private key and its .pub sibling, if present) —
+useful for clearing a key off a USB stick or download. The freshly-placed key
+is never deleted (importing in place is a no-op). Without the flag, an
+interactive run offers the same cleanup as a prompt.
 
 Re-importing the same key is a no-op; a different key with the same name is
 refused unless --force.
@@ -81,6 +87,7 @@ type keyImportFlags struct {
 	AddToAgent    bool
 	AgentTTL      string
 	SSHAddPath    string
+	DeleteSource  bool
 	DryRun        bool
 	Yes           bool
 	JSON          bool
@@ -146,6 +153,8 @@ func parseKeyImportFlags(args []string, stderr io.Writer) (keyImportFlags, bool)
 			flags.SSHAddPath = value
 		case strings.HasPrefix(arg, "--ssh-add="):
 			flags.SSHAddPath = strings.TrimPrefix(arg, "--ssh-add=")
+		case arg == "--delete-source":
+			flags.DeleteSource = true
 		case arg == "--force":
 			flags.Force = true
 		case arg == "--register":
@@ -165,18 +174,19 @@ func parseKeyImportFlags(args []string, stderr io.Writer) (keyImportFlags, bool)
 }
 
 type keyImportOutput struct {
-	Fingerprint  string `json:"fingerprint"`
-	Type         string `json:"type"`
-	Comment      string `json:"comment,omitempty"`
-	Name         string `json:"name"`
-	PrivatePath  string `json:"private_path"`
-	PublicPath   string `json:"public_path"`
-	DryRun       bool   `json:"dry_run"`
-	Imported     bool   `json:"imported"`
-	Skipped      bool   `json:"skipped,omitempty"`
-	Registered   bool   `json:"registered,omitempty"`
-	AddedToAgent bool   `json:"added_to_agent,omitempty"`
-	AgentSkipped bool   `json:"agent_skipped,omitempty"`
+	Fingerprint   string `json:"fingerprint"`
+	Type          string `json:"type"`
+	Comment       string `json:"comment,omitempty"`
+	Name          string `json:"name"`
+	PrivatePath   string `json:"private_path"`
+	PublicPath    string `json:"public_path"`
+	DryRun        bool   `json:"dry_run"`
+	Imported      bool   `json:"imported"`
+	Skipped       bool   `json:"skipped,omitempty"`
+	Registered    bool   `json:"registered,omitempty"`
+	AddedToAgent  bool   `json:"added_to_agent,omitempty"`
+	AgentSkipped  bool   `json:"agent_skipped,omitempty"`
+	SourceDeleted bool   `json:"source_deleted,omitempty"`
 }
 
 func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -261,6 +271,9 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 		if flags.AddToAgent {
 			fmt.Fprintf(stderr, "  agent       %s\n", agentPreviewDetail(flags.AgentTTL))
 		}
+		if flags.DeleteSource {
+			fmt.Fprintf(stderr, "  cleanup     delete source %s after import\n", src)
+		}
 	}
 	if flags.DryRun {
 		if flags.JSON {
@@ -310,6 +323,11 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if flags.JSON {
+		deleted, delErr := resolveSourceDeletion(src, res, flags, stderr)
+		if delErr != nil {
+			fmt.Fprintf(stderr, "ssherpa: %v\n", delErr)
+		}
+		out.SourceDeleted = deleted
 		writeJSON(stdout, out)
 		return 0
 	}
@@ -318,7 +336,114 @@ func runKeyImport(args []string, stdout io.Writer, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stderr, "Imported %s (%s)\n  %s  (0600)\n  %s  (0644)\n", info.Fingerprint, info.Type, res.PrivatePath, res.PublicPath)
 	}
+	// Now that the keypair lives in ~/.ssh, offer to clear the source copy. The
+	// import has already succeeded, so a cleanup hiccup is a warning, not a
+	// failure of the command.
+	if _, delErr := resolveSourceDeletion(src, res, flags, stderr); delErr != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", delErr)
+	}
 	return 0
+}
+
+// importSourceCandidates returns the source files eligible for post-import
+// cleanup: the private key pointed at by --from and, when it exists, its .pub
+// sibling. Any path that is the very file we just wrote into ~/.ssh is excluded
+// (compared by inode via os.SameFile), so importing a key in place never
+// deletes the freshly-placed copy.
+func importSourceCandidates(src string, res sshkeys.PlaceResult) []string {
+	var out []string
+	for _, c := range []struct{ path, dest string }{
+		{src, res.PrivatePath},
+		{src + ".pub", res.PublicPath},
+	} {
+		srcInfo, err := os.Stat(c.path)
+		if err != nil {
+			continue // missing (e.g. no .pub sibling was copied alongside)
+		}
+		if destInfo, derr := os.Stat(c.dest); derr == nil && os.SameFile(srcInfo, destInfo) {
+			continue // this source IS the placed key — never delete it
+		}
+		out = append(out, c.path)
+	}
+	return out
+}
+
+// deleteSourcePrompt builds the confirmation message for removing the source
+// key file(s) after they have been copied into ~/.ssh.
+func deleteSourcePrompt(paths []string) string {
+	if len(paths) == 1 {
+		return fmt.Sprintf("Copied into ~/.ssh. Delete the original %s?", paths[0])
+	}
+	return fmt.Sprintf("Copied into ~/.ssh. Delete the originals (%s)?", strings.Join(paths, ", "))
+}
+
+// deleteImportSources removes each source file, reporting what it cleared. It
+// continues past a failed removal — so a stuck .pub never leaves an
+// already-deleted private key reported as "not deleted" — and returns how many
+// files it removed along with any joined errors.
+func deleteImportSources(paths []string, stderr io.Writer) (int, error) {
+	var errs []error
+	deleted := 0
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil {
+			errs = append(errs, fmt.Errorf("delete source %s: %w", p, err))
+			continue
+		}
+		deleted++
+		fmt.Fprintf(stderr, "Deleted source %s\n", p)
+	}
+	return deleted, errors.Join(errs...)
+}
+
+// resolveSourceDeletion decides whether to remove the source files after a
+// successful `key import` and does so. The decision:
+//   - nothing eligible (e.g. imported in place) → no-op
+//   - --delete-source → delete, no prompt (honored even in scripts)
+//   - otherwise prompt, but only in an interactive run (a real terminal that
+//     was not given --yes/--json); scripts opt in via the flag instead
+//
+// It returns whether anything was deleted.
+func resolveSourceDeletion(src string, res sshkeys.PlaceResult, flags keyImportFlags, stderr io.Writer) (bool, error) {
+	candidates := importSourceCandidates(src, res)
+	if len(candidates) == 0 {
+		return false, nil
+	}
+	doDelete := flags.DeleteSource
+	if !doDelete {
+		interactive := !flags.Yes && !flags.JSON && term.IsTerminal(os.Stdin.Fd())
+		if !interactive {
+			return false, nil
+		}
+		yes, err := confirmDeleteChoice(stderr, "Delete source", deleteSourcePrompt(candidates))
+		if err != nil {
+			return false, err
+		}
+		doDelete = yes
+	}
+	if !doDelete {
+		return false, nil
+	}
+	deleted, err := deleteImportSources(candidates, stderr)
+	return deleted > 0, err
+}
+
+// promptSourceDeletion offers the same source cleanup as resolveSourceDeletion
+// for the interactive import flow, which is always driven from a terminal and
+// so always asks.
+func promptSourceDeletion(src string, res sshkeys.PlaceResult, stderr io.Writer) (bool, error) {
+	candidates := importSourceCandidates(src, res)
+	if len(candidates) == 0 {
+		return false, nil
+	}
+	yes, err := confirmDeleteChoice(stderr, "Delete source", deleteSourcePrompt(candidates))
+	if err != nil {
+		return false, err
+	}
+	if !yes {
+		return false, nil
+	}
+	deleted, err := deleteImportSources(candidates, stderr)
+	return deleted > 0, err
 }
 
 // registerKeyIdentity registers an absolute key path as the global default
@@ -900,6 +1025,10 @@ func importKeyInteractive(sshDir string, stdout io.Writer, stderr io.Writer) int
 		fmt.Fprintf(stderr, "Already present (perms repaired): %s\n  %s\n", info.Fingerprint, res.PrivatePath)
 	} else {
 		fmt.Fprintf(stderr, "Imported %s (%s)\n  %s  (0600)\n  %s  (0644)\n", info.Fingerprint, info.Type, res.PrivatePath, res.PublicPath)
+	}
+	// The keypair now lives in ~/.ssh; offer to clear the source copy.
+	if _, err := promptSourceDeletion(path, res, stderr); err != nil {
+		fmt.Fprintf(stderr, "ssherpa: %v\n", err)
 	}
 	return 0
 }

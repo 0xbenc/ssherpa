@@ -334,6 +334,171 @@ func TestKeyImportAddToAgentLoadsKey(t *testing.T) {
 	}
 }
 
+// TestImportSourceCandidates exercises the cleanup-eligibility logic without
+// needing ssh-keygen: which source files would be removed by --delete-source.
+func TestImportSourceCandidates(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "k")
+	pub := priv + ".pub"
+	if err := os.WriteFile(priv, []byte("PRIV"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pub, []byte("PUB"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "placed")
+
+	// Distinct destination: both the private key and its .pub sibling qualify.
+	got := importSourceCandidates(priv, sshkeys.PlaceResult{PrivatePath: dest, PublicPath: dest + ".pub"})
+	if len(got) != 2 || got[0] != priv || got[1] != pub {
+		t.Fatalf("want [%s %s], got %v", priv, pub, got)
+	}
+
+	// No .pub sibling: only the private key qualifies.
+	solo := filepath.Join(t.TempDir(), "solo")
+	if err := os.WriteFile(solo, []byte("PRIV"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got = importSourceCandidates(solo, sshkeys.PlaceResult{PrivatePath: dest, PublicPath: dest + ".pub"})
+	if len(got) != 1 || got[0] != solo {
+		t.Fatalf("want [%s], got %v", solo, got)
+	}
+
+	// Source IS the destination (same file): nothing to delete.
+	if got := importSourceCandidates(priv, sshkeys.PlaceResult{PrivatePath: priv, PublicPath: pub}); len(got) != 0 {
+		t.Fatalf("in-place source must yield no candidates, got %v", got)
+	}
+}
+
+// TestDeleteImportSourcesPartialFailure proves that a failed removal does not
+// strand an already-deleted earlier file as "not deleted": deletion continues
+// and the count reflects what was actually removed.
+func TestDeleteImportSourcesPartialFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions; cannot simulate a failed removal")
+	}
+	p1 := filepath.Join(t.TempDir(), "priv")
+	if err := os.WriteFile(p1, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roDir := t.TempDir()
+	p2 := filepath.Join(roDir, "priv.pub")
+	if err := os.WriteFile(p2, []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o500); err != nil { // no write bit: removal denied
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) })
+
+	var stderr bytes.Buffer
+	deleted, err := deleteImportSources([]string{p1, p2}, &stderr)
+	if err == nil {
+		t.Fatalf("expected an error for the unremovable file")
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 file removed (the deletable one), got %d", deleted)
+	}
+	if _, statErr := os.Stat(p1); !os.IsNotExist(statErr) {
+		t.Fatalf("first file should be deleted, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p2); statErr != nil {
+		t.Fatalf("second (unremovable) file should still exist: %v", statErr)
+	}
+}
+
+func TestKeyImportDeleteSourceRemovesOriginals(t *testing.T) {
+	src := t.TempDir()
+	priv := filepath.Join(src, "backup_key")
+	genTestKey(t, priv, "", "laptop")
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"key", "import", "--from", priv, "--delete-source", "--yes", "--json"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("key import = %d; stderr=%s", code, stderr.String())
+	}
+	var out keyImportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if !out.Imported || !out.SourceDeleted {
+		t.Fatalf("expected imported+source_deleted, got %#v", out)
+	}
+	// The copy in ~/.ssh must exist...
+	if _, err := os.Stat(filepath.Join(home, ".ssh", "backup_key")); err != nil {
+		t.Fatalf("placed key missing after delete-source: %v", err)
+	}
+	// ...and both original files must be gone.
+	if _, err := os.Stat(priv); !os.IsNotExist(err) {
+		t.Fatalf("source private key still present (err=%v)", err)
+	}
+	if _, err := os.Stat(priv + ".pub"); !os.IsNotExist(err) {
+		t.Fatalf("source public key still present (err=%v)", err)
+	}
+}
+
+func TestKeyImportDefaultKeepsSource(t *testing.T) {
+	src := t.TempDir()
+	priv := filepath.Join(src, "backup_key")
+	genTestKey(t, priv, "", "laptop")
+
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"key", "import", "--from", priv, "--yes", "--json"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("key import = %d; stderr=%s", code, stderr.String())
+	}
+	var out keyImportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if out.SourceDeleted {
+		t.Fatalf("source must be kept without --delete-source: %#v", out)
+	}
+	if _, err := os.Stat(priv); err != nil {
+		t.Fatalf("source must remain without --delete-source: %v", err)
+	}
+}
+
+// TestKeyImportDeleteSourceKeepsInPlaceKey proves the SameFile guard: importing
+// a key from its own location in ~/.ssh with --delete-source must not delete the
+// key it just (no-op) "placed".
+func TestKeyImportDeleteSourceKeepsInPlaceKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+
+	src := t.TempDir()
+	priv := filepath.Join(src, "id_inplace")
+	genTestKey(t, priv, "", "x")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"key", "import", "--from", priv, "--name", "id_inplace", "--yes"}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("seed import = %d; %s", code, stderr.String())
+	}
+	dest := filepath.Join(sshDir, "id_inplace")
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"key", "import", "--from", dest, "--name", "id_inplace", "--delete-source", "--yes", "--json"}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("in-place import = %d; %s", code, stderr.String())
+	}
+	var out keyImportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if out.SourceDeleted {
+		t.Fatalf("in-place import must not delete the placed key: %#v", out)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("placed key was deleted by in-place --delete-source: %v", err)
+	}
+	if _, err := os.Stat(dest + ".pub"); err != nil {
+		t.Fatalf("placed public key was deleted by in-place --delete-source: %v", err)
+	}
+}
+
 func TestKeyImportNoClobber(t *testing.T) {
 	src := t.TempDir()
 	a := filepath.Join(src, "a")
