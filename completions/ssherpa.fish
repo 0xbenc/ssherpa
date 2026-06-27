@@ -34,6 +34,7 @@ complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l register -d 'Regi
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l add-to-agent -d 'Load the key into the running ssh-agent'
 complete -c ssherpa -n '__fish_seen_subcommand_from key' -l agent-ttl -d 'Agent key lifetime, e.g. 8h (implies --add-to-agent)' -r
 complete -c ssherpa -n '__fish_seen_subcommand_from key' -l ssh-add -d 'Use this ssh-add binary' -r
+complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l delete-source -d 'Delete the --from source key(s) after import'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l dry-run -d 'Preview without writing'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l yes -d 'Skip confirmation'
 complete -c ssherpa -f -n '__fish_seen_subcommand_from key' -l json -d 'Emit JSON'
