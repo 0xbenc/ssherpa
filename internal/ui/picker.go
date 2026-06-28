@@ -13,6 +13,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/fuzzy"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/termnav/render"
 )
 
 type ItemKind string
@@ -901,47 +902,12 @@ func (m pickerModel) normalizedScrollOffset() int {
 
 // highlightTitle cell-truncates display to width and styles it: matched runes
 // (rune indices into the full display, from the fuzzy filter) render in
-// RoleSearch, the rest in the base row-title role. Each run is a full Apply so
-// styling never bleeds across a run or past the truncation; with no positions
-// it is byte-identical to the previous single-Apply title, keeping the
-// unfiltered view unchanged.
+// RoleSearch, the rest in the base row-title role. Delegates to the shared
+// render.HighlightMatches; the selected/theme wrapper supplies ssherpa's row
+// styling.
 func (m pickerModel) highlightTitle(display string, positions []int, width int, selected bool, theme pickerTheme) string {
 	base := func(s string) string { return theme.rowTitle(s, selected) }
-	truncated := termstyle.Truncate(display, width)
-	if len(positions) == 0 {
-		return base(truncated)
-	}
-	keptStr := truncated
-	hasMarker := false
-	if termstyle.VisibleWidth(display) > width && strings.HasSuffix(truncated, "~") {
-		keptStr = strings.TrimSuffix(truncated, "~")
-		hasMarker = true
-	}
-	runes := []rune(keptStr)
-	matched := make([]bool, len(runes))
-	for _, p := range positions {
-		if p >= 0 && p < len(runes) {
-			matched[p] = true
-		}
-	}
-	var b strings.Builder
-	for i := 0; i < len(runes); {
-		j := i
-		for j < len(runes) && matched[j] == matched[i] {
-			j++
-		}
-		seg := string(runes[i:j])
-		if matched[i] {
-			b.WriteString(theme.search(seg))
-		} else {
-			b.WriteString(base(seg))
-		}
-		i = j
-	}
-	if hasMarker {
-		b.WriteString(base("~"))
-	}
-	return b.String()
+	return render.HighlightMatches(display, positions, width, base, theme.search)
 }
 
 func (m pickerModel) renderRow(item Item, selected bool, width int, theme pickerTheme) string {

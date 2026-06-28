@@ -1,7 +1,7 @@
 charm.land/bubbletea/v2 v2.0.7 h1:7qw2tTAVar7m7klOPBYfTB0mniv/RuexsYwMRNxSeL0=
 charm.land/bubbletea/v2 v2.0.7/go.mod h1:DGW2q8gvzHnOpMpZTORs0aySVHCox5C+2Svk0fci1qs=
-github.com/0xbenc/termnav v0.1.0 h1:05I6H6Q8quFVwW3ONbH8VyovG/ohkaXwOsjXLz4qeXc=
-github.com/0xbenc/termnav v0.1.0/go.mod h1:9C/QugScG4tl+uhxD3yniwPQ4irM0s8fsMzx46A/E5E=
+github.com/0xbenc/termnav v0.2.0 h1:BEFq4rjvN94CaxYKGWup5MpIMWlu8wUE/T3QF4P5sSk=
+github.com/0xbenc/termnav v0.2.0/go.mod h1:1/p7zwXSVYtClCL0OcB4Vu/0LLCmd/ZrLhBllLhw7f0=
 github.com/0xbenc/termtheme v0.2.0 h1:mOUzfDt9C0jkH563n8Zrx8EIxGgrvKeaC343MYjuQxw=
 github.com/0xbenc/termtheme v0.2.0/go.mod h1:9yonKnWQVAuinPHfC2sVOCueRUBW63wDNLp1omtUq0o=
 github.com/aymanbagabas/go-udiff v0.2.0 h1:TK0fH4MteXUDspT88n8CKzvK0X9O2xu9yQjWpi6yML8=
