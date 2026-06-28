@@ -19,6 +19,9 @@ import (
 	"github.com/0xbenc/ssherpa/internal/termstyle"
 	"github.com/0xbenc/ssherpa/internal/transcript"
 	"github.com/0xbenc/ssherpa/internal/ui"
+	"github.com/0xbenc/termintro"
+	"github.com/0xbenc/termtheme"
+	"github.com/charmbracelet/x/term"
 )
 
 const usage = `Usage:
@@ -89,6 +92,11 @@ Connect Flags:
                      Cap transcript size; default 50MB
   --no-kitty         Disable Kitty SSH command detection
   --no-color         Disable color styling
+  --no-intro         Skip the startup intro animation for this launch
+                     (also via SSHERPA_NO_INTRO; SSHERPA_NO_INTRO wins
+                     and suppresses it everywhere)
+  --intro            Force the startup intro animation even if already seen
+                     (also via SSHERPA_INTRO_ALWAYS)
   --theme-file PATH  Load UI theme config from PATH
 
 In supervised sessions, the overlay key (default Ctrl-^) opens the local
@@ -352,6 +360,8 @@ type connectFlags struct {
 	RecordMaxBytes    int64
 	NoKitty           bool
 	NoColor           bool
+	NoIntro           bool
+	Intro             bool
 	ThemeName         string
 	ThemeFile         string
 	Select            string
@@ -382,6 +392,13 @@ func runConnect(args []string, stdout io.Writer, stderr io.Writer, build BuildIn
 		return 1
 	}
 	reportThemeWarnings(flags.ThemeFile, stderr)
+
+	// Play the startup intro once per release before the interactive home
+	// picker opens. This runs exactly once per interactive home launch —
+	// never inside the picker loop, never for --select / --print / --json,
+	// and never for a real ssh/supervised session (the supervised re-exec
+	// child returns earlier in Run, before reaching here).
+	maybePlayIntro(flags, build, stderr)
 
 	for {
 		graph, inventory, err := loadInventory(flags.inventoryFlags)
@@ -733,6 +750,10 @@ func parseConnectFlags(args []string, stderr io.Writer) (connectFlags, bool) {
 			flags.NoKitty = true
 		case arg == "--no-color":
 			flags.NoColor = true
+		case arg == "--no-intro":
+			flags.NoIntro = true
+		case arg == "--intro":
+			flags.Intro = true
 		case arg == "--theme":
 			value, ok := nextArg(args, &i, stderr, "--theme")
 			if !ok {
@@ -961,6 +982,84 @@ func pickerVersionLabel(build BuildInfo) string {
 		v = "v" + v
 	}
 	return v
+}
+
+// introDecision holds the pure inputs that decide whether the startup
+// intro animation plays. Keeping it free of side effects (no env reads,
+// no TTY probe, no state I/O) makes the precedence rules unit-testable.
+type introDecision struct {
+	Select         string // non-empty => non-interactive selection, never play
+	Print          bool   // --print => keep output machine-readable, never play
+	JSON           bool   // --json => structured output, never play
+	IsTerminal     bool   // stderr is a TTY; required for the animation
+	Suppressed     bool   // --no-intro or SSHERPA_NO_INTRO
+	Forced         bool   // --intro or SSHERPA_INTRO_ALWAYS
+	LastSeen       string // last intro version recorded in state
+	CurrentVersion string // build.normalized().Version
+}
+
+// shouldPlayIntro reports whether the startup intro should play. It is
+// true ONLY for the interactive home picker on a TTY that is not
+// suppressed, and then only when forced or when the current version
+// differs from the last one the user saw. Suppression always wins over
+// forcing.
+func shouldPlayIntro(d introDecision) bool {
+	if d.Select != "" || d.Print || d.JSON || !d.IsTerminal || d.Suppressed {
+		return false
+	}
+	if d.Forced {
+		return true
+	}
+	return d.LastSeen != d.CurrentVersion
+}
+
+// maybePlayIntro plays the startup intro animation when shouldPlayIntro
+// allows it, then records the seen version in state. All side effects
+// (env reads, TTY probe, state I/O, the blocking animation) live here so
+// the decision itself stays pure. Failures to read or write state are
+// non-fatal: at worst the intro plays an extra time.
+func maybePlayIntro(flags connectFlags, build BuildInfo, stderr io.Writer) {
+	current := build.normalized().Version
+
+	var lastSeen string
+	stateDir, dirErr := state.ResolveDir(flags.StateDir)
+	if dirErr == nil {
+		if intro, err := state.ReadIntro(stateDir); err == nil {
+			lastSeen = intro.LastSeenIntroVersion
+		}
+	}
+
+	if !shouldPlayIntro(introDecision{
+		Select:         flags.Select,
+		Print:          flags.Print,
+		JSON:           flags.JSON,
+		IsTerminal:     term.IsTerminal(os.Stderr.Fd()),
+		Suppressed:     flags.NoIntro || envBool("SSHERPA_NO_INTRO"),
+		Forced:         flags.Intro || envBool("SSHERPA_INTRO_ALWAYS"),
+		LastSeen:       lastSeen,
+		CurrentVersion: current,
+	}) {
+		return
+	}
+
+	termintro.Play(termintro.Options{
+		Title:   "SSHERPA",
+		Tagline: "a sherpa for your tunnels",
+		Credits: []string{"0xbenc", "basedvik"},
+		Version: pickerVersionLabel(build),
+		Output:  stderr,
+		NoColor: termtheme.EnvNoColor("ssherpa", nil, flags.NoColor),
+	})
+
+	// Record the version just shown so the next launch stays quiet until
+	// the next release. Non-fatal: a write error only means the intro may
+	// play again.
+	if dirErr == nil {
+		_ = state.WriteIntro(stateDir, state.IntroState{
+			SchemaVersion:        state.IntroSchemaVersion,
+			LastSeenIntroVersion: current,
+		})
+	}
 }
 
 func pickerMode(flags connectFlags) string {
