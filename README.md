@@ -31,6 +31,11 @@ forwards, SOCKS proxies, file copies, and half-remembered aliases.
   [Server-side setup](#server-side-setup-optional).
 - **File sending:** send or receive individual files over OpenSSH SFTP, with
   overwrite protection and picker-driven paths.
+- **Tailscale aliases:** when you are logged into Tailscale, the "add alias"
+  host step offers `Ctrl-t` to pick a device straight from your tailnet. The
+  pick fills in the device's Tailscale IP as the host (stable, no MagicDNS
+  dependency) and its Tailscale name as the alias, then drops you into the rest
+  of the flow as usual. Absent or logged-out Tailscale changes nothing.
 - **Remote key seeding:** install or remove validated public keys on many saved
   SSH aliases, including hosts reached through ProxyJump routes, without sudo.
 - **Set up your own key:** `ssherpa key import --from PATH` brings a private+public
