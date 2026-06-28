@@ -67,8 +67,8 @@ func TestMapModelScrollsNotQuits(t *testing.T) {
 	if gm.scroll != 1 {
 		t.Fatalf("scroll = %d, want 1 after 'j'", gm.scroll)
 	}
-	// "q" quits.
-	if _, cmd := gm.Update(tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd == nil {
-		t.Fatal("q should quit the map")
+	// "ctrl+q" quits.
+	if _, cmd := gm.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl}); cmd == nil {
+		t.Fatal("ctrl+q should quit the map")
 	}
 }

@@ -389,7 +389,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureListCursor()
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc", "q", "Q":
+		case "ctrl+c", "esc", "ctrl+q":
 			return m, tea.Quit
 		case "up", "k":
 			m.cursor--
@@ -473,7 +473,7 @@ func (m listModel) View() tea.View {
 		{Key: "e", Label: "exited"},
 		{Key: "l", Label: "local"},
 		{Key: "i", Label: "imported"},
-		{Key: "q", Label: "back"},
+		{Key: "esc", Label: "back"},
 	}, 0)), width))
 	lines = append(lines, boxBottom(m.theme, width))
 	view := tea.NewView(strings.Join(lines, "\n"))
@@ -547,7 +547,7 @@ func sessionListRow(record state.SessionRecord, selected bool, theme termstyle.T
 	marker := "  "
 	role := statusRole(record, "")
 	if selected {
-		marker = "▶ "
+		marker = ">>"
 		role = termstyle.RoleSelected
 	}
 	left := marker + theme.Style(role, StatusLabel(record)) + "  " + theme.Style(termstyle.RoleForeground, Target(record))
@@ -664,7 +664,7 @@ func (m metadataModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampMetadataScroll()
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc", "q", "Q":
+		case "ctrl+c", "esc", "ctrl+q":
 			return m, tea.Quit
 		case "up", "k":
 			m.scroll--
@@ -706,7 +706,7 @@ func (m metadataModel) View() tea.View {
 		body = append(body, "")
 	}
 	lines = append(lines, boxDivider(m.theme, width))
-	footer := fmt.Sprintf("arrows scroll / q back  %d/%d", min(m.scroll+1, max(1, len(all))), max(1, len(all)))
+	footer := fmt.Sprintf("arrows scroll / esc back  %d/%d", min(m.scroll+1, max(1, len(all))), max(1, len(all)))
 	lines = append(lines, boxLine(m.theme, m.theme.Style(termstyle.RoleMuted, truncateVisible(footer, inner)), width))
 	lines = append(lines, boxBottom(m.theme, width))
 	view := tea.NewView(strings.Join(lines, "\n"))
@@ -1026,7 +1026,7 @@ func (m transcriptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key {
-		case "ctrl+c", "esc", "q", "Q":
+		case "ctrl+c", "esc", "ctrl+q":
 			return m, tea.Quit
 		case "up", "k":
 			m.scroll--
@@ -1096,9 +1096,9 @@ func (m transcriptModel) View() tea.View {
 		}
 	}
 	lines = append(lines, boxDivider(m.theme, width))
-	footer := "arrows scroll / / search / n next / r raw / f follow / q back"
+	footer := "arrows scroll / / search / n next / r raw / f follow / esc back"
 	if m.rawWarning {
-		footer = "imported raw output is untrusted; press r again to show raw / q back"
+		footer = "imported raw output is untrusted; press r again to show raw / esc back"
 	}
 	if m.searching {
 		footer = "/ " + m.query
@@ -1304,7 +1304,7 @@ func (m mapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d", "D":
 			m.action = MapActionDeleteAllData
 			return m, tea.Quit
-		case "q", "Q", "esc", "ctrl+c", "enter":
+		case "esc", "ctrl+c", "ctrl+q", "enter":
 			m.action = MapActionBack
 			return m, tea.Quit
 		case "up", "k", "ctrl+p":
@@ -1342,7 +1342,7 @@ func (m mapModel) clampScroll(scroll int) int {
 
 func (m mapModel) mapHelp() string {
 	if strings.TrimSpace(m.view.Help) == "" {
-		return "↑↓ scroll / q back / D delete all local data"
+		return "↑↓ scroll / esc back / D delete all local data"
 	}
 	return m.view.Help
 }

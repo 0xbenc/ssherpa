@@ -1,0 +1,3 @@
+[tools]
+# Match go.mod's `go 1.26.3` and CI (actions/setup-go reads go-version-file: go.mod).
+go = "1.26.3"

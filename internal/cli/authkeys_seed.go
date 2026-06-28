@@ -853,7 +853,7 @@ func runAuthkeysSeedInteractive(flags authkeysSeedFlags, stdout io.Writer, stder
 		Mode:        "choose key source",
 		Steps:       []string{"source", "keys", "hosts", "routes", "confirm"},
 		CurrentStep: 0,
-		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: seed picker failed: %v\n", err)
@@ -912,7 +912,7 @@ func authkeysSeedSourceItems() []ui.ManagementItem {
 
 func pickAuthkeysSeedFile(stderr io.Writer) (string, bool, error) {
 	opts := transferBrowserOptions(stderr, filePickerOptions{}, "SSHERPA AUTHKEYS SEED FILE", "local-file", "LOCAL", ".", []string{"source", "keys", "hosts", "routes", "confirm"}, 1)
-	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	out, ok, err := ui.BrowseTransfer(context.Background(), localFileSource(), opts)
 	if err != nil || !ok {
 		return "", ok, err
@@ -954,7 +954,7 @@ func runAuthkeysSeedInteractiveTargets(flags authkeysSeedFlags, stdout io.Writer
 		Mode:        "choose remote seed targets",
 		Steps:       []string{"source", "keys", "hosts", "routes", "confirm"},
 		CurrentStep: 2,
-		Footer:      "space toggle / enter continue / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "space toggle / enter continue / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: host picker failed: %v\n", err)
@@ -1021,7 +1021,7 @@ func configureAuthkeysSeedRoutes(flags authkeysSeedFlags, inventory hostlist.Inv
 			Steps:       []string{"source", "keys", "hosts", "routes", "confirm"},
 			CurrentStep: 3,
 			Summary:     authkeysSeedRouteSummary(flags),
-			Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+			Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: route picker failed: %v\n", err)
@@ -1083,7 +1083,7 @@ func configureAuthkeysSeedTargetRoute(flags authkeysSeedFlags, inventory hostlis
 		Mode:        "choose route type",
 		Steps:       []string{"source", "keys", "hosts", "routes", "confirm"},
 		CurrentStep: 3,
-		Footer:      "enter select / type filter / arrows move / Q back",
+		Footer:      "enter select / type filter / arrows move / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: route picker failed: %v\n", err)

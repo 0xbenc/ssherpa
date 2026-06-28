@@ -64,7 +64,7 @@ func TestManagementChooserViewRendersEditTargets(t *testing.T) {
 		Steps:       []string{"target", "action", "editor"},
 		CurrentStep: 0,
 		Summary:     "1 alias  1 forward  1 proxy",
-		Footer:      "enter select / type filter / arrows move / Q back",
+		Footer:      "enter select / type filter / arrows move / esc back",
 	})
 	model.width = 112
 	model.height = 26
@@ -123,9 +123,9 @@ func TestManagementChooserFilteringAndSelection(t *testing.T) {
 	}
 
 	model = newTestManagementChooser(t, testManagementItems(), hostChooserBaseOptions{})
-	model = updateHostChooser(model, keyPress('Q', "Q"))
+	model = updateHostChooser(model, keyPressCtrl('q'))
 	if !model.canceled {
-		t.Fatalf("uppercase Q did not cancel chooser")
+		t.Fatalf("ctrl+q did not cancel chooser")
 	}
 }
 

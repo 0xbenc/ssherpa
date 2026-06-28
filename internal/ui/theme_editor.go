@@ -144,7 +144,7 @@ func (m themeEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEdit(msg)
 		}
 		switch msg.String() {
-		case "ctrl+c", "esc", "Q":
+		case "ctrl+c", "esc", "ctrl+q":
 			m.canceled = true
 			return m, tea.Quit
 		case "s", "ctrl+s":
@@ -213,7 +213,7 @@ func (m themeEditorModel) View() tea.View {
 	body = append(body, "")
 	body = append(body, m.renderBody(bodyWidth, theme)...)
 
-	footer := "s save / arrows change / e edit raw / d inherit / r reset / t contrast / Q cancel"
+	footer := "s save / arrows change / e edit raw / d inherit / r reset / t contrast / esc cancel"
 	if m.editMode {
 		footer = "Enter accept / Esc cancel / Backspace edit / Ctrl-U clear"
 	}

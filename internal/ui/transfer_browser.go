@@ -81,9 +81,10 @@ func BrowseTransfer(ctx context.Context, src termnav.FileSource, opts TransferBr
 	}, navOpts, teax.ProgramIO{Input: input, Output: opts.Output})
 }
 
-// transferKeyMap adds ssherpa's uppercase-Q cancel to the shared key profile.
+// transferKeyMap adds ssherpa's letter-free ctrl+q cancel to the shared key
+// profile (esc/ctrl+c already cancel via teax.DefaultKey).
 func transferKeyMap(msg tea.KeyPressMsg) (termnav.KeyEvent, bool) {
-	if msg.String() == "Q" {
+	if msg.String() == "ctrl+q" {
 		return termnav.KeyEvent{Key: "cancel"}, true
 	}
 	return teax.DefaultKey(msg)
@@ -104,7 +105,7 @@ func renderTransferBrowser(m termnav.Model, opts TransferBrowserOptions, theme p
 	body := transferBody(m, opts, width, theme)
 	footer := opts.Footer
 	if footer == "" {
-		footer = "enter open/select / type filter / arrows move / shift+arrows section / Q cancel"
+		footer = "enter open/select / type filter / arrows move / shift+arrows section / esc cancel"
 	}
 	return renderWorkflowShell(theme, width, workflowShell{
 		Title:   title,

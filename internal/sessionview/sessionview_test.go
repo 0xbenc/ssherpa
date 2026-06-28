@@ -152,7 +152,7 @@ func TestMetadataModalShowsPersistentSessionDetails(t *testing.T) {
 		"imported_other",
 		"source-session",
 		"12345678-aaaa-bbbb-cccc-123456789abc",
-		"q back",
+		"esc back",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("metadata view missing %q:\n%s", want, text)
@@ -168,9 +168,9 @@ func TestMetadataModalShowsPersistentSessionDetails(t *testing.T) {
 	if model.View().AltScreen {
 		t.Fatalf("AltScreen = true, want false")
 	}
-	_, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	_, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl}))
 	if cmd == nil {
-		t.Fatalf("q did not request quit")
+		t.Fatalf("ctrl+q did not request quit")
 	}
 }
 
@@ -564,12 +564,12 @@ func TestMapModelWaitsForKey(t *testing.T) {
 	if !strings.Contains(view.Content, "D delete all local data") {
 		t.Fatalf("view missing return hint:\n%s", view.Content)
 	}
-	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl}))
 	if cmd == nil {
 		t.Fatalf("key press did not request quit")
 	}
 	if updated.(mapModel).action != MapActionBack {
-		t.Fatalf("q action = %q, want back", updated.(mapModel).action)
+		t.Fatalf("ctrl+q action = %q, want back", updated.(mapModel).action)
 	}
 	updated, cmd = m.Update(tea.KeyPressMsg(tea.Key{Code: 'D', Text: "D"}))
 	if cmd == nil {

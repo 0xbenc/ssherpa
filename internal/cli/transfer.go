@@ -21,6 +21,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
+	"github.com/0xbenc/termchrome"
 	"github.com/0xbenc/termnav"
 	"github.com/0xbenc/termnav/source"
 )
@@ -455,7 +456,7 @@ func startProgressSpinner(w io.Writer, label string) func() {
 	if !ok || !term.IsTerminal(f.Fd()) {
 		return func() {}
 	}
-	frames := []rune{'|', '/', '-', '\\'}
+	glyphs := termchrome.ResolveGlyphs(os.Environ())
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -470,7 +471,7 @@ func startProgressSpinner(w io.Writer, label string) func() {
 				fmt.Fprint(w, "\r\x1b[K") // clear the spinner line
 				return
 			case <-ticker.C:
-				fmt.Fprintf(w, "\r%c %s %.0fs", frames[i%len(frames)], label, time.Since(start).Seconds())
+				fmt.Fprintf(w, "\r%s %s %.0fs", glyphs.Frame(i), label, time.Since(start).Seconds())
 				i++
 			}
 		}
@@ -1241,7 +1242,7 @@ func localDirSource() *source.LocalSource {
 func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
 	src := localDirSource()
 	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE TARGET", "local-folder", "LOCAL", start, receiveTransferSteps(), 3)
-	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
 	if err != nil || !ok {
 		return "", ok, err
@@ -1302,7 +1303,7 @@ func pickRemoteFile(stderr io.Writer, opts filePickerOptions, flags transferFlag
 func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transferFlags, alias string, start string) (string, bool, error) {
 	src := &sftpSource{flags: flags, alias: alias, dirsOnly: true, useRow: true}
 	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND TARGET", "remote-folder", alias, start, sendTransferSteps(), 3)
-	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
 	if err != nil || !ok {
 		return "", ok, err

@@ -71,7 +71,7 @@ func newTextViewModel(opts TextViewOptions, theme termstyle.Theme) textViewModel
 	}
 	footer := strings.TrimSpace(opts.Footer)
 	if footer == "" {
-		footer = "up/down scroll / pgup/pgdn page / q back"
+		footer = "up/down scroll / pgup/pgdn page / esc back"
 	}
 	return textViewModel{
 		noAltScreen: opts.NoAltScreen,
@@ -103,7 +103,7 @@ func (m textViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		page := max(1, m.bodyBudget()-2)
 		switch msg.String() {
-		case "q", "Q", "esc", "enter":
+		case "esc", "ctrl+q", "enter":
 			return m, tea.Quit
 		case "up", "ctrl+p":
 			m.scroll--

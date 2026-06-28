@@ -105,7 +105,7 @@ func ChooseHosts(ctx context.Context, aliases []hostlist.Alias, opts HostMultiCh
 			{Key: "type", Label: "filter"},
 			{Key: "arrows", Label: "move"},
 			{Key: "shift+arrows", Label: "section"},
-			{Key: "Q", Label: "back"},
+			{Key: "esc", Label: "back"},
 		}, 0)
 	}
 	model, err := newHostChooserModel(hostChooserItemsFromAliases(aliases), hostChooserBaseOptions{
@@ -169,7 +169,7 @@ func ChooseJumpHop(ctx context.Context, aliases []hostlist.Alias, opts JumpHopCh
 			{Key: "enter", Label: "select"},
 			{Key: "type", Label: "filter"},
 			{Key: "arrows", Label: "move"},
-			{Key: "Q", Label: "back"},
+			{Key: "esc", Label: "back"},
 		}, 0),
 	})
 	if err != nil {
@@ -320,7 +320,7 @@ func (m hostChooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		keystroke := msg.Key().Keystroke()
 		switch {
-		case key == "ctrl+c" || key == "esc" || key == "Q":
+		case key == "ctrl+c" || key == "esc" || key == "ctrl+q":
 			m.canceled = true
 			return m, tea.Quit
 		case key == "enter":
@@ -378,7 +378,7 @@ func (m hostChooserModel) View() tea.View {
 	theme := pickerTheme{theme: m.theme}
 	footer := m.footer
 	if footer == "" {
-		footer = "enter select / type filter / arrows move / shift+arrows section / Q back"
+		footer = "enter select / type filter / arrows move / shift+arrows section / esc back"
 	}
 
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{

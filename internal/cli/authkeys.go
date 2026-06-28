@@ -382,7 +382,7 @@ func runAuthkeysInteractive(flags authkeysFlags, stdout io.Writer, stderr io.Wri
 			Steps:       []string{"action", "input", "confirm"},
 			CurrentStep: 0,
 			Summary:     path,
-			Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+			Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)
@@ -479,7 +479,7 @@ func pickAuthkeysDirectory(stderr io.Writer, title string) (string, bool, error)
 
 func authkeysDirectoryBrowserOptions(stderr io.Writer, title string, cwd string) ui.TransferBrowserOptions {
 	opts := transferBrowserOptions(stderr, filePickerOptions{}, title, "local-folder", "LOCAL", cwd, []string{"action", "directory", "confirm"}, 1)
-	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	return opts
 }
 
@@ -512,7 +512,7 @@ func pickAuthkeysFingerprint(path string, stderr io.Writer) (string, bool, int) 
 		Steps:       []string{"key", "confirm"},
 		CurrentStep: 0,
 		Summary:     authkeysCountLabel(len(items), "key", "keys"),
-		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)
@@ -560,7 +560,7 @@ func runAuthkeysCurrentKeysViewer(path string, stderr io.Writer) int {
 			Steps:       []string{"action", "key", "details"},
 			CurrentStep: 1,
 			Summary:     authkeysCurrentSummary(path, len(keys), len(doc.Diagnostics)),
-			Footer:      "enter view / type filter / arrows move / shift+arrows section / Q back",
+			Footer:      "enter view / type filter / arrows move / shift+arrows section / esc back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: authkeys picker failed: %v\n", err)
@@ -584,7 +584,7 @@ func runAuthkeysCurrentKeysViewer(path string, stderr io.Writer) int {
 			CurrentStep: 2,
 			Summary:     authkeysCurrentSummary(path, len(keys), len(doc.Diagnostics)),
 			Lines:       authkeysKeyViewLines(key, item.Token),
-			Footer:      "up/down scroll / pgup/pgdn page / q back to keys",
+			Footer:      "up/down scroll / pgup/pgdn page / esc back to keys",
 		}); err != nil {
 			fmt.Fprintf(stderr, "ssherpa: authkeys viewer failed: %v\n", err)
 			return 1
@@ -614,7 +614,7 @@ func showAuthkeysCurrentKeysEmpty(path string, diagnostics []authkeys.Diagnostic
 		CurrentStep: 1,
 		Summary:     path,
 		Lines:       lines,
-		Footer:      "q back to authorized_keys manager",
+		Footer:      "esc back to authorized_keys manager",
 	})
 }
 

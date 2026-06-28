@@ -197,7 +197,7 @@ func (m addAliasModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePaste(msg.String())
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c":
+		case "ctrl+c", "ctrl+q":
 			m.canceled = true
 			return m, tea.Quit
 		}

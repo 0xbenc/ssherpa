@@ -13,6 +13,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/fuzzy"
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/termstyle"
+	"github.com/0xbenc/termnav/render"
 )
 
 type ItemKind string
@@ -118,10 +119,10 @@ type PickOptions struct {
 	Summary  []string
 	Footer   string
 	// Refreshable marks the home-page picker. When set, "R" returns an
-	// ItemRefresh result (caller reloads the inventory and re-renders)
-	// and the quit key is the capital "Q" so lowercase letters stay
-	// available for filtering. Sub-pickers leave this false and keep
-	// the plain lowercase "q" to quit/cancel/back.
+	// ItemRefresh result (caller reloads the inventory and re-renders).
+	// Quit is letter-free everywhere (esc / ctrl+q), so every letter
+	// stays available for filtering on both the home page and the
+	// sub-pickers (which leave this false and back out with esc).
 	Refreshable bool
 }
 
@@ -377,7 +378,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		keystroke := msg.Key().Keystroke()
 		if m.help {
-			if key == "ctrl+c" || key == "Q" {
+			if key == "ctrl+c" || key == "ctrl+q" {
 				m.canceled = true
 				return m, tea.Quit
 			}
@@ -391,7 +392,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		switch key {
-		case "ctrl+c", "esc", "Q":
+		case "ctrl+c", "esc", "ctrl+q":
 			m.canceled = true
 			return m, tea.Quit
 		case "enter":
@@ -449,9 +450,9 @@ func (m pickerModel) View() tea.View {
 	footer := m.footer
 	if footer == "" {
 		if m.refreshable {
-			footer = "enter select / type filter / arrows move / R refresh / ? keys / Q quit"
+			footer = "enter select / type filter / arrows move / R refresh / ? keys / esc quit"
 		} else {
-			footer = "enter select / type filter / arrows move / shift+arrows section / Q quit"
+			footer = "enter select / type filter / arrows move / shift+arrows section / esc quit"
 		}
 	}
 
@@ -597,7 +598,7 @@ func pickerHelpLines(theme pickerTheme) []string {
 	b = append(b, row("R", "refresh inventory"))
 	b = append(b, row("Docs action", "shell completions and manpage"))
 	b = append(b, row("?", "this help"))
-	b = append(b, row("Q / esc", "quit"))
+	b = append(b, row("esc / ctrl+q", "quit"))
 	return b
 }
 
@@ -901,47 +902,12 @@ func (m pickerModel) normalizedScrollOffset() int {
 
 // highlightTitle cell-truncates display to width and styles it: matched runes
 // (rune indices into the full display, from the fuzzy filter) render in
-// RoleSearch, the rest in the base row-title role. Each run is a full Apply so
-// styling never bleeds across a run or past the truncation; with no positions
-// it is byte-identical to the previous single-Apply title, keeping the
-// unfiltered view unchanged.
+// RoleSearch, the rest in the base row-title role. Delegates to the shared
+// render.HighlightMatches; the selected/theme wrapper supplies ssherpa's row
+// styling.
 func (m pickerModel) highlightTitle(display string, positions []int, width int, selected bool, theme pickerTheme) string {
 	base := func(s string) string { return theme.rowTitle(s, selected) }
-	truncated := termstyle.Truncate(display, width)
-	if len(positions) == 0 {
-		return base(truncated)
-	}
-	keptStr := truncated
-	hasMarker := false
-	if termstyle.VisibleWidth(display) > width && strings.HasSuffix(truncated, "~") {
-		keptStr = strings.TrimSuffix(truncated, "~")
-		hasMarker = true
-	}
-	runes := []rune(keptStr)
-	matched := make([]bool, len(runes))
-	for _, p := range positions {
-		if p >= 0 && p < len(runes) {
-			matched[p] = true
-		}
-	}
-	var b strings.Builder
-	for i := 0; i < len(runes); {
-		j := i
-		for j < len(runes) && matched[j] == matched[i] {
-			j++
-		}
-		seg := string(runes[i:j])
-		if matched[i] {
-			b.WriteString(theme.search(seg))
-		} else {
-			b.WriteString(base(seg))
-		}
-		i = j
-	}
-	if hasMarker {
-		b.WriteString(base("~"))
-	}
-	return b.String()
+	return render.HighlightMatches(display, positions, width, base, theme.search)
 }
 
 func (m pickerModel) renderRow(item Item, selected bool, width int, theme pickerTheme) string {
