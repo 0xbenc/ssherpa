@@ -21,6 +21,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/sshcmd"
 	"github.com/0xbenc/ssherpa/internal/state"
 	"github.com/0xbenc/ssherpa/internal/ui"
+	"github.com/0xbenc/termchrome"
 	"github.com/0xbenc/termnav"
 	"github.com/0xbenc/termnav/source"
 )
@@ -455,7 +456,7 @@ func startProgressSpinner(w io.Writer, label string) func() {
 	if !ok || !term.IsTerminal(f.Fd()) {
 		return func() {}
 	}
-	frames := []rune{'|', '/', '-', '\\'}
+	glyphs := termchrome.ResolveGlyphs(os.Environ())
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -470,7 +471,7 @@ func startProgressSpinner(w io.Writer, label string) func() {
 				fmt.Fprint(w, "\r\x1b[K") // clear the spinner line
 				return
 			case <-ticker.C:
-				fmt.Fprintf(w, "\r%c %s %.0fs", frames[i%len(frames)], label, time.Since(start).Seconds())
+				fmt.Fprintf(w, "\r%s %s %.0fs", glyphs.Frame(i), label, time.Since(start).Seconds())
 				i++
 			}
 		}
