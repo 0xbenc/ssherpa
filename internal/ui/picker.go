@@ -119,10 +119,10 @@ type PickOptions struct {
 	Summary  []string
 	Footer   string
 	// Refreshable marks the home-page picker. When set, "R" returns an
-	// ItemRefresh result (caller reloads the inventory and re-renders)
-	// and the quit key is the capital "Q" so lowercase letters stay
-	// available for filtering. Sub-pickers leave this false and keep
-	// the plain lowercase "q" to quit/cancel/back.
+	// ItemRefresh result (caller reloads the inventory and re-renders).
+	// Quit is letter-free everywhere (esc / ctrl+q), so every letter
+	// stays available for filtering on both the home page and the
+	// sub-pickers (which leave this false and back out with esc).
 	Refreshable bool
 }
 
@@ -378,7 +378,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		keystroke := msg.Key().Keystroke()
 		if m.help {
-			if key == "ctrl+c" || key == "Q" {
+			if key == "ctrl+c" || key == "ctrl+q" {
 				m.canceled = true
 				return m, tea.Quit
 			}
@@ -392,7 +392,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		switch key {
-		case "ctrl+c", "esc", "Q":
+		case "ctrl+c", "esc", "ctrl+q":
 			m.canceled = true
 			return m, tea.Quit
 		case "enter":
@@ -450,9 +450,9 @@ func (m pickerModel) View() tea.View {
 	footer := m.footer
 	if footer == "" {
 		if m.refreshable {
-			footer = "enter select / type filter / arrows move / R refresh / ? keys / Q quit"
+			footer = "enter select / type filter / arrows move / R refresh / ? keys / esc quit"
 		} else {
-			footer = "enter select / type filter / arrows move / shift+arrows section / Q quit"
+			footer = "enter select / type filter / arrows move / shift+arrows section / esc quit"
 		}
 	}
 
@@ -598,7 +598,7 @@ func pickerHelpLines(theme pickerTheme) []string {
 	b = append(b, row("R", "refresh inventory"))
 	b = append(b, row("Docs action", "shell completions and manpage"))
 	b = append(b, row("?", "this help"))
-	b = append(b, row("Q / esc", "quit"))
+	b = append(b, row("esc / ctrl+q", "quit"))
 	return b
 }
 

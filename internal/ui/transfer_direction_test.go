@@ -82,7 +82,7 @@ func TestTransferDirectionKeyboardSelection(t *testing.T) {
 func TestTransferDirectionCancel(t *testing.T) {
 	m := newTestTransferDirection()
 
-	m = updateTransferDirection(m, keyPress('q', "q"))
+	m = updateTransferDirection(m, keyPressCtrl('q'))
 
 	if !m.canceled {
 		t.Fatalf("canceled = false, want true")

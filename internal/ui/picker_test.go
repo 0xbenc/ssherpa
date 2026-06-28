@@ -212,26 +212,36 @@ func TestPickerRefreshKeyIsPlainFilterWhenNotRefreshable(t *testing.T) {
 	}
 }
 
-func TestPickerCapitalQQuits(t *testing.T) {
+func TestPickerCtrlQQuits(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
 		Refreshable: true,
 	})
 
-	updated, _ := model.Update(tea.KeyPressMsg{Code: 'Q', Text: "Q"})
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
 	picker := updated.(pickerModel)
 	if !picker.canceled {
-		t.Fatalf("canceled = false, want true after pressing Q")
+		t.Fatalf("canceled = false, want true after pressing ctrl+q")
 	}
 
-	// Lowercase q is now a filter character, not a quit key.
+	// esc also quits the home picker (top-level cancel).
+	escaped, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !escaped.(pickerModel).canceled {
+		t.Fatalf("canceled = false, want true after pressing esc")
+	}
+
+	// Both letters are now filter characters, not quit keys.
+	upper, _ := model.Update(tea.KeyPressMsg{Code: 'Q', Text: "Q"})
+	if um := upper.(pickerModel); um.canceled || um.query != "Q" {
+		t.Fatalf("uppercase Q: canceled=%v query=%q, want canceled=false query=%q", um.canceled, um.query, "Q")
+	}
 	typed, _ := model.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if typedModel := typed.(pickerModel); typedModel.canceled || typedModel.query != "q" {
 		t.Fatalf("lowercase q: canceled=%v query=%q, want canceled=false query=%q", typedModel.canceled, typedModel.query, "q")
 	}
 }
 
-func TestPickerHomeFooterAdvertisesRefreshAndCapitalQuit(t *testing.T) {
+func TestPickerHomeFooterAdvertisesRefreshAndQuit(t *testing.T) {
 	model := newPickerModel(BuildItems([]hostlist.Alias{{Name: "prod", HostName: "prod.example.com"}}), PickOptions{
 		NoAltScreen: true,
 		NoColor:     true,
@@ -241,8 +251,8 @@ func TestPickerHomeFooterAdvertisesRefreshAndCapitalQuit(t *testing.T) {
 	if !strings.Contains(text, "R refresh") {
 		t.Fatalf("home footer missing 'R refresh':\n%s", text)
 	}
-	if !strings.Contains(text, "Q quit") {
-		t.Fatalf("home footer missing 'Q quit':\n%s", text)
+	if !strings.Contains(text, "esc quit") {
+		t.Fatalf("home footer missing 'esc quit':\n%s", text)
 	}
 }
 

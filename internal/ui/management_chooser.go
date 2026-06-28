@@ -100,7 +100,7 @@ type ManagementMultiChooserOptions struct {
 
 // ChooseManagementMulti runs the shared host-chooser model in multi-select
 // mode over arbitrary grouped items and returns the checked Tokens. Space
-// toggles, ctrl+a selects/clears all, enter confirms (≥1 required), esc/Q
+// toggles, ctrl+a selects/clears all, enter confirms (≥1 required), esc
 // cancels.
 func ChooseManagementMulti(ctx context.Context, items []ManagementItem, opts ManagementMultiChooserOptions) ([]string, bool, error) {
 	if len(items) == 0 {
@@ -108,7 +108,7 @@ func ChooseManagementMulti(ctx context.Context, items []ManagementItem, opts Man
 	}
 	footer := opts.Footer
 	if footer == "" {
-		footer = "space toggle / ctrl+a all / enter continue / type filter / arrows move / Q back"
+		footer = "space toggle / ctrl+a all / enter continue / type filter / arrows move / esc back"
 	}
 	model, err := newHostChooserModel(managementChooserItems(items), hostChooserBaseOptions{
 		Input:       opts.Input,

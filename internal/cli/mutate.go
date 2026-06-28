@@ -445,7 +445,7 @@ func runEditInteractive(args []string, stdout io.Writer, stderr io.Writer) int {
 		Steps:       []string{"target", "action", "editor"},
 		CurrentStep: 0,
 		Summary:     editTargetSummary(len(inventory.Aliases), len(savedForwards), len(savedProxies)),
-		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: picker failed: %v\n", err)
@@ -868,7 +868,7 @@ func pickEditAction(title string, items []ui.Item, flags editInteractiveFlags, s
 		Steps:       []string{"target", "action", "editor"},
 		CurrentStep: 1,
 		Summary:     editActionSummary(len(items)),
-		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil || !ok {
 		return ui.Item{}, ok, err

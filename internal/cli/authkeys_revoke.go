@@ -660,7 +660,7 @@ func runAuthkeysRevokeInteractive(flags authkeysRevokeFlags, stdout io.Writer, s
 		Mode:        "choose key source",
 		Steps:       []string{"source", "key", "hosts", "routes", "confirm", "report"},
 		CurrentStep: 0,
-		Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: revoke picker failed: %v\n", err)
@@ -707,7 +707,7 @@ func authkeysRevokeSourceItems() []ui.ManagementItem {
 
 func pickAuthkeysRevokeFile(stderr io.Writer) (string, bool, error) {
 	opts := transferBrowserOptions(stderr, filePickerOptions{}, "SSHERPA AUTHKEYS REMOVE FILE", "local-file", "LOCAL", ".", []string{"source", "key", "hosts", "routes", "confirm", "report"}, 1)
-	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	opts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	out, ok, err := ui.BrowseTransfer(context.Background(), localFileSource(), opts)
 	if err != nil || !ok {
 		return "", ok, err
@@ -733,7 +733,7 @@ func runAuthkeysRevokeInteractiveTargets(flags authkeysRevokeFlags, stdout io.Wr
 		Mode:        "choose remote removal targets",
 		Steps:       []string{"source", "key", "hosts", "routes", "confirm", "report"},
 		CurrentStep: 2,
-		Footer:      "space toggle / enter continue / type filter / arrows move / shift+arrows section / Q back",
+		Footer:      "space toggle / enter continue / type filter / arrows move / shift+arrows section / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: host picker failed: %v\n", err)
@@ -800,7 +800,7 @@ func configureAuthkeysRevokeRoutes(flags authkeysRevokeFlags, inventory hostlist
 			Steps:       []string{"source", "key", "hosts", "routes", "confirm", "report"},
 			CurrentStep: 3,
 			Summary:     authkeysRevokeRouteSummary(flags),
-			Footer:      "enter select / type filter / arrows move / shift+arrows section / Q back",
+			Footer:      "enter select / type filter / arrows move / shift+arrows section / esc back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: route picker failed: %v\n", err)
@@ -862,7 +862,7 @@ func configureAuthkeysRevokeTargetRoute(flags authkeysRevokeFlags, inventory hos
 		Mode:        "choose route type",
 		Steps:       []string{"source", "key", "hosts", "routes", "confirm", "report"},
 		CurrentStep: 3,
-		Footer:      "enter select / type filter / arrows move / Q back",
+		Footer:      "enter select / type filter / arrows move / esc back",
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "ssherpa: route picker failed: %v\n", err)

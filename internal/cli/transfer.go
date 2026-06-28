@@ -1242,7 +1242,7 @@ func localDirSource() *source.LocalSource {
 func pickLocalDirectory(stderr io.Writer, opts filePickerOptions, start string) (string, bool, error) {
 	src := localDirSource()
 	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA RECEIVE TARGET", "local-folder", "LOCAL", start, receiveTransferSteps(), 3)
-	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
 	if err != nil || !ok {
 		return "", ok, err
@@ -1303,7 +1303,7 @@ func pickRemoteFile(stderr io.Writer, opts filePickerOptions, flags transferFlag
 func pickRemoteDirectory(stderr io.Writer, opts filePickerOptions, flags transferFlags, alias string, start string) (string, bool, error) {
 	src := &sftpSource{flags: flags, alias: alias, dirsOnly: true, useRow: true}
 	browserOpts := transferBrowserOptions(stderr, opts, "SSHERPA SEND TARGET", "remote-folder", alias, start, sendTransferSteps(), 3)
-	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / Q cancel"
+	browserOpts.Footer = "enter open/use / type filter / arrows move / shift+arrows section / esc cancel"
 	out, ok, err := ui.BrowseTransfer(context.Background(), src, browserOpts)
 	if err != nil || !ok {
 		return "", ok, err

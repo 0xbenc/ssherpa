@@ -155,7 +155,7 @@ func (m proxyBuilderModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 	case tea.KeyPressMsg:
-		if msg.String() == "ctrl+c" {
+		if msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
 			m.canceled = true
 			return m, tea.Quit
 		}

@@ -165,9 +165,15 @@ func TestHostChooserFilteringSelectionAndCancel(t *testing.T) {
 	}
 
 	model = newTestHostChooser(t, hostChooserBaseOptions{})
-	model = updateHostChooser(model, keyPress('Q', "Q"))
+	model = updateHostChooser(model, keyPressCtrl('q'))
 	if !model.canceled {
-		t.Fatalf("uppercase Q did not cancel picker")
+		t.Fatalf("ctrl+q did not cancel picker")
+	}
+
+	model = newTestHostChooser(t, hostChooserBaseOptions{})
+	model = updateHostChooser(model, keyPress(tea.KeyEscape, ""))
+	if !model.canceled {
+		t.Fatalf("esc did not cancel picker")
 	}
 }
 
@@ -223,7 +229,7 @@ func TestJumpHopChooserViewAndFinishSelection(t *testing.T) {
 		Mode:        "route bastion -> prod",
 		Steps:       []string{"destination", "first hop", "extra hops", "run"},
 		CurrentStep: 2,
-		Footer:      "enter select / type filter / arrows move / Q back",
+		Footer:      "enter select / type filter / arrows move / esc back",
 	})
 	if err != nil {
 		t.Fatalf("newHostChooserModel: %v", err)

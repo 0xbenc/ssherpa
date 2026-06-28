@@ -80,9 +80,9 @@ func TestTransferBrowserFiltersByPathAndSelects(t *testing.T) {
 }
 
 func TestTransferBrowserKeyMap(t *testing.T) {
-	// Uppercase Q cancels; lowercase q is filter text.
-	if ev, ok := transferKeyMap(tea.KeyPressMsg{Code: 'Q', Text: "Q"}); !ok || ev.Key != "cancel" {
-		t.Fatalf("Q -> %+v, want cancel", ev)
+	// ctrl+q cancels; lowercase q is filter text (esc/ctrl+c cancel via teax.DefaultKey).
+	if ev, ok := transferKeyMap(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl}); !ok || ev.Key != "cancel" {
+		t.Fatalf("ctrl+q -> %+v, want cancel", ev)
 	}
 	if ev, ok := transferKeyMap(tea.KeyPressMsg{Code: 'q', Text: "q"}); !ok || ev.Key != "" || ev.Text != "q" {
 		t.Fatalf("q -> %+v, want filter text", ev)

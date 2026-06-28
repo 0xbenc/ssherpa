@@ -899,7 +899,7 @@ func runKeyInteractive(stdout io.Writer, stderr io.Writer) int {
 			Steps:       []string{"action", "input", "confirm"},
 			CurrentStep: 0,
 			Summary:     sshDir,
-			Footer:      "enter select / type filter / arrows move / Q back",
+			Footer:      "enter select / type filter / arrows move / esc back",
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: key picker failed: %v\n", err)
@@ -1184,7 +1184,7 @@ func showKeyReview(ctx context.Context, stderr io.Writer, verb string, info sshk
 		CurrentStep: 2,
 		Summary:     privDest,
 		Lines:       keyReviewLines(verb, info, privDest, register, addAgent),
-		Footer:      "enter continue / q back",
+		Footer:      "enter continue / esc back",
 	})
 }
 
@@ -1228,7 +1228,7 @@ func chooseKeyType(stderr io.Writer) (string, bool, error) {
 		Mode:        "choose a key type",
 		Steps:       []string{"type", "name", "confirm"},
 		CurrentStep: 0,
-		Footer:      "enter select / arrows move / Q back",
+		Footer:      "enter select / arrows move / esc back",
 	})
 	if err != nil {
 		return "", false, err

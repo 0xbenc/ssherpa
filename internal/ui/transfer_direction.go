@@ -86,7 +86,7 @@ func (m transferDirectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc", "Q", "q":
+		case "ctrl+c", "esc", "ctrl+q":
 			m.canceled = true
 			return m, tea.Quit
 		case "enter":
@@ -116,7 +116,7 @@ func (m transferDirectionModel) View() tea.View {
 		Steps:   transferDirectionSteps(),
 		Current: 0,
 		Body:    m.renderBody(max(20, width-4), theme),
-		Footer:  "enter select / s send / r receive / arrows move / Q back",
+		Footer:  "enter select / s send / r receive / arrows move / esc back",
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view
