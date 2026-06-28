@@ -38,6 +38,21 @@ type AddAliasOptions struct {
 	ThemeFile     string
 	Initial       AddAliasResult
 	IdentityFiles []string
+	// TailscaleLoggedIn enables the host-step Tailscale picker. When false
+	// the host step behaves exactly as before (the trigger is never shown).
+	TailscaleLoggedIn bool
+	// TailscaleDevices are the pickable tailnet nodes. Discovered by the CLI
+	// and passed in so the UI stays pure (no dependency on internal/tailscale).
+	TailscaleDevices []TailscaleDevice
+}
+
+// TailscaleDevice is a pickable tailnet node, projected into a UI-only
+// shape. Name becomes the SSH alias and IPv4 becomes the SSH HostName.
+type TailscaleDevice struct {
+	Name   string
+	IPv4   string
+	OS     string
+	Online bool
 }
 
 func AddAliasForm(ctx context.Context, opts AddAliasOptions) (AddAliasResult, bool, error) {
@@ -85,6 +100,15 @@ const (
 	addStepReview
 )
 
+// hostInputMode is a sub-mode of the host step (NOT a step), so the step
+// iota indices, edit-cursor logic, and breadcrumb rail stay untouched.
+type hostInputMode int
+
+const (
+	hostModeText hostInputMode = iota
+	hostModeTailscale
+)
+
 type addAliasModel struct {
 	step addAliasStep
 
@@ -107,6 +131,13 @@ type addAliasModel struct {
 	idCursorRow   int
 	idsOnly       bool
 	forcePassword bool
+
+	hostMode           hostInputMode
+	tsLoggedIn         bool
+	tsDevices          []TailscaleDevice
+	tsCursor           int
+	tsQuery            string
+	aliasFromTailscale bool
 
 	canceled bool
 	result   AddAliasResult
@@ -139,6 +170,8 @@ func newAddAliasModel(opts AddAliasOptions, theme termstyle.Theme) addAliasModel
 		idCursorRow:   addIdentityCursor(initial.IdentityFile, initial.ForcePassword, choices),
 		idsOnly:       initial.IdentitiesOnly,
 		forcePassword: initial.ForcePassword,
+		tsLoggedIn:    opts.TailscaleLoggedIn,
+		tsDevices:     opts.TailscaleDevices,
 		theme:         theme,
 		noAltScreen:   opts.NoAltScreen,
 		noColor:       opts.NoColor,
@@ -197,6 +230,10 @@ func (m addAliasModel) updatePaste(value string) (tea.Model, tea.Cmd) {
 	}
 	switch m.step {
 	case addStepHost:
+		if m.hostMode != hostModeText {
+			// Ignore pastes while the Tailscale picker is open.
+			return m, nil
+		}
 		m.hostBuf, m.hostCursor = insertTextAtCursor(m.hostBuf, m.hostCursor, value)
 		m.hostError = ""
 	case addStepAlias:
@@ -216,13 +253,106 @@ func (m addAliasModel) updatePaste(value string) (tea.Model, tea.Cmd) {
 }
 
 func (m addAliasModel) updateHost(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.hostMode == hostModeTailscale {
+		return m.updateHostTailscale(msg)
+	}
+	// ctrl+t opens the Tailscale picker when logged in. It is a non-printable
+	// control chord (empty Key().Text), so it never lands in the host buffer.
+	if m.tsLoggedIn && msg.String() == "ctrl+t" {
+		m.hostMode = hostModeTailscale
+		m.tsCursor = 0
+		m.tsQuery = ""
+		return m, nil
+	}
 	action, buf, cursor, errStr := updateTextInputState(msg, m.hostBuf, m.hostCursor, m.hostError, validateRequired("HostName"))
 	m.hostBuf, m.hostCursor, m.hostError = buf, cursor, errStr
 	return m.applyTextAction(action, addStepHost, addStepAlias)
 }
 
+// updateHostTailscale drives the Tailscale device picker sub-mode. It is
+// NOT routed through applyTextAction: esc/shift+tab return to typing (not
+// cancel); ctrl+c still cancels globally at the top of Update.
+func (m addAliasModel) updateHostTailscale(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	visible := m.visibleDevices()
+	switch msg.String() {
+	case "esc", "shift+tab":
+		m.hostMode = hostModeText
+		return m, nil
+	case "up", "ctrl+p":
+		if m.tsCursor > 0 {
+			m.tsCursor--
+		}
+		return m, nil
+	case "down", "ctrl+n":
+		if m.tsCursor < len(visible)-1 {
+			m.tsCursor++
+		}
+		return m, nil
+	case "backspace":
+		if m.tsQuery != "" {
+			runes := []rune(m.tsQuery)
+			m.tsQuery = string(runes[:len(runes)-1])
+			m.tsCursor = 0
+		}
+		return m, nil
+	case "enter":
+		if len(visible) == 0 {
+			return m, nil
+		}
+		if m.tsCursor >= len(visible) {
+			m.tsCursor = len(visible) - 1
+		}
+		return m.applyTailscalePick(visible[m.tsCursor]), nil
+	default:
+		if isPrintableInput(msg) {
+			m.tsQuery += msg.Key().Text
+			m.tsCursor = 0
+		}
+		return m, nil
+	}
+}
+
+// applyTailscalePick sets HostName from the device IPv4 and Alias from the
+// device name, then routes to the user step. If the derived alias somehow
+// fails validation it lands on the editable alias step instead of skipping.
+func (m addAliasModel) applyTailscalePick(d TailscaleDevice) addAliasModel {
+	m.hostBuf = d.IPv4
+	m.hostCursor = len([]rune(d.IPv4))
+	m.hostError = ""
+	alias := strings.TrimSpace(d.Name)
+	m.aliasBuf = alias
+	m.aliasCursor = len([]rune(alias))
+	m.aliasError = ""
+	m.aliasFromTailscale = true
+	m.hostMode = hostModeText
+	if validateAliasInput(alias) != nil {
+		m.step = addStepAlias
+	} else {
+		m.step = addStepUser
+	}
+	return m
+}
+
+// visibleDevices is the device list filtered by the current fuzzy query.
+func (m addAliasModel) visibleDevices() []TailscaleDevice {
+	if strings.TrimSpace(m.tsQuery) == "" {
+		return m.tsDevices
+	}
+	var out []TailscaleDevice
+	for _, d := range m.tsDevices {
+		if fuzzyMatch(d.Name+" "+d.IPv4+" "+d.OS, m.tsQuery) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func (m addAliasModel) updateAlias(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	action, buf, cursor, errStr := updateTextInputState(msg, m.aliasBuf, m.aliasCursor, m.aliasError, validateAliasInput)
+	if buf != m.aliasBuf {
+		// The user edited the auto-derived alias: drop the "from Tailscale" marker.
+		m.aliasFromTailscale = false
+	}
 	m.aliasBuf, m.aliasCursor, m.aliasError = buf, cursor, errStr
 	if action == textInputAdvance && strings.TrimSpace(m.aliasBuf) == "" {
 		m.aliasBuf = suggestAddAlias(m.hostBuf)
@@ -415,17 +545,112 @@ func (m addAliasModel) View() tea.View {
 		Steps:   addStepLabels(),
 		Current: int(m.step),
 		Body:    workflowBodyLines(&body),
-		Footer:  addFooter(m.step),
+		Footer:  addFooter(m.step, m.hostMode, m.tsLoggedIn),
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view
 }
 
 func (m addAliasModel) viewHost(b *strings.Builder, theme pickerTheme, width int) {
+	if m.hostMode == hostModeTailscale {
+		m.viewHostTailscale(b, theme, width)
+		return
+	}
 	b.WriteString("  ")
 	b.WriteString(theme.summary("Where should this SSH alias connect?"))
 	b.WriteString("\n\n")
 	renderInput(b, theme, "HostName", m.hostBuf, m.hostCursor, m.hostError, width)
+	if m.tsLoggedIn {
+		b.WriteString("\n  ")
+		b.WriteString(theme.subtle(tailscaleHintText(len(m.tsDevices))))
+		b.WriteByte('\n')
+	}
+}
+
+func tailscaleHintText(n int) string {
+	if n > 0 {
+		return fmt.Sprintf("ctrl+t  pick from your Tailscale tailnet (%d device%s)", n, pluralSuffix(n))
+	}
+	return "ctrl+t  pick from your Tailscale tailnet"
+}
+
+func (m addAliasModel) viewHostTailscale(b *strings.Builder, theme pickerTheme, width int) {
+	b.WriteString("  ")
+	b.WriteString(theme.summary("Pick a device from your Tailscale tailnet:"))
+	b.WriteByte('\n')
+	if strings.TrimSpace(m.tsQuery) != "" {
+		b.WriteString("  ")
+		b.WriteString(theme.label(termstyle.PadRight("FILTER", 7)))
+		b.WriteString("  ")
+		b.WriteString(theme.search("[" + m.tsQuery + "]"))
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+
+	if len(m.tsDevices) == 0 {
+		b.WriteString("  ")
+		b.WriteString(theme.empty("Tailscale connected — no other devices to pick"))
+		b.WriteByte('\n')
+		return
+	}
+	visible := m.visibleDevices()
+	if len(visible) == 0 {
+		b.WriteString("  ")
+		b.WriteString(theme.empty("No matching Tailscale devices"))
+		b.WriteByte('\n')
+		return
+	}
+
+	cursor := m.tsCursor
+	if cursor >= len(visible) {
+		cursor = len(visible) - 1
+	}
+	maxLines := clamp(m.height-12, 5, 14)
+	from, to := windowRange(cursor, len(visible), maxLines)
+	if from > 0 {
+		b.WriteString("  ")
+		b.WriteString(theme.muted(fmt.Sprintf("%d more above", from)))
+		b.WriteByte('\n')
+	}
+	for i := from; i < to; i++ {
+		b.WriteString("  ")
+		b.WriteString(tailscaleDeviceLine(visible[i], i == cursor, width, theme))
+		b.WriteByte('\n')
+	}
+	if to < len(visible) {
+		b.WriteString("  ")
+		b.WriteString(theme.muted(fmt.Sprintf("%d more below", len(visible)-to)))
+		b.WriteByte('\n')
+	}
+}
+
+func tailscaleDeviceLine(d TailscaleDevice, selected bool, width int, theme pickerTheme) string {
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+	dot := "offline"
+	if d.Online {
+		dot = "online "
+	}
+	available := max(24, width-8)
+	nameWidth := clamp(available/3, 12, 28)
+	const ipWidth = 15
+	osWidth := max(0, available-len(cursor)-len(dot)-1-nameWidth-2-ipWidth-2)
+
+	line := cursor + dot + " " +
+		termstyle.PadRight(termstyle.Truncate(d.Name, nameWidth), nameWidth) + "  " +
+		termstyle.PadRight(termstyle.Truncate(d.IPv4, ipWidth), ipWidth)
+	if osWidth >= 4 && d.OS != "" {
+		line += "  " + termstyle.Truncate(d.OS, osWidth)
+	}
+	switch {
+	case selected:
+		line = theme.rowTitle(line, true)
+	case !d.Online:
+		line = theme.muted(line)
+	}
+	return line
 }
 
 func (m addAliasModel) viewAlias(b *strings.Builder, theme pickerTheme, width int) {
@@ -438,7 +663,13 @@ func (m addAliasModel) viewAlias(b *strings.Builder, theme pickerTheme, width in
 func (m addAliasModel) viewUser(b *strings.Builder, theme pickerTheme, width int) {
 	b.WriteString("  ")
 	b.WriteString(theme.summary("Optional login user. Leave empty to let OpenSSH decide."))
-	b.WriteString("\n\n")
+	b.WriteByte('\n')
+	if m.aliasFromTailscale {
+		b.WriteString("  ")
+		b.WriteString(theme.subtle(fmt.Sprintf("alias: %s (from Tailscale) — shift+tab to rename", strings.TrimSpace(m.aliasBuf))))
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
 	renderInput(b, theme, "User", m.userBuf, m.userCursor, m.userError, width)
 }
 
@@ -587,8 +818,17 @@ func addStepLabels() []string {
 	return []string{"host", "alias", "user", "port", "identity", "custom", "auth", "review"}
 }
 
-func addFooter(step addAliasStep) string {
+func addFooter(step addAliasStep, mode hostInputMode, offerTailscale bool) string {
 	switch step {
+	case addStepHost:
+		if mode == hostModeTailscale {
+			return "enter select / up/down move / type to filter / esc or shift+tab back to typing / ctrl+c quit"
+		}
+		base := "enter advance / shift+tab back / type to edit / esc cancel"
+		if offerTailscale {
+			base += " / ctrl+t tailscale"
+		}
+		return base
 	case addStepIdentity:
 		return "enter select / up/down move / shift+tab back / esc cancel"
 	case addStepIdentityCustom:
