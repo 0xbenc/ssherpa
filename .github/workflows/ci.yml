@@ -198,7 +198,7 @@ jobs:
             echo "::error::inline spinner frames — use termchrome.ResolveGlyphs"; fail=1
           fi
           # No golden-update flag is supported (inline-literal model).
-          if grep -rnE 'UPDATE_GOLDEN|-update' internal; then
+          if grep -rnE 'UPDATE_GOLDEN|flag\.[A-Za-z]+\("update"' internal; then
             echo "::error::no golden-update flag is supported; hand-edit inline expectations"; fail=1
           fi
           # Interaction contract pointer must keep the canonical passage URL.
