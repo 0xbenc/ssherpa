@@ -16,6 +16,7 @@ import (
 	"github.com/0xbenc/ssherpa/internal/hostlist"
 	"github.com/0xbenc/ssherpa/internal/sshconfig"
 	"github.com/0xbenc/ssherpa/internal/state"
+	"github.com/0xbenc/ssherpa/internal/tailscale"
 	"github.com/0xbenc/ssherpa/internal/ui"
 )
 
@@ -109,12 +110,15 @@ func runAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	confirmedByForm := false
 	promptOptional := flags.Alias == "" || flags.HostName == ""
 	if promptOptional {
+		tsLoggedIn, tsDevices := discoverTailscaleDevices(flags.HostName)
 		result, ok, err := ui.AddAliasForm(context.Background(), ui.AddAliasOptions{
-			Input:         os.Stdin,
-			Output:        stderr,
-			NoAltScreen:   envBool("SSHERPA_NO_ALT_SCREEN"),
-			Initial:       addAliasResultFromSpec(spec),
-			IdentityFiles: discoverIdentityFiles(),
+			Input:             os.Stdin,
+			Output:            stderr,
+			NoAltScreen:       envBool("SSHERPA_NO_ALT_SCREEN"),
+			Initial:           addAliasResultFromSpec(spec),
+			IdentityFiles:     discoverIdentityFiles(),
+			TailscaleLoggedIn: tsLoggedIn,
+			TailscaleDevices:  tsDevices,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "ssherpa: add form failed: %v\n", err)
@@ -1552,6 +1556,34 @@ func chooseAddTarget(configPath string, alias string) (string, error) {
 	default:
 		return "", fmt.Errorf("alias %q appears in multiple config files; pass --config PATH to choose one: %s", alias, strings.Join(paths, ", "))
 	}
+}
+
+// discoverTailscaleDevices probes Tailscale for the add form, mirroring the
+// discoverIdentityFiles pattern (the CLI discovers environment data and
+// passes it into the pure UI). When an explicit --host was supplied the
+// picker is suppressed so a pick cannot silently overwrite it.
+func discoverTailscaleDevices(explicitHost string) (bool, []ui.TailscaleDevice) {
+	if strings.TrimSpace(explicitHost) != "" {
+		return false, nil
+	}
+	res := tailscale.Devices(context.Background(), tailscale.Options{})
+	if !res.LoggedIn {
+		return false, nil
+	}
+	return true, mapTailscaleDevices(res.Devices)
+}
+
+func mapTailscaleDevices(devices []tailscale.Device) []ui.TailscaleDevice {
+	out := make([]ui.TailscaleDevice, 0, len(devices))
+	for _, d := range devices {
+		out = append(out, ui.TailscaleDevice{
+			Name:   d.Name,
+			IPv4:   d.IPv4,
+			OS:     d.OS,
+			Online: d.Online,
+		})
+	}
+	return out
 }
 
 func discoverIdentityFiles() []string {
