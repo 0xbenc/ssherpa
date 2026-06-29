@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	github.com/0xbenc/termintro v0.1.0
+	github.com/0xbenc/termintro v0.1.1
 	github.com/0xbenc/termnav v0.2.0
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect
