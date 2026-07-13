@@ -4,8 +4,8 @@ github.com/0xbenc/termchrome v0.1.0 h1:caX5Eo3VHNZU0iHxjEbm66KfMQuER8fGzpAobEnzE
 github.com/0xbenc/termchrome v0.1.0/go.mod h1:6xMovUvTNFv/RGQIGUATVkrVNM1ZDZDLJCXyS2u4jqM=
 github.com/0xbenc/termintro v0.1.1 h1:nhD/aIL6kWZH2koMacfCiCRNN1AuWZAcYL+/Ll2NTYo=
 github.com/0xbenc/termintro v0.1.1/go.mod h1:+96tMiuJ0lUyCo8J5RZTUBGJTkIzIq8IktPM+Fgoskg=
-github.com/0xbenc/termnav v0.2.0 h1:BEFq4rjvN94CaxYKGWup5MpIMWlu8wUE/T3QF4P5sSk=
-github.com/0xbenc/termnav v0.2.0/go.mod h1:1/p7zwXSVYtClCL0OcB4Vu/0LLCmd/ZrLhBllLhw7f0=
+github.com/0xbenc/termnav v0.2.1 h1:9nJOJI9q6DXF+4tIwY6B+c1hdwKQJd6lX+QTOqPDkt8=
+github.com/0xbenc/termnav v0.2.1/go.mod h1:uiiMmP4SqZR+b7cqqkVPJzK6p0z8WQ22izoKlIoEeiA=
 github.com/0xbenc/termtheme v0.2.0 h1:mOUzfDt9C0jkH563n8Zrx8EIxGgrvKeaC343MYjuQxw=
 github.com/0xbenc/termtheme v0.2.0/go.mod h1:9yonKnWQVAuinPHfC2sVOCueRUBW63wDNLp1omtUq0o=
 github.com/aymanbagabas/go-udiff v0.2.0 h1:TK0fH4MteXUDspT88n8CKzvK0X9O2xu9yQjWpi6yML8=
