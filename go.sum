@@ -1,5 +1,5 @@
-charm.land/bubbletea/v2 v2.0.8 h1:SxTJMhCAI3lbPmy4SgX5LWZ24AdINr4I6UEqzZvYJuY=
-charm.land/bubbletea/v2 v2.0.8/go.mod h1:2SkdgoTXluXJHOUwAoRlRXF/28vklb1rFl6GcgV1/ss=
+charm.land/bubbletea/v2 v2.0.9 h1:DpJCMWKgzQK8SJv4zbKKFHAI10ymWy/evClPFk0k0f8=
+charm.land/bubbletea/v2 v2.0.9/go.mod h1:2SkdgoTXluXJHOUwAoRlRXF/28vklb1rFl6GcgV1/ss=
 github.com/0xbenc/termchrome v0.1.0 h1:caX5Eo3VHNZU0iHxjEbm66KfMQuER8fGzpAobEnzEiU=
 github.com/0xbenc/termchrome v0.1.0/go.mod h1:6xMovUvTNFv/RGQIGUATVkrVNM1ZDZDLJCXyS2u4jqM=
 github.com/0xbenc/termintro v0.1.1 h1:nhD/aIL6kWZH2koMacfCiCRNN1AuWZAcYL+/Ll2NTYo=
